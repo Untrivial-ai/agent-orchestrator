@@ -1,15 +1,15 @@
 import { useMemo, useState } from "react";
 import { ActivityIndicator, RefreshControl, SectionList, StyleSheet, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Theme } from "../../lib/theme";
 import { haptics } from "../../lib/haptics";
 import { PRCard } from "../../lib/PRCard";
 import { PRFilterDock } from "../../lib/pr-filter-dock";
 import { ProjectSwitcher } from "../../lib/ProjectSwitcher";
-import { prLifecycle, prListSections, type PRListFilter } from "../../lib/prView";
+import { collectPRs, prLifecycle, prListSections, type PRListFilter } from "../../lib/prView";
 import { StaleBanner } from "../../lib/StaleBanner";
-import { useApp, usePRs } from "../../lib/store";
+import { useApp } from "../../lib/store";
 import { UnpairedState } from "../../lib/UnpairedState";
 import { usePRSummaries } from "../../lib/usePRSummaries";
 import { useBoardFailure } from "../../lib/useBoardFailure";
@@ -17,6 +17,7 @@ import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
 import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { space } from "../../lib/tokens";
+import type { HostedSession } from "../../lib/hostedRows";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
@@ -36,8 +37,18 @@ export default function PRsScreen() {
 	const styles = useThemedStyles(makeStyles);
 	const insets = useSafeAreaInsets();
 	const router = useRouter();
-	const { configured, loading, error, refresh, notificationsUnread } = useApp();
-	const prs = usePRs();
+	const { hostId: routeHostId, projectId: routeProjectId } = useLocalSearchParams<{ hostId?: string; projectId?: string }>();
+	const { hostStates, configForHost, refreshAll, activeProjectId } = useApp();
+	const visibleHosts = useMemo(() => routeHostId ? hostStates.filter((host) => host.hostId === routeHostId) : hostStates, [hostStates, routeHostId]);
+	const projectFilter = routeHostId ? (routeProjectId ?? "all") : hostStates.length === 1 ? activeProjectId : "all";
+	const prs = useMemo(() => visibleHosts.flatMap((host) => collectPRs(host.sessions).filter(({ session }) => projectFilter === "all" || session.projectId === projectFilter).map(({ pr, session }) => ({
+		pr,
+		session: { ...session, hostId: host.hostId, hostName: host.name } as HostedSession,
+	}))), [visibleHosts, projectFilter]);
+	const configured = hostStates.length > 0;
+	const loading = visibleHosts.some((host) => host.loading);
+	const error = visibleHosts.every((host) => host.connection !== "open") ? visibleHosts.find((host) => host.error)?.error : null;
+	const notificationsUnread = hostStates.reduce((sum, host) => sum + host.notificationsUnread, 0);
 	const [filter, setFilter] = useState<Filter>("open");
 	const [refreshing, setRefreshing] = useState(false);
 
@@ -51,15 +62,18 @@ export default function PRsScreen() {
 	// The rich per-PR detail the cards show lives on a separate endpoint, fetched
 	// once per session and cached — see usePRSummaries. Pull-to-refresh is the
 	// only thing that re-fetches it.
-	const sessionIds = useMemo(() => [...new Set(filtered.map(({ session }) => session.id))], [filtered]);
-	const summaries = usePRSummaries(sessionIds);
+	const summaryTargets = useMemo(() => filtered.flatMap(({ session }) => {
+		const config = configForHost(session.hostId);
+		return config ? [{ config, sessionId: session.id }] : [];
+	}), [filtered, configForHost]);
+	const summaries = usePRSummaries(summaryTargets);
 	const failure = useBoardFailure();
 
 	const onRefresh = async () => {
 		haptics.tap();
 		setRefreshing(true);
 		summaries.reload();
-		await refresh();
+		await refreshAll();
 		setRefreshing(false);
 	};
 
@@ -96,8 +110,8 @@ export default function PRsScreen() {
 					/>
 				}
 			/>
-			<ProjectSwitcher />
-			<StaleBanner error={!!error} onRetry={onRefresh} />
+			{hostStates.length === 1 && !routeHostId ? <ProjectSwitcher /> : null}
+			{hostStates.length === 1 ? <StaleBanner error={!!error} onRetry={onRefresh} /> : null}
 
 			{loading && prs.length === 0 ? (
 				<View style={styles.center}>
@@ -107,14 +121,21 @@ export default function PRsScreen() {
 				<SectionList
 					ref={scrollRef}
 					sections={sections}
-					keyExtractor={({ pr, session }) => `${session.projectId}#${pr.number}`}
+					keyExtractor={({ pr, session }) => `${session.hostId}:${session.projectId}#${pr.number}`}
 					contentContainerStyle={{ paddingBottom: 110 }}
 					stickySectionHeadersEnabled={false}
 					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.accent} />}
 					renderSectionHeader={({ section }) => <ListSectionHeader label={section.label} />}
-					renderItem={({ item: { pr, session } }) => (
-						<PRCard pr={pr} session={session} summary={summaries.summaryFor(session.id, pr.number)} />
-					)}
+					renderItem={({ item: { pr, session } }) => {
+						const config = configForHost(session.hostId);
+						return <PRCard
+							pr={pr}
+							session={session}
+							hostId={session.hostId}
+							hostName={hostStates.length > 1 ? session.hostName : undefined}
+							summary={config ? summaries.summaryFor(config, session.id, pr.number) : undefined}
+						/>;
+					}}
 					ListEmptyComponent={
 						filtered.length === 0 ? (
 							error ? (

@@ -50,13 +50,13 @@ export default function OnboardingScreen() {
 				showsVerticalScrollIndicator={false}
 			>
 				<View style={styles.hero}>
-					<Text style={styles.title}>Connect your desktop</Text>
+					<Text style={styles.title}>Connect to AO</Text>
 					<Text style={styles.lede}>
-						Pair with AO on your computer to check on your agents, jump into any terminal, and drive work from your
+						Pair with AO on a computer or self-hosted machine to check on your agents, jump into any terminal, and drive work from your
 						phone.
 					</Text>
 					<Button
-						title="Pair Desktop"
+						title="Pair a machine"
 						icon="maximize"
 						onPress={() => router.push("/pair?from=onboarding")}
 						style={styles.cta}
@@ -67,14 +67,14 @@ export default function OnboardingScreen() {
 					<Text style={styles.howLabel}>HOW IT WORKS</Text>
 					<NumberedStep
 						n={1}
-						title="Open AO on your computer"
-						hint="Go to Settings → Connect Mobile and turn it on."
+						title="Enable a connection on the machine"
+						hint="Use Settings → Connect Mobile, or run ao remote-host enable on a headless machine."
 					/>
 					<View style={styles.divider} />
 					<NumberedStep
 						n={2}
 						title="Scan the code"
-						hint="Tap Pair Desktop above and point at the QR code on your screen."
+						hint="Scan the QR code or enter the address and password manually."
 					/>
 					<View style={styles.divider} />
 					<NumberedStep

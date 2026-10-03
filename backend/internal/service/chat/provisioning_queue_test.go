@@ -180,6 +180,11 @@ func TestProvisioningSendPiggybacksReportsOnlyOnRecordedTurn(t *testing.T) {
 	if err != nil || duplicate.ID != "" {
 		t.Fatalf("duplicate send = %+v, err = %v", duplicate, err)
 	}
+	changed := message
+	changed.Text = "different request"
+	if _, err := svc.Send(ctx, orchestrator.ID, changed); !errors.Is(err, domain.ErrClientMessageConflict) {
+		t.Fatalf("changed client message = %v, want conflict", err)
+	}
 	second, found, err := st.GetReport(ctx, "second-report")
 	if err != nil || !found || second.DeliveryState != domain.ReportPending {
 		t.Fatalf("duplicate acknowledged an unrecorded report: %+v, found = %v, err = %v", second, found, err)

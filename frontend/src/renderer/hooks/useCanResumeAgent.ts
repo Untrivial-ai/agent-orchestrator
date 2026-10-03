@@ -18,9 +18,9 @@ export function canResumeAgent(
 	);
 }
 
-export function useCanResumeAgent(session: WorkspaceSession | undefined): boolean {
+export function useCanResumeAgent(session: WorkspaceSession | undefined, hostId?: string): boolean {
 	const baseEligible = canResumeAgent(session);
-	const interfaceTransition = useSessionInterfaceTransitionStatus(baseEligible ? session?.id : undefined);
+	const interfaceTransition = useSessionInterfaceTransitionStatus(baseEligible ? session?.id : undefined, hostId);
 	return Boolean(
 		baseEligible &&
 			!interfaceTransition.isLoading &&

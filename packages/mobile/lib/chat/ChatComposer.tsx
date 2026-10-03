@@ -1,5 +1,6 @@
 import { Feather } from "../icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { machineIdentity, type ServerConfig } from "../config";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
@@ -34,6 +35,7 @@ import { queuedConversationMessages } from "./timelineModel";
 import { userFacingError } from "../connectionError";
 import type { DashboardPR, SessionPRSummary } from "../api";
 import { PRReviewPrompt } from "./PRReviewPrompt";
+import { afterDraftWrites } from "./pendingSend";
 
 type Attachment =
 	| { id: string; kind: "image"; name: string; bytes: number; image: ChatImage }
@@ -68,6 +70,7 @@ export function ChatComposer({
 	onCollapseReviewPR,
 	onOpenReview,
 	sessionId,
+	config,
 	snapshot,
 	skills,
 	filePaths,
@@ -81,6 +84,8 @@ export function ChatComposer({
 	interrupting,
 	disabled,
 	onSend,
+	onAcknowledgeSend,
+	completedRetry,
 	onSteer,
 	onPromoteQueuedTurn,
 	onCancelQueuedTurn,
@@ -104,6 +109,7 @@ export function ChatComposer({
 	onCollapseReviewPR?(): void;
 	onOpenReview?(): void;
 	sessionId: string;
+	config: ServerConfig | null;
 	snapshot: ConversationSnapshot;
 	skills: ChatSkill[];
 	filePaths: string[];
@@ -116,8 +122,10 @@ export function ChatComposer({
 	pending?: boolean;
 	interrupting?: boolean;
 	disabled?: boolean;
-	onSend(text: string, attachments?: ChatImage[], resources?: ChatResource[]): Promise<void>;
-	onSteer(text: string): Promise<void>;
+	onSend(text: string, attachments?: ChatImage[], resources?: ChatResource[]): Promise<string>;
+	onAcknowledgeSend(id: string): Promise<void>;
+	completedRetry?: { id: string; draftText: string };
+	onSteer(text: string): Promise<string>;
 	onPromoteQueuedTurn(turnId: string): Promise<void>;
 	onCancelQueuedTurn(turnId: string): Promise<void>;
 	onInterrupt(): void;
@@ -215,6 +223,7 @@ export function ChatComposer({
 		transform: [{ translateY: (restingInset - KEYBOARD_DOCK_GAP) * keyboard.progress.value }],
 	}));
 	const [text, setText] = useState("");
+	const [draftLoaded, setDraftLoaded] = useState(false);
 	const [cursor, setCursor] = useState(0);
 	const [fieldHeight, setFieldHeight] = useState(COMPOSER_FIELD_HEIGHT);
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -246,7 +255,8 @@ export function ChatComposer({
 	const steerEligible = Boolean(canSteer && hasDraft && attachments.length === 0);
 	const deliveryPresentation = composerDeliveryPresentation({ active, canSteer: Boolean(canSteer), hasDraft, hasAttachments: attachments.length > 0, hasQueued: visibleQueuedMessages.length > 0 });
 	const stopped = snapshot.controller.state === "stopped";
-	const draftKey = `ao.chat.draft.${sessionId}`;
+	const draftKey = config ? `ao.chat.draft.${machineIdentity(config)}.${sessionId}` : null;
+	const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const openingSuggestion = useRef<string | undefined>(undefined);
 	const pickerGate = useRef(createRequestGate()).current;
 	const latestText = useRef(text);
@@ -262,13 +272,44 @@ export function ChatComposer({
 		});
 	}, [queuedMessages]);
 
-	useEffect(() => { let mounted = true; void AsyncStorage.getItem(draftKey).then((value) => { if (mounted && value) setText((current) => current || value); }); return () => { mounted = false; }; }, [draftKey]);
-	useEffect(() => { const timer = setTimeout(() => void (text ? AsyncStorage.setItem(draftKey, text) : AsyncStorage.removeItem(draftKey)), 250); return () => clearTimeout(timer); }, [draftKey, text]);
+	useEffect(() => {
+		if (!draftKey) return;
+		let mounted = true;
+		void AsyncStorage.getItem(draftKey)
+			.then((value) => { if (mounted && value) setText((current) => current || value); })
+			.catch(() => {})
+			.finally(() => { if (mounted) setDraftLoaded(true); });
+		return () => { mounted = false; };
+	}, [draftKey]);
+	useEffect(() => {
+		if (!draftKey || !draftLoaded) return;
+		draftTimer.current = setTimeout(() => {
+			void afterDraftWrites(draftKey, () => text ? AsyncStorage.setItem(draftKey, text) : AsyncStorage.removeItem(draftKey)).catch(() => {});
+		}, 250);
+		return () => { if (draftTimer.current) clearTimeout(draftTimer.current); };
+	}, [draftKey, draftLoaded, text]);
+	useEffect(() => {
+		if (!completedRetry) return;
+		if (draftTimer.current) clearTimeout(draftTimer.current);
+		const current = latestText.current;
+		const matches = current.trim() === completedRetry.draftText;
+		if (matches) {
+			latestText.current = "";
+			setText("");
+			setAttachments([]);
+		}
+		void (async () => {
+			if (draftKey) {
+				await afterDraftWrites(draftKey, () => matches ? AsyncStorage.removeItem(draftKey) : AsyncStorage.setItem(draftKey, current));
+			}
+			await onAcknowledgeSend(completedRetry.id);
+		})().catch((cause) => setLocalError(userFacingError(cause)));
+	}, [completedRetry, draftKey, onAcknowledgeSend]);
 
 	const voice = useVoiceInput({ onTranscript: useCallback((spoken: string) => setText((old) => old ? `${old} ${spoken}` : spoken), []) });
 
 	const submit = useCallback(async (intent: ComposerDeliveryIntent = "send") => {
-		if (submitting || pending || disabled) return;
+		if (submitting || pending || disabled || (draftKey && !draftLoaded)) return;
 		const trimmed = text.trim();
 		if (!trimmed && attachments.length === 0) return;
 		// Dismissed on the tap, not after the send lands. Waiting for the request
@@ -277,23 +318,31 @@ export function ChatComposer({
 		Keyboard.dismiss();
 		setLocalError(undefined);
 		setSubmitting(true);
+		if (draftTimer.current) clearTimeout(draftTimer.current);
 		try {
 			const images = attachments.filter((item): item is Extract<Attachment, { kind: "image" }> => item.kind === "image").map((item) => item.image);
 			const resources = attachments.filter((item): item is Extract<Attachment, { kind: "resource" }> => item.kind === "resource").map((item) => item.resource);
 			const route = composerDeliveryRoute(intent, steerEligible);
-			if (route === "steer") await onSteer(trimmed);
-			else await onSend(trimmed, images.length ? images : undefined, resources.length ? resources : undefined);
-			latestText.current = "";
-			setText("");
-			setFieldHeight(COMPOSER_FIELD_HEIGHT);
-			setAttachments([]);
-			void AsyncStorage.removeItem(draftKey);
+			const id = route === "steer"
+				? await onSteer(trimmed)
+				: await onSend(trimmed, images.length ? images : undefined, resources.length ? resources : undefined);
+			if (draftKey) {
+				const current = latestText.current;
+				await afterDraftWrites(draftKey, () => current === text ? AsyncStorage.removeItem(draftKey) : AsyncStorage.setItem(draftKey, current));
+			}
+			await onAcknowledgeSend(id);
+			if (latestText.current === text) {
+				latestText.current = "";
+				setText("");
+				setFieldHeight(COMPOSER_FIELD_HEIGHT);
+				setAttachments([]);
+			}
 			haptics.success();
 		} catch (cause) {
 			setLocalError(userFacingError(cause));
 			haptics.error();
 		} finally { setSubmitting(false); }
-	}, [text, attachments, steerEligible, onSteer, onSend, draftKey, submitting, pending, disabled]);
+	}, [text, attachments, steerEligible, onSteer, onSend, onAcknowledgeSend, draftKey, draftLoaded, submitting, pending, disabled]);
 
 	const addImage = async () => {
 		setLocalError(undefined);
@@ -469,10 +518,10 @@ export function ChatComposer({
 				style={[styles.composer, activeReviewPR && styles.reviewComposer, activeReviewPR && reviewComposerSurfaceStyle, stopped && { opacity: 0.55 }]}
 			>
 				{activeReviewPR ? <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, reviewComposerGlassStyle]}><ComposerGlass radius={COMPOSER_RADIUS} /></Animated.View> : <ComposerGlass radius={COMPOSER_RADIUS} />}
-				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
+				<ChatAttachmentMenu disabled={stopped || submitting} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
-					editable={!stopped}
+					editable={!stopped && !submitting}
 					value={text}
 					onChangeText={(value) => { latestText.current = value; setText(value); }}
 					onSelectionChange={(event) => setCursor(event.nativeEvent.selection.start)}
@@ -494,7 +543,7 @@ export function ChatComposer({
 					maxLength={40_000}
 				/>
 				<MicKey variant="plain" size={44} glyphSize={iconSize.lg} state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
-				{primaryAction === "stop" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" accessibilityState={{ busy: interrupting, disabled: disabled || interrupting }} disabled={disabled || interrupting} onPress={() => { haptics.tap(); void onInterrupt(); }} style={[styles.stop, (disabled || interrupting) && { opacity: 0.55 }]}>{interrupting ? <ActivityIndicator size="small" color={t.textPrimary} /> : <Feather name="square" size={12} color={t.textPrimary} />}</Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting }} disabled={disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit("send"); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={17} color={t.bgBase} />}</Pressable>}
+				{primaryAction === "stop" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" accessibilityState={{ busy: interrupting, disabled: disabled || interrupting }} disabled={disabled || interrupting} onPress={() => { haptics.tap(); void onInterrupt(); }} style={[styles.stop, (disabled || interrupting) && { opacity: 0.55 }]}>{interrupting ? <ActivityIndicator size="small" color={t.textPrimary} /> : <Feather name="square" size={12} color={t.textPrimary} />}</Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting || Boolean(draftKey && !draftLoaded) }} disabled={disabled || stopped || pending || submitting || Boolean(draftKey && !draftLoaded) || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit("send"); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || Boolean(draftKey && !draftLoaded) || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={17} color={t.bgBase} />}</Pressable>}
 			</Animated.View>}
 		</>
 	);

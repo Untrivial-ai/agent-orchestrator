@@ -10,7 +10,8 @@ vi.mock("./hosts", () => ({
 	touchHost: vi.fn(),
 }));
 
-import { ENDPOINT_REFRESH_TIMEOUT_MS, runtimeConnectDeps } from "./connectRuntime";
+import { ENDPOINT_REFRESH_TIMEOUT_MS, probeEndpoint, probeIdentity, rejectedEndpointNeedsRace, runtimeConnectDeps } from "./connectRuntime";
+import { IncompatibleHostVersionError } from "./race";
 
 const config = { host: "192.168.1.5", httpPort: "3011", password: "stale", secure: false } as Parameters<ReturnType<typeof runtimeConnectDeps>["refreshEndpoints"]>[0];
 
@@ -23,6 +24,25 @@ afterEach(() => {
 // towards the daemon's lockout. Settings' Test connection turns it off so a
 // tap spends one attempt (its own ping), not two.
 describe("runtimeConnectDeps", () => {
+	it("checks a rejected address without presenting the saved bearer", async () => {
+		const fetch = vi.fn()
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ hostId: "another-host", apiVersion: 1 }) })
+			.mockResolvedValueOnce({ ok: true, json: async () => ({ hostId: "paired-host", apiVersion: 1 }) });
+		vi.stubGlobal("fetch", fetch);
+		const paired = { ...config, hostId: "paired-host", endpointKind: "lan" as const };
+
+		await expect(rejectedEndpointNeedsRace(paired, 401)).resolves.toBe(true);
+		await expect(rejectedEndpointNeedsRace(paired, 403)).resolves.toBe(false);
+		await expect(rejectedEndpointNeedsRace(paired, 421)).resolves.toBe(true);
+		await expect(rejectedEndpointNeedsRace(paired, 429)).resolves.toBe(false);
+		expect(fetch).toHaveBeenCalledTimes(2);
+		for (const [url, init] of fetch.mock.calls) {
+			expect(url).toBe("http://192.168.1.5:3011/api/v1/identity");
+			expect(init).toMatchObject({ method: "GET" });
+			expect(init.headers).toBeUndefined();
+		}
+	});
+
 	it("skips the authenticated endpoint refresh when asked", async () => {
 		const fetch = vi.fn();
 		vi.stubGlobal("fetch", fetch);
@@ -33,9 +53,9 @@ describe("runtimeConnectDeps", () => {
 	it("refreshes by default", async () => {
 		const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ endpoints: [] }) });
 		vi.stubGlobal("fetch", fetch);
-		await runtimeConnectDeps().refreshEndpoints(config);
+		await runtimeConnectDeps().refreshEndpoints({ ...config, hostId: "h_A" });
 		expect(fetch).toHaveBeenCalledWith("http://192.168.1.5:3011/api/v1/endpoints", {
-			headers: { Authorization: "Bearer stale" },
+			headers: { Authorization: "Bearer stale", "X-AO-Expected-Host-ID": "h_A" },
 			signal: expect.any(AbortSignal),
 		});
 	});
@@ -56,5 +76,24 @@ describe("runtimeConnectDeps", () => {
 		const settled = expect(refresh).rejects.toThrow("aborted");
 		await vi.advanceTimersByTimeAsync(ENDPOINT_REFRESH_TIMEOUT_MS);
 		await settled;
+	});
+});
+
+describe("identity API compatibility", () => {
+	it("accepts the PR-base v1 identity without sending a password", async () => {
+		const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ hostId: "h_A", apiVersion: 1 }) });
+		vi.stubGlobal("fetch", fetch);
+		const endpoint = { kind: "lan" as const, host: "192.168.1.5", port: 3011, secure: false };
+		await expect(probeEndpoint(endpoint, new AbortController().signal)).resolves.toEqual({ hostId: "h_A" });
+		expect(fetch.mock.calls[0][1].headers).toBeUndefined();
+	});
+
+	it.each([undefined, 2])("rejects identity version %s before authentication", async (apiVersion) => {
+		const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ hostId: "h_A", apiVersion }) });
+		vi.stubGlobal("fetch", fetch);
+		await expect(probeIdentity(config)).rejects.toBeInstanceOf(IncompatibleHostVersionError);
+		await expect(probeEndpoint({ kind: "lan", host: config.host, port: 3011, secure: false }, new AbortController().signal))
+			.rejects.toBeInstanceOf(IncompatibleHostVersionError);
+		expect(fetch.mock.calls.every(([, init]) => !init?.headers?.Authorization)).toBe(true);
 	});
 });

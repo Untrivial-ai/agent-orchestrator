@@ -20,8 +20,9 @@ import {
 	useRecoverAgentSwitch,
 	useSwitchAgentState,
 } from "../hooks/useSwitchAgent";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { apiErrorMessage } from "../lib/api-client";
+import { clientForSessionHost } from "../lib/host-clients";
 import { isConcreteModelID } from "../lib/agent-model-choices";
 import { AGENT_LABELS, AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
@@ -211,12 +212,13 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
 	const [modelTouched, setModelTouched] = useState(false);
+	const hostId = session.hostId;
 	const projectQuery = useQuery({
-		queryKey: ["project", session.workspaceId],
+		queryKey: hostId ? ["project", hostId, session.workspaceId] : ["project", session.workspaceId],
 		enabled: open,
 		staleTime: 30_000,
 		queryFn: async () => {
-			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/projects/{id}", {
 				params: { path: { id: session.workspaceId } },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
@@ -224,7 +226,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 			return data.project as components["schemas"]["Project"];
 		},
 	});
-	const modelCatalog = useQuery(agentModelsQueryOptions(targetHarness, session.workspaceId)).data;
+	const modelCatalog = useQuery(agentModelsQueryOptions(targetHarness, session.workspaceId, hostId)).data;
 	const projectKnown = Boolean(projectQuery.data);
 	const role = session.kind === "orchestrator" ? projectQuery.data?.config?.orchestrator : projectQuery.data?.config?.worker;
 	const roleMatches = !role?.agent || role.agent === targetHarness;
@@ -240,7 +242,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	const [modelWarning, setModelWarning] = useState<string | undefined>();
 	const switchAgent = useSwitchAgent();
 	const recoverAgentSwitch = useRecoverAgentSwitch();
-	const switchMutation = useSwitchAgentState(session.id);
+	const switchMutation = useSwitchAgentState(session.id, hostId);
 	const admissionPending = switchMutation.isPending;
 	// Agent-switch history has its own bounded polling fallback. Prefer that
 	// observation over the compact workspace projection so a settled recovery
@@ -282,13 +284,13 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 		setMode("");
 		setModelTouched(false);
 		setModelWarning(undefined);
-	}, [session.provider]);
+	}, [hostId, session.id, session.provider]);
 	useEffect(() => {
 		if (open && durableSwitching) onOpenChange(false);
 	}, [durableSwitching, onOpenChange, open]);
 	const clearFailedAttempt = () => {
 		if (!switchMutation.error) return;
-		clearSwitchAgentState(queryClient, session.id);
+		clearSwitchAgentState(queryClient, session.id, hostId);
 	};
 
 	const changeTarget = (nextTarget: SwitchAgentHarness) => {
@@ -319,8 +321,8 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 		setRefreshingRecovery(true);
 		try {
 			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: agentSwitchesQueryKey(session.id) }),
-				queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
+				queryClient.invalidateQueries({ queryKey: agentSwitchesQueryKey(session.id, hostId) }),
+				queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }),
 			]);
 		} finally {
 			setRefreshingRecovery(false);
@@ -396,6 +398,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 									onClick={() =>
 										recoverAgentSwitch.mutate({
 											sessionId: session.id,
+											...(hostId ? { hostId } : {}),
 											switchId: durableSwitch.id,
 										})
 									}
@@ -471,6 +474,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 										}}
 										onWarningChange={setModelWarning}
 										projectId={session.workspaceId}
+										hostId={hostId}
 										value={modelCatalog?.selectionMode === "mode" ? "" : visibleChoice}
 									/>
 								</div>

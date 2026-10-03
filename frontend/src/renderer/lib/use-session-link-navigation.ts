@@ -1,11 +1,48 @@
-import { useCallback } from "react";
-import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useSyncExternalStore } from "react";
+import { useCloudProjectsQuery, useCloudSessionsQuery, remoteWorkspaceQueryKey, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { useUiStore } from "../stores/ui-store";
+import type { WorkspaceSummary } from "../types/workspace";
+import { LOCAL_HOST } from "./hosts";
 import { useNavigateToSession } from "./navigate-to-session";
-import { parseSessionLink, resolveSessionLink } from "./session-links";
+import { parseSessionLink, resolveSessionLink, type SessionLinkWorkspace } from "./session-links";
 
-export function useSessionLinkNavigation(): (url: string) => boolean {
-	const workspaceQuery = useWorkspaceQuery();
+function useLocalLinkSource(_hostId: string): { ready: boolean; workspaces: SessionLinkWorkspace[] } {
+	const query = useWorkspaceQuery();
+	return { ready: query.isSuccess, workspaces: query.data ?? [] };
+}
+
+function useCloudLinkSource(_hostId: string): { ready: boolean; workspaces: SessionLinkWorkspace[] } {
+	const projects = useCloudProjectsQuery();
+	const sessions = useCloudSessionsQuery();
+	return {
+		ready: projects.isSuccess && sessions.isSuccess,
+		workspaces: (projects.data ?? []).map((project) => ({
+			id: project.id,
+			sessions: (sessions.data ?? []).filter((session) => session.projectId === project.id),
+		})),
+	};
+}
+
+function useRemoteLinkSource(hostId: string): { ready: boolean; workspaces: SessionLinkWorkspace[] } {
+	const queryClient = useQueryClient();
+	const subscribe = useCallback((notify: () => void) => queryClient.getQueryCache().subscribe(notify), [queryClient]);
+	const workspaces = useSyncExternalStore(
+		subscribe,
+		() => queryClient.getQueryData<WorkspaceSummary[]>(remoteWorkspaceQueryKey(hostId)),
+	);
+	return {
+		ready: workspaces !== undefined,
+		workspaces: workspaces ?? [],
+	};
+}
+
+export function useSessionLinkNavigation(sourceHostId?: string, sourceKind?: "cloud"): (url: string) => boolean {
+	const remoteHostId = sourceHostId && sourceHostId !== LOCAL_HOST ? sourceHostId : undefined;
+	// Each caller's source is fixed for its mounted surface. Call only that
+	// source's query so a remote terminal never probes the local daemon.
+	const useSource = remoteHostId ? useRemoteLinkSource : sourceKind === "cloud" ? useCloudLinkSource : useLocalLinkSource;
+	const source = useSource(remoteHostId ?? "");
 	const navigateToSession = useNavigateToSession();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	return useCallback((url: string) => {
@@ -19,8 +56,8 @@ export function useSessionLinkNavigation(): (url: string) => boolean {
 			});
 			return false;
 		}
-		if (!workspaceQuery.isSuccess || !workspaceQuery.data) {
-			showGlobalToast("AO could not verify that session. Check the daemon connection and try again.", undefined, {
+		if (!source.ready) {
+			showGlobalToast(`AO could not verify that session. Check the ${remoteHostId ? "host" : sourceKind === "cloud" ? "Cloud" : "daemon"} connection and try again.`, undefined, {
 				tone: "error",
 				placement: "top-center",
 				dismissible: true,
@@ -28,7 +65,7 @@ export function useSessionLinkNavigation(): (url: string) => boolean {
 			});
 			return false;
 		}
-		const resolved = resolveSessionLink(url, workspaceQuery.data);
+		const resolved = resolveSessionLink(url, source.workspaces);
 		if (!resolved) {
 			showGlobalToast("That session is missing or is not accessible in this AO workspace.", undefined, {
 				tone: "error",
@@ -43,11 +80,12 @@ export function useSessionLinkNavigation(): (url: string) => boolean {
 				placement: "top-center",
 				dismissible: true,
 				durationMs: 5_000,
-				dedupeKey: `session-link:${resolved.projectId}:${resolved.sessionId}`,
+				dedupeKey: `session-link:${remoteHostId ? `${remoteHostId}:` : ""}${resolved.projectId}:${resolved.sessionId}`,
 			});
 			return false;
 		}
-		navigateToSession(resolved.projectId, resolved.sessionId);
+		if (remoteHostId) navigateToSession(resolved.projectId, resolved.sessionId, remoteHostId);
+		else navigateToSession(resolved.projectId, resolved.sessionId);
 		return true;
-	}, [navigateToSession, showGlobalToast, workspaceQuery.data, workspaceQuery.isSuccess]);
+	}, [navigateToSession, remoteHostId, showGlobalToast, source, sourceKind]);
 }

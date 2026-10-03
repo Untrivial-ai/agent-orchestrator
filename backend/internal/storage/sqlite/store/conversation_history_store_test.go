@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,6 +69,88 @@ func turnIDs(turns []domain.ConversationTurn) []string {
 		out = append(out, turn.ID)
 	}
 	return out
+}
+
+func TestAppendUserMessageRejectsChangedPayloadForSameClientID(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	first := domain.ConversationMessage{
+		ID: "message-1", Text: "review this", Origin: domain.MessageOriginHuman,
+		ClientMessageID: "client-1", DeliveryContentJSON: `[{"type":"image","data":"AAAA","mimeType":"image/png"}]`,
+	}
+	if created, err := s.AppendUserMessage(ctx, conversation, session, "gen-1", first, "turn-1", histClock); err != nil || !created {
+		t.Fatalf("first append: created=%v err=%v", created, err)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*domain.ConversationMessage)
+		want error
+	}{
+		{"identical", func(*domain.ConversationMessage) {}, nil},
+		{"changed text", func(m *domain.ConversationMessage) { m.Text = "review something else" }, domain.ErrClientMessageConflict},
+		{"changed attachment", func(m *domain.ConversationMessage) {
+			m.DeliveryContentJSON = `[{"type":"image","data":"BBBB","mimeType":"image/png"}]`
+		}, domain.ErrClientMessageConflict},
+		{"changed origin", func(m *domain.ConversationMessage) { m.Origin = domain.MessageOriginAutomation }, domain.ErrClientMessageConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retry := first
+			retry.ID = "message-2"
+			tc.edit(&retry)
+			created, err := s.AppendUserMessage(ctx, conversation, session, "gen-1", retry, "turn-2", histClock)
+			if created || !errors.Is(err, tc.want) {
+				t.Fatalf("retry: created=%v err=%v, want %v", created, err, tc.want)
+			}
+		})
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil || len(snapshot.Turns) != 1 {
+		t.Fatalf("turns after retries = %d, err=%v; want one", len(snapshot.Turns), err)
+	}
+}
+
+func TestAppendUserMessageConcurrentClientPayloadCollision(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, suffix := range []string{"first", "second"} {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			created, err := s.AppendUserMessage(ctx, conversation, session, "gen-1", domain.ConversationMessage{
+				ID: "message-" + suffix, Text: suffix, Origin: domain.MessageOriginHuman,
+				ClientMessageID: "shared-key", ClientPayloadHash: "hash-" + suffix,
+			}, "turn-"+suffix, histClock)
+			if err == nil && !created {
+				err = fmt.Errorf("same key and different payload was treated as a duplicate")
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	var accepted, conflicted int
+	for err := range results {
+		switch {
+		case err == nil:
+			accepted++
+		case errors.Is(err, domain.ErrClientMessageConflict):
+			conflicted++
+		default:
+			t.Fatalf("concurrent append = %v", err)
+		}
+	}
+	if accepted != 1 || conflicted != 1 {
+		t.Fatalf("accepted=%d conflicts=%d, want one each", accepted, conflicted)
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversation)
+	if err != nil || len(snapshot.Turns) != 1 {
+		t.Fatalf("turns after concurrent append = %d, err=%v; want one", len(snapshot.Turns), err)
+	}
 }
 
 func TestAppendUserMessageTracksOnlyLatestHumanMessage(t *testing.T) {

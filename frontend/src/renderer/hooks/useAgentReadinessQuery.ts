@@ -2,15 +2,17 @@ import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { clientForHost } from "../lib/host-clients";
 
 export type AgentReadiness = components["schemas"]["AgentReadinessResponse"];
 export type AgentReadinessSnapshot = components["schemas"]["AgentReadinessSnapshot"];
 export type AgentReadinessPurpose = components["schemas"]["EnsureAgentReadinessRequest"]["purpose"];
 
 export const agentReadinessQueryKey = ["agent-readiness"] as const;
+export const agentReadinessQueryKeyForHost = (hostId?: string) => hostId ? ["agent-readiness", hostId] as const : agentReadinessQueryKey;
 
-async function fetchAgentReadiness(): Promise<AgentReadiness> {
-	const { data, error } = await apiClient.GET("/api/v1/agents/readiness");
+async function fetchAgentReadiness(hostId?: string): Promise<AgentReadiness> {
+	const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).GET("/api/v1/agents/readiness");
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as AgentReadiness;
 }
@@ -18,8 +20,9 @@ async function fetchAgentReadiness(): Promise<AgentReadiness> {
 export async function ensureAgentReadiness(
 	agentIds: string[] = [],
 	purpose: AgentReadinessPurpose = "display",
+	hostId?: string,
 ): Promise<AgentReadiness> {
-	const { data, error } = await apiClient.POST("/api/v1/agents/readiness/ensure", {
+	const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).POST("/api/v1/agents/readiness/ensure", {
 		body: { agentIds, purpose },
 	});
 	if (error) throw new Error(apiErrorMessage(error));
@@ -36,8 +39,8 @@ export function mergeAgentReadiness(
 	return { agents: [...byID.values()].sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
-export function cacheAgentReadiness(queryClient: QueryClient, next: AgentReadiness): void {
-	queryClient.setQueryData<AgentReadiness>(agentReadinessQueryKey, (current) =>
+export function cacheAgentReadiness(queryClient: QueryClient, next: AgentReadiness, hostId?: string): void {
+	queryClient.setQueryData<AgentReadiness>(agentReadinessQueryKeyForHost(hostId), (current) =>
 		mergeAgentReadiness(current, next),
 	);
 }
@@ -54,18 +57,25 @@ export const agentReadinessQueryOptions = {
 	gcTime: Number.POSITIVE_INFINITY,
 };
 
-export function useAgentReadinessQuery(enabled = true) {
-	return useQuery({ ...agentReadinessQueryOptions, enabled });
+export function useAgentReadinessQuery(enabled = true, hostId?: string) {
+	return useQuery({
+		...agentReadinessQueryOptions,
+		queryKey: agentReadinessQueryKeyForHost(hostId),
+		queryFn: () => fetchAgentReadiness(hostId),
+		enabled,
+	});
 }
 
 export function useEnsureAgentReadiness({
 	agentIds = [],
 	enabled = true,
 	purpose = "display",
+	hostId,
 }: {
 	agentIds?: string[];
 	enabled?: boolean;
 	purpose?: AgentReadinessPurpose;
+	hostId?: string;
 } = {}): void {
 	const queryClient = useQueryClient();
 	const agentIDsKey = [...new Set(agentIds.filter(Boolean))].sort().join("\u0000");
@@ -77,9 +87,9 @@ export function useEnsureAgentReadiness({
 	useEffect(() => {
 		if (!enabled) return;
 		let active = true;
-		void ensureAgentReadiness(normalizedIDs, purpose)
+		void ensureAgentReadiness(normalizedIDs, purpose, hostId)
 			.then((next) => {
-				if (active) cacheAgentReadiness(queryClient, next);
+				if (active) cacheAgentReadiness(queryClient, next, hostId);
 			})
 			.catch(() => {
 				// Opportunistic: cached readiness remains useful and native launch is
@@ -88,5 +98,5 @@ export function useEnsureAgentReadiness({
 		return () => {
 			active = false;
 		};
-	}, [enabled, normalizedIDs, purpose, queryClient]);
+	}, [enabled, hostId, normalizedIDs, purpose, queryClient]);
 }

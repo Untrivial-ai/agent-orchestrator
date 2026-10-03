@@ -739,6 +739,19 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, fmt.Errorf("claim chat controller: %w", err)
 		}
 	}
+	if liveReconnect {
+		// A provider may have accepted a prompt before its ID could be bound.
+		// Its replayed events will be adopted separately; leave bound live work
+		// and queued intake intact while closing the unbound visible spinner.
+		for _, turn := range liveRows.Turns {
+			if turn.State != domain.TurnStateRunning || turn.ProviderTurnID != "" || turn.RolledBackAt != nil {
+				continue
+			}
+			if err := s.store.SettleUnboundRunningTurn(ctx, conversation.ID, cfg.SessionID, turn.ID, s.now()); err != nil {
+				s.log.Error("chat start: settle unbound running turn", "session", cfg.SessionID, "turn", turn.ID, "error", err)
+			}
+		}
+	}
 	providerBoundary := (*domain.ConversationBranch)(nil)
 	if providerBoundaryID != "" {
 		providerBoundary = &domain.ConversationBranch{
@@ -1059,6 +1072,10 @@ func (s *Service) Send(
 	msg ports.ChatUserMessage,
 ) (domain.ConversationTurn, error) {
 	record, err := s.requireChatSession(ctx, id)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	msg.ClientPayloadHash, err = clientPayloadHash(msg)
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}

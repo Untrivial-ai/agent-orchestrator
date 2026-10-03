@@ -9,7 +9,7 @@ export const TERMINAL_STATUS_LABEL: Record<MuxStatus, string> = {
 	connecting: "Connecting…",
 	open: "Live",
 	closed: "Reconnecting…",
-	error: "Can't reach your desktop",
+	error: "Can't reach your machine",
 };
 
 /** A missing PTY means the session was terminated, not that the link failed. */

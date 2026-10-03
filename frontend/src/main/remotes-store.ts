@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
-// The CLI's saved-remote store, shared verbatim so the UI and `ao --url` agree
-// on which hosts exist and never hold two copies of a connection password.
-// Format and the 0600 requirement come from backend/internal/cli/remote.go:32-47.
+// Saved desktop connections. Older records have no hostId and must be paired
+// again before a saved password can be sent to their address.
 export type RemoteEntry = {
 	label: string;
 	url: string;
 	password: string;
+	hostId?: string;
 };
 
 export class RemotesFilePermissionError extends Error {
@@ -46,6 +47,7 @@ export async function readRemotes(path: string): Promise<RemoteEntry[]> {
 // Write beside the existing file so interruption never truncates the only
 // saved copy. The temporary file is 0600 before its contents are written.
 async function writeRemotes(path: string, remotes: RemoteEntry[]): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	let renamed = false;
 	try {
@@ -73,7 +75,10 @@ function serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
 export async function addRemote(path: string, entry: RemoteEntry): Promise<void> {
 	return serializeMutation(async () => {
 		const existing = await readRemotes(path);
-		await writeRemotes(path, [...existing.filter((candidate) => candidate.url !== entry.url), entry]);
+		await writeRemotes(path, [
+			...existing.filter((candidate) => candidate.url !== entry.url && (!entry.hostId || candidate.hostId !== entry.hostId)),
+			entry,
+		]);
 	});
 }
 
@@ -91,6 +96,7 @@ export function applyRemoteChanges(entry: RemoteEntry, changes: RemoteChanges): 
 		label: changes.label ?? entry.label,
 		url: changes.url ?? entry.url,
 		password: changes.password ?? entry.password,
+		hostId: entry.hostId,
 	};
 }
 
@@ -104,7 +110,8 @@ export async function updateRemote(path: string, url: string, changes: RemoteCha
 		// row already sitting on the new url is absorbed rather than left as a twin.
 		const remotes = existing
 			.map((candidate) => (candidate === current ? updated : candidate))
-			.filter((candidate) => candidate === updated || candidate.url !== updated.url);
+			.filter((candidate) => candidate === updated
+				|| (candidate.url !== updated.url && (!updated.hostId || candidate.hostId !== updated.hostId)));
 		await writeRemotes(path, remotes);
 		return updated;
 	});

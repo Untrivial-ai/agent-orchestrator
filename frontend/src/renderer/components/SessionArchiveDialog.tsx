@@ -22,17 +22,10 @@ export function SessionArchiveDialog({
 	trigger: ReactElement;
 }) {
 	const { t } = useTranslation();
-	const title = session?.title;
 	// A cloud session's teardown is restorable too — the control plane keeps its
 	// conversation and work so it can be re-provisioned later.
 	const isCloud = session?.cloud !== undefined;
-	const body = isCloud
-		? title
-			? t("archive.bodyCloudNamed", { title })
-			: t("archive.bodyCloud")
-		: title
-			? t("archive.bodyNamed", { title })
-			: t("archive.body");
+	const body = isCloud ? t("archive.bodyCloud") : t("archive.body");
 	return (
 		<>
 			{trigger}
@@ -44,7 +37,7 @@ export function SessionArchiveDialog({
 				onConfirm={onConfirm}
 				onOpenChange={onOpenChange}
 				open={open}
-				title={title ? t("archive.dialogNamed", { title }) : t("archive.dialog")}
+				title={t("archive.dialog")}
 			/>
 		</>
 	);

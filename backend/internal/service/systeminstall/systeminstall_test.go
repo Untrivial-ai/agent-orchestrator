@@ -1039,6 +1039,15 @@ func TestRecoverInterruptsAndHydratesDurableJobs(t *testing.T) {
 	}
 	s := newTestService("darwin", "npm")
 	s.jobStore = store
+	s.installCapabilities = installCapabilitiesStub{prefix: "/Users/test/.npm", writable: true}
+	installCalls := 0
+	s.commands = commandRunnerFunc(func(context.Context, []string, io.Writer, io.Writer) error {
+		installCalls++
+		return nil
+	})
+	s.verifier = harnessVerifierFunc(func(context.Context, Target) (VerifyResult, error) {
+		return VerifyResult{ResolvedPath: "/Users/test/.npm/bin/codex"}, nil
+	})
 	if err := s.Recover(context.Background()); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -1048,6 +1057,13 @@ func TestRecoverInterruptsAndHydratesDurableJobs(t *testing.T) {
 	}
 	if job.Status != StatusInterrupted || job.FinishedAt == nil || job.Error == "" {
 		t.Fatalf("recovered job = %+v", job)
+	}
+	if _, err := s.StartAgent(context.Background(), TargetCodex, "npm"); err != nil {
+		t.Fatalf("retry interrupted install: %v", err)
+	}
+	waitForStatus(t, s, TargetCodex, StatusSucceeded)
+	if installCalls != 1 {
+		t.Fatalf("retry installer calls = %d, want 1", installCalls)
 	}
 }
 

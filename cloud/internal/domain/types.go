@@ -2,6 +2,8 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -194,6 +196,76 @@ func MergeProjectCoderConfig(config json.RawMessage, coder ProjectCoderConfig) (
 	}
 	merged["coder"] = encoded
 	return json.Marshal(merged)
+}
+
+// DefaultOrgCoderDurableRoot is the Coder workspace persistent-volume mount
+// point assumed when an organization's Coder config omits one. It mirrors the
+// mount the AO-maintained Coder templates use, so a bring-your-own org that does
+// not override it still provisions against a valid durable root.
+const DefaultOrgCoderDurableRoot = "/home/coder"
+
+// OrgCoderConfig is one organization's non-secret bring-your-own Coder
+// connection contract. It is stored as the config JSONB of the org's
+// ao_provider_connections row (provider="coder", label="default"); the API
+// token is deliberately NOT part of this struct — it is that row's
+// encrypted_secret. An org with this config points its coder sessions at its own
+// Coder deployment (URL/owner/template) instead of the deployment default.
+// Modeled on ProjectCoderConfig.
+type OrgCoderConfig struct {
+	BaseURL     string            `json:"baseUrl"`
+	Owner       string            `json:"owner"`
+	TemplateID  string            `json:"templateId"`
+	AgentName   string            `json:"agentName,omitempty"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+	DurableRoot string            `json:"durableRoot,omitempty"`
+	// EndpointServiceName and Region are optional PrivateLink coordinates for a
+	// Coder that lives in a private VPC. They are non-secret config AO ops reads to
+	// provision the VPC endpoint; the control plane does NOT use them at connection
+	// time. Both stay blank for a directly reachable Coder.
+	EndpointServiceName string `json:"endpointServiceName,omitempty"`
+	Region              string `json:"region,omitempty"`
+}
+
+// normalize trims the config's string fields and fills the durable-root default
+// so every encode and decode yields the same canonical, provisioning-ready
+// value regardless of what the caller supplied.
+func (c *OrgCoderConfig) normalize() {
+	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	c.Owner = strings.TrimSpace(c.Owner)
+	c.TemplateID = strings.TrimSpace(c.TemplateID)
+	c.AgentName = strings.TrimSpace(c.AgentName)
+	c.DurableRoot = strings.TrimSpace(c.DurableRoot)
+	c.EndpointServiceName = strings.TrimSpace(c.EndpointServiceName)
+	c.Region = strings.TrimSpace(c.Region)
+	if c.DurableRoot == "" {
+		c.DurableRoot = DefaultOrgCoderDurableRoot
+	}
+	if len(c.Parameters) == 0 {
+		c.Parameters = nil
+	}
+}
+
+// DecodeOrgCoderConfig reads an organization's Coder config from the config
+// JSONB of its provider connection. Unlike DecodeProjectCoderConfig the config
+// is stored directly (not wrapped in a "coder" envelope), because it is the
+// whole config column of a dedicated coder connection row.
+func DecodeOrgCoderConfig(config json.RawMessage) (OrgCoderConfig, error) {
+	if len(config) == 0 {
+		return OrgCoderConfig{}, errors.New("organization coder config is empty")
+	}
+	var cfg OrgCoderConfig
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return OrgCoderConfig{}, err
+	}
+	cfg.normalize()
+	return cfg, nil
+}
+
+// EncodeOrgCoderConfig renders an organization's Coder config to the config
+// JSONB stored on its provider connection. The token is never part of it.
+func EncodeOrgCoderConfig(cfg OrgCoderConfig) (json.RawMessage, error) {
+	cfg.normalize()
+	return json.Marshal(cfg)
 }
 
 type ClientEvent struct {

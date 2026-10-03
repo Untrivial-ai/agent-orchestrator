@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // out: what's worth asserting here is the order and completeness of the steps,
 // not their implementations (which have their own coverage).
 const calls: string[] = [];
+const unpairTargets: (typeof active | null)[] = [];
 // Lets a test make the push step fail the way a SecureStore write can.
 let unpairThrows: Error | null = null;
 let removeHostThrows: Error | null = null;
@@ -21,7 +22,8 @@ vi.mock("./push", () => ({
 	// forgetServer unpairs rather than merely unregistering: the phone is leaving
 	// this daemon, so its row must go, not just its push token. Unregistering
 	// would leave the old desktop listing a phone that has moved on.
-	unpairFromServer: vi.fn(async () => {
+	unpairFromServer: vi.fn(async (host: typeof active | null) => {
+		unpairTargets.push(host);
 		calls.push("unpairFromServer");
 		if (unpairThrows) throw unpairThrows;
 	}),
@@ -57,6 +59,7 @@ const { forgetServer } = await import("./disconnect");
 describe("forgetServer", () => {
 	beforeEach(() => {
 		calls.length = 0;
+		unpairTargets.length = 0;
 		unpairThrows = null;
 		removeHostThrows = null;
 		activeHostThrows = null;
@@ -66,6 +69,7 @@ describe("forgetServer", () => {
 	// device, still listing it as paired, and leave the password in the keystore.
 	it("unpairs, clears the config, and re-arms onboarding", async () => {
 		await forgetServer();
+		expect(unpairTargets).toEqual([active]);
 		expect(calls).toEqual([
 			"unpairFromServer",
 			"removeHost:h_active",
@@ -75,11 +79,10 @@ describe("forgetServer", () => {
 		]);
 	});
 
-	// The unpair call needs credentials that clearConfig would otherwise destroy,
-	// so the ordering is load-bearing, not incidental.
+	// The unpair call needs the selected host's token before removeHost deletes it.
 	it("unpairs before the credentials are thrown away", async () => {
 		await forgetServer();
-		expect(calls.indexOf("unpairFromServer")).toBeLessThan(calls.indexOf("clearConfig"));
+		expect(calls.indexOf("unpairFromServer")).toBeLessThan(calls.indexOf("removeHost:h_active"));
 	});
 
 	// unpairFromServer catches its own network failures, but its SecureStore
@@ -88,6 +91,7 @@ describe("forgetServer", () => {
 	it("still clears credentials when the push step throws", async () => {
 		unpairThrows = new Error("SecureStore unavailable");
 		await expect(forgetServer()).rejects.toThrow("SecureStore unavailable");
+		expect(unpairTargets).toEqual([active]);
 		expect(calls).toContain("clearConfig");
 		expect(calls).toContain("clearOnboardingSkipped");
 	});
@@ -96,6 +100,7 @@ describe("forgetServer", () => {
 		activeHostThrows = new Error("SecureStore unavailable");
 
 		await expect(forgetServer()).rejects.toThrow("SecureStore unavailable");
+		expect(unpairTargets).toEqual([null]);
 		expect(calls).toContain("unpairFromServer");
 		expect(calls).toContain("clearConfig");
 		expect(calls).toContain("clearOnboardingSkipped");
@@ -109,6 +114,7 @@ describe("forgetServer", () => {
 describe("forgetServer and the host list", () => {
 	beforeEach(() => {
 		calls.length = 0;
+		unpairTargets.length = 0;
 		unpairThrows = null;
 		removeHostThrows = null;
 		activeHostThrows = null;

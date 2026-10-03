@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,7 +53,7 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	after, err := parseEventsAfter(r)
 	if err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_AFTER",
-			"after must be a non-negative integer", nil)
+			"after must be a non-negative integer or latest", nil)
 		return
 	}
 	latestSeq, err := c.Source.LatestSeq(r.Context())
@@ -68,7 +67,8 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	// backlog, and since every connected client is reset at the same moment, they
 	// stampede together. Falling back to head loses at most the events in the gap,
 	// which clients recover from their next snapshot fetch.
-	if after > latestSeq {
+	startAtHead := r.URL.Query().Get("after") == "latest" && r.Header.Get("Last-Event-ID") == ""
+	if startAtHead || after > latestSeq {
 		after = latestSeq
 	}
 
@@ -101,6 +101,13 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	h.Set(eventAfterHeader, strconv.FormatInt(after, 10))
 	w.WriteHeader(http.StatusOK)
+	if startAtHead {
+		// Give EventSource a Last-Event-ID before the first live change so an
+		// immediate reconnect replays the gap instead of starting at head again.
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: cursor\ndata: {}\n\n", after); err != nil { //nolint:gosec // G705: an int64 formatted with %d cannot inject SSE fields.
+			return
+		}
+	}
 	flusher.Flush()
 
 	sentSeq := after
@@ -116,15 +123,15 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	// stream is instant directly. The bulk replay always arrives because it is
 	// large enough to flush on its own.
 	//
-	// A comment frame is the SSE no-op — clients ignore it and no cursor moves —
-	// and it carries any buffered event out with it.
+	// A named heartbeat lets remote clients verify that an intermediary actually
+	// delivers stream frames; it does not move the cursor.
 	heartbeat := time.NewTicker(eventsHeartbeatInterval)
 	defer heartbeat.Stop()
 
 	for {
 		select {
 		case <-heartbeat.C:
-			if _, err := io.WriteString(w, ":\n\n"); err != nil {
+			if _, err := fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n"); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -160,7 +167,9 @@ func (c *EventsController) replay(ctx context.Context, w http.ResponseWriter, fl
 
 func parseEventsAfter(r *http.Request) (int64, error) {
 	raw := r.URL.Query().Get("after")
-	if raw == "" {
+	if raw == "latest" || raw == "" {
+		// An EventSource reconnects to the same URL; its cursor must override
+		// this initial head sentinel or events during the gap would be lost.
 		raw = r.Header.Get("Last-Event-ID")
 	}
 	if raw == "" {

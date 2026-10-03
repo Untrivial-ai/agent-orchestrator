@@ -71,6 +71,7 @@ export function ReviewDiffBody({
 	filePath,
 	onActiveSelectionChange,
 	sessionId,
+	hostId,
 	split,
 	wrap,
 }: {
@@ -81,6 +82,7 @@ export function ReviewDiffBody({
 	filePath: string;
 	onActiveSelectionChange: (active: boolean) => void;
 	sessionId: string;
+	hostId?: string;
 	split: boolean;
 	wrap: boolean;
 }) {
@@ -94,6 +96,7 @@ export function ReviewDiffBody({
 			<ImageDiffView
 				path={detail.path}
 				sessionId={sessionId}
+				hostId={hostId}
 				split={split}
 				status={detail.status}
 				version={detailLoadedAt}

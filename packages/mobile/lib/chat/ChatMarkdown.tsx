@@ -7,6 +7,7 @@ import { openGitHub } from "../openGitHub";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { HighlightedCodeText } from "./HighlightedCodeText";
+import { allowsUnderscoreEmphasis } from "./inlineEmphasis";
 import { parseBlocks } from "./markdownBlocks";
 import { iconSize, microLabel, prose, radius, space, type } from "../tokens";
 
@@ -147,7 +148,9 @@ function inline(text: string, styles: ReturnType<typeof makeStyles>): ReactNode[
 	let match: RegExpExecArray | null;
 	while ((match = pattern.exec(text))) {
 		if (match.index > at) nodes.push(text.slice(at, match.index));
-		if ((match[2] && match[3]) || match[4] || match[11]) {
+		if ((match[7] || match[10]) && !allowsUnderscoreEmphasis(text, match.index, pattern.lastIndex)) {
+			nodes.push(match[0]);
+		} else if ((match[2] && match[3]) || match[4] || match[11]) {
 			const url = match[3] ?? match[4] ?? match[11];
 			const label = match[2] ?? url;
 			nodes.push(<MarkdownLink key={`${match.index}-link`} url={url} label={label} style={styles.link} />);

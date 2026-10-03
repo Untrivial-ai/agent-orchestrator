@@ -5,6 +5,13 @@ export type ProbeAnswer = { hostId: string };
 
 export type ProbeFn = (endpoint: Endpoint, signal: AbortSignal) => Promise<ProbeAnswer>;
 
+export class IncompatibleHostVersionError extends Error {
+	constructor(readonly hostId: string) {
+		super("AO versions are incompatible. Update AO on this phone and the machine.");
+		this.name = "IncompatibleHostVersionError";
+	}
+}
+
 export type RaceOptions = {
 	/**
 	 * How long, after the first successful answer, to keep waiting for a
@@ -26,7 +33,7 @@ export type RaceOutcome =
 	/** hostId is what actually answered, so a machine migrated without one can
 	 * record the identity it just learned. */
 	| { ok: true; endpoint: Endpoint; hostId: string }
-	| { ok: false; reason: "no-candidates" | "none-reachable" };
+	| { ok: false; reason: "no-candidates" | "none-reachable" | "incompatible" };
 
 /**
  * Probes every candidate at once and returns the best one that answers as the
@@ -69,6 +76,7 @@ export async function raceEndpoints(
 	let best: Endpoint | null = null;
 	let bestHostId = "";
 	let settled = 0;
+	let incompatible = false;
 	let done = false;
 	let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -82,7 +90,7 @@ export async function raceEndpoints(
 			controller.abort();
 			const result: RaceOutcome = best
 				? { ok: true, endpoint: best, hostId: bestHostId }
-				: { ok: false, reason: "none-reachable" };
+				: { ok: false, reason: incompatible ? "incompatible" : "none-reachable" };
 			if (isDev) {
 				console.log("[race] Race finished:", result);
 			}
@@ -120,6 +128,7 @@ export async function raceEndpoints(
 					if (endpointRank(endpoint.kind) === 0) finish();
 				})
 				.catch((err) => {
+					if (err instanceof IncompatibleHostVersionError && (expectedHostId === "" || err.hostId === expectedHostId)) incompatible = true;
 					if (isDev) {
 						console.log("[race] Endpoint failed:", `${endpoint.kind}://${endpoint.host}:${endpoint.port}`, err);
 					}

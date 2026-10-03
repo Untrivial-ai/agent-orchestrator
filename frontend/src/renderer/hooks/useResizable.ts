@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 type ResizableConstraint = number | (() => number);
 
@@ -25,6 +25,14 @@ interface UseResizableOptions {
 	onExpand?: () => void;
 	/** Optional one-time floor when restoring a saved width for a new panel profile. */
 	restoreMin?: number;
+	/**
+	 * Grow a width clamped by a live `max` (a restore or reset in a narrow window
+	 * or zoom) back toward the preferred width when the window resizes. Grow
+	 * only: narrowing leaves the var to the consumer's CSS max-width, so a later
+	 * split widening (e.g. collapsing a sidebar) still recovers. Only window
+	 * resizes count: a sibling panel's spring must not resize this one per frame.
+	 */
+	reclampOnWindowResize?: boolean;
 	/** Pointer movement needed before a collapsed rail drag expands. */
 	expandDragThreshold?: number;
 }
@@ -38,10 +46,12 @@ interface UseResizableOptions {
  * Single owner of clamped width (do not regress):
  * - `apply` is write-only: clamp with `min`/`max` only. Callers (esp. inspector)
  *   must pass a live `max` callback — never cache a loose placeholder like
- *   `defaultWidth * 2` as the drag ceiling.
- * - On pointerdown, seed from the painted box when it disagrees with the var
- *   (CSS max-width can hold paint below the custom property).
- * - Drag applies synchronously so ResizeHandle can follow the painted border 1:1.
+ *   `defaultWidth * 2` as the drag ceiling. The unclamped preference is kept
+ *   separately so a window resize can grow a narrow-clamped width back.
+ * - On pointerdown, seed the drag from the painted box when it disagrees with
+ *   the var (CSS max-width can hold paint below the custom property). Nothing is
+ *   written or persisted until the width actually changes.
+ * - Drag applies once per frame; ResizeHandle follows the painted border before paint.
  * - Dragging never auto-collapses: clamp at `min`; collapse stays on explicit UI.
  */
 export function useResizable({
@@ -54,9 +64,12 @@ export function useResizable({
 	edge,
 	onExpand,
 	restoreMin,
+	reclampOnWindowResize = false,
 	expandDragThreshold = 8,
 }: UseResizableOptions) {
 	const widthRef = useRef(defaultWidth);
+	// The width the user asked for, before the live clamp.
+	const preferredWidthRef = useRef(defaultWidth);
 	const frameRef = useRef<number | null>(null);
 	const pendingWidthRef = useRef<number | null>(null);
 	const appliedTargetsRef = useRef(new Set<HTMLElement>());
@@ -77,7 +90,9 @@ export function useResizable({
 			widthRef.current = clamped;
 			const targets = cssTargets();
 			for (const target of targets) {
-				target.style.setProperty(cssVar, `${clamped}px`);
+				if (target.style.getPropertyValue(cssVar) !== `${clamped}px`) {
+					target.style.setProperty(cssVar, `${clamped}px`);
+			}
 				appliedTargetsRef.current.add(target);
 			}
 		},
@@ -113,7 +128,8 @@ export function useResizable({
 	useLayoutEffect(() => {
 		const saved = Number(window.localStorage.getItem(storageKey));
 		const restored = Number.isFinite(saved) && saved > 0 ? saved : defaultWidth;
-		apply(restoreMin === undefined ? restored : Math.max(restoreMin, restored));
+		preferredWidthRef.current = restoreMin === undefined ? restored : Math.max(restoreMin, restored);
+		apply(preferredWidthRef.current);
 		return () => {
 			activeDragCleanupRef.current?.();
 			if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
@@ -121,6 +137,26 @@ export function useResizable({
 			appliedTargetsRef.current.clear();
 		};
 	}, [apply, cssVar, defaultWidth, restoreMin, storageKey]);
+
+	useEffect(() => {
+		if (!reclampOnWindowResize) return;
+		let frame: number | null = null;
+		const onResize = () => {
+			if (frame !== null) return;
+			frame = window.requestAnimationFrame(() => {
+				frame = null;
+				// A drag owns the width until it ends.
+				if (activeDragCleanupRef.current) return;
+				const next = Math.min(maxValue(), Math.max(minValue(), preferredWidthRef.current));
+				if (next > widthRef.current + 0.5) apply(next);
+			});
+		};
+		window.addEventListener("resize", onResize);
+		return () => {
+			window.removeEventListener("resize", onResize);
+			if (frame !== null) window.cancelAnimationFrame(frame);
+		};
+	}, [apply, maxValue, minValue, reclampOnWindowResize]);
 
 	const onPointerDown = useCallback(
 		(event: React.PointerEvent<HTMLElement>) => {
@@ -134,11 +170,14 @@ export function useResizable({
 			const visualWidth = cssTargets()
 				.map((target) => target.getBoundingClientRect().width)
 				.find((width) => width > 0);
-			if (visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5) {
-				apply(visualWidth);
-			}
-			const startWidth = Math.min(maxValue(), Math.max(minValue(), widthRef.current));
+			const seedWidth =
+				visualWidth !== undefined && Math.abs(visualWidth - widthRef.current) > 0.5 ? visualWidth : widthRef.current;
+			const startWidth = Math.min(maxValue(), Math.max(minValue(), seedWidth));
 			const sign = edge === "right" ? 1 : -1;
+			// Nothing is written or persisted until the width actually changes: a
+			// press, or a drag in a window too narrow to resize, must not pin the
+			// panel at its narrow-window width.
+			let changed = false;
 			document.body.classList.add("is-resizing-x");
 
 			const finish = () => {
@@ -149,16 +188,23 @@ export function useResizable({
 				flushPending();
 				document.body.classList.remove("is-resizing-x");
 				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
-				window.localStorage.setItem(storageKey, String(widthRef.current));
+				if (changed) {
+					preferredWidthRef.current = widthRef.current;
+					window.localStorage.setItem(storageKey, String(widthRef.current));
+				}
 				if (activeDragCleanupRef.current === finish) activeDragCleanupRef.current = null;
 			};
 			const onEnd = (e: PointerEvent) => {
 				if (e.pointerId === pointerId) finish();
 			};
-			// Sync apply during drag so the grip (following the painted border) stays 1:1.
+			// Keep only the newest pointer position for the next paint.
 			// Collapse stays on explicit controls — `apply` clamps at `min`.
 			const onMove = (e: PointerEvent) => {
-				apply(startWidth + sign * (e.clientX - startX));
+				if (e.pointerId !== pointerId) return;
+				const next = Math.min(maxValue(), Math.max(minValue(), startWidth + sign * (e.clientX - startX)));
+				if (!changed && Math.abs(next - startWidth) < 0.5) return;
+				changed = true;
+				applyOnFrame(next);
 			};
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onEnd);
@@ -166,7 +212,7 @@ export function useResizable({
 			window.addEventListener("blur", finish);
 			activeDragCleanupRef.current = finish;
 		},
-		[apply, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
+		[apply, applyOnFrame, cssTargets, edge, flushPending, maxValue, minValue, storageKey],
 	);
 
 	const onCollapsedPointerDown = useCallback(
@@ -188,13 +234,17 @@ export function useResizable({
 				flushPending();
 				document.body.classList.remove("is-resizing-x");
 				if (captureTarget.hasPointerCapture?.(pointerId)) captureTarget.releasePointerCapture(pointerId);
-				if (expanded) window.localStorage.setItem(storageKey, String(widthRef.current));
+				if (expanded) {
+					preferredWidthRef.current = widthRef.current;
+					window.localStorage.setItem(storageKey, String(widthRef.current));
+				}
 				if (activeDragCleanupRef.current === finish) activeDragCleanupRef.current = null;
 			};
 			const onEnd = (e: PointerEvent) => {
 				if (e.pointerId === pointerId) finish();
 			};
 			const onMove = (e: PointerEvent) => {
+				if (e.pointerId !== pointerId) return;
 				const delta = sign * (e.clientX - startX);
 				if (delta < expandDragThreshold) return;
 				if (!expanded) {
@@ -214,6 +264,7 @@ export function useResizable({
 
 	/** Double-click the handle to reset to the default width. */
 	const onDoubleClick = useCallback(() => {
+		preferredWidthRef.current = defaultWidth;
 		apply(defaultWidth);
 		window.localStorage.setItem(storageKey, String(defaultWidth));
 	}, [apply, defaultWidth, storageKey]);

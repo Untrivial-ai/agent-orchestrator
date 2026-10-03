@@ -73,7 +73,7 @@ test("settings refresh even fresh cached cues on every opening, including extern
 	view.rerender(null);
 	vi.mocked(cues.fetchProjectCues).mockResolvedValue([]);
 	view.rerender(<CuesSettings projectId="project" />);
-	await screen.findByText(/No cues yet/);
+	await screen.findByText("No cues set up yet");
 	expect(cues.fetchProjectCues).toHaveBeenCalledTimes(3);
 });
 

@@ -83,11 +83,7 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 	// (#4960: Codex -> Claude Code -> Cursor). Previously the configured choice
 	// was ignored, so a project set to Claude Code still launched Codex whenever
 	// a Codex credential happened to be connected.
-	const [orgCredentials, personalCredentials] = await Promise.all([
-		client.listProviderConnections(orgId),
-		client.listUserProviderConnections(),
-	]);
-	const connections = [...orgCredentials.providerConnections, ...personalCredentials.providerConnections];
+	const { providerConnections: connections } = await client.listUserProviderConnections();
 	// The project's configured orchestrator agent is an optional preference. Load
 	// it separately and tolerate a failure: it must not block a spawn that the
 	// connected-credential priority could still satisfy. A fetch error (or the

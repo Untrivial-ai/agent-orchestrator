@@ -89,6 +89,7 @@ func (c *PushController) register(w http.ResponseWriter, r *http.Request) {
 		Token:      req.Token,
 		Platform:   req.Platform,
 		DeviceName: req.DeviceName,
+		HostName:   req.HostName,
 		CreatedAt:  now,
 		LastSeenAt: now,
 	}

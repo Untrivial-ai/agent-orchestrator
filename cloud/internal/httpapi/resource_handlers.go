@@ -534,6 +534,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		effectiveProvider = s.sandboxProvider
 	}
 	var coderOpts *sandbox.CoderSessionOptions
+	var coderOverride *sandbox.CoderDeploymentOverride
 	if effectiveProvider == sandbox.ProviderCoder {
 		project, projectErr := s.store.GetProject(r.Context(), principalFrom(r), orgID, request.ProjectID)
 		if projectErr != nil {
@@ -547,11 +548,47 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 				StartupScript: cfg.StartupScript,
 			}
 		}
+		// A bring-your-own-Coder organization points its coder sessions at its own
+		// Coder deployment. When one is configured, bind the session to that
+		// connection (so the row carries provider_connection_id and the resolver
+		// decrypts the org's token) and stamp the org's non-secret coder fields
+		// into the plan in place of the deployment default. With no org connection
+		// the deployment default is kept — existing deployment-level coder is
+		// untouched.
+		if pcStore, ok := s.store.(providerConnectionStore); ok {
+			connections, connErr := pcStore.ListProviderConnections(r.Context(), principalFrom(r), orgID)
+			if connErr != nil {
+				s.writeStoreError(w, r, connErr)
+				return
+			}
+			for _, connection := range connections {
+				if connection.Provider != sandbox.ProviderCoder ||
+					connection.Label != defaultAgentConnectionLabel {
+					continue
+				}
+				cfg, decodeErr := domain.DecodeOrgCoderConfig(connection.Config)
+				if decodeErr != nil {
+					s.logger.Error("decode organization coder config", "error", decodeErr, "request_id", requestID(r))
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "The organization's Coder configuration is invalid.")
+					return
+				}
+				request.SandboxProviderConnectionID = connection.ID
+				coderOverride = &sandbox.CoderDeploymentOverride{
+					BaseURL:     cfg.BaseURL,
+					Owner:       cfg.Owner,
+					TemplateID:  cfg.TemplateID,
+					AgentName:   cfg.AgentName,
+					Parameters:  cfg.Parameters,
+					DurableRoot: cfg.DurableRoot,
+				}
+				break
+			}
+		}
 	}
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlanForProviderWithCoder(request.Harness, request.Provider, coderOpts)
+	plan, err := s.provisioning.SessionPlanForProviderWithCoder(request.Harness, request.Provider, coderOpts, coderOverride)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(

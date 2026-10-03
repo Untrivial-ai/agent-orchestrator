@@ -6,6 +6,7 @@ import { groupSessions, type BoardSection } from "./agentsView";
 import type { DashboardSession } from "./api";
 import { BoardRowTransition } from "./BoardRowTransition";
 import { haptics } from "./haptics";
+import { hostedProjectKey, hostedRowKey, hostedSessionKey, sessionHostId } from "./hostedRows";
 import { useApp } from "./store";
 import type { Theme } from "./theme";
 import { statusVisual } from "./theme";
@@ -98,7 +99,7 @@ export function WorkerBoardList({
 	identityKey?: string;
 }) {
 	const t = useTheme();
-	const { projects, kill, renameWorker, setWorkerPinned, restore, resumeAgent } = useApp();
+	const { projects, allProjects, hostStates, kill, renameWorker, setWorkerPinned, restore, resumeAgent } = useApp();
 	const [renamingWorkerId, setRenamingWorkerId] = useState<string>();
 	const [activeSwipeId, setActiveSwipeId] = useState<string>();
 	const activeSwipeRef = useRef<{ id: string; close(): void } | undefined>(undefined);
@@ -114,18 +115,26 @@ export function WorkerBoardList({
 	const nowBucket = Math.floor(Date.now() / 60_000);
 
 	const projectNames = useMemo(
-		() => new Map(projects.map((project) => [project.id, project.name])),
-		[projects],
+		() => new Map([...projects, ...allProjects].map((project) => [hostedProjectKey(project), project.name])),
+		[projects, allProjects],
 	);
+	const multipleHosts = hostStates.length > 1;
+	const projectNameFor = useCallback((session: DashboardSession) => {
+		const hostId = sessionHostId(session);
+		const name = projectNames.get(hostId ? hostedRowKey(hostId, session.projectId) : session.projectId) ?? session.projectId;
+		const hostName = "hostName" in session && typeof session.hostName === "string" ? session.hostName : undefined;
+		const offline = hostStates.find((host) => host.hostId === hostId)?.connection === "closed";
+		return multipleHosts && hostName ? `${name ? `${name} · ` : ""}${hostName}${offline ? " (offline)" : ""}` : name;
+	}, [hostStates, multipleHosts, projectNames]);
 	const filteredSessions = useMemo(
 		() =>
 			filterWorkerSessions(
 				sessions,
 				query,
-				(projectId) => projectNames.get(projectId) ?? projectId,
+				(_projectId, session) => projectNameFor(session),
 				(status) => statusVisual(t, status).label,
 			),
-		[sessions, query, projectNames, t],
+		[sessions, query, projectNameFor, t],
 	);
 	const { pinned, sections, archived } = useMemo(() => groupSessions(t, sessions), [t, sessions]);
 	const filteredGroups = useMemo(() => groupSessions(t, filteredSessions), [t, filteredSessions]);
@@ -156,7 +165,7 @@ export function WorkerBoardList({
 				if (section.zone === "archive") {
 					return [
 						{ kind: "archive", key: "header:archive" } as const,
-						...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
+						...section.data.map((session) => ({ kind: "session", key: hostedSessionKey(session), session }) as const),
 					];
 				}
 				const collapsible = !ALWAYS_OPEN.has(section.zone);
@@ -164,7 +173,7 @@ export function WorkerBoardList({
 				return [
 					{ kind: "header", key: `header:${section.zone}`, label: section.label, open, collapsible } as const,
 					...(open
-						? section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const)
+						? section.data.map((session) => ({ kind: "session", key: hostedSessionKey(session), session }) as const)
 						: []),
 				];
 			}),
@@ -192,7 +201,7 @@ export function WorkerBoardList({
 
 	const updateWorkerPin = useCallback(async (session: DashboardSession, pinned: boolean) => {
 		try {
-			await setWorkerPinned(session.id, pinned);
+			await setWorkerPinned(session.id, pinned, sessionHostId(session));
 			haptics.success();
 		} catch (cause) {
 			haptics.error();
@@ -206,7 +215,7 @@ export function WorkerBoardList({
 	const runWorkerRecovery = useCallback(async (session: DashboardSession, kind: "resume" | "restore") => {
 		haptics.tap();
 		try {
-			await (kind === "resume" ? resumeAgent(session.id) : restore(session.id));
+			await (kind === "resume" ? resumeAgent(session.id, sessionHostId(session)) : restore(session.id, sessionHostId(session)));
 			haptics.success();
 		} catch (cause) {
 			haptics.error();
@@ -224,7 +233,7 @@ export function WorkerBoardList({
 			`This terminates ${session.displayName?.trim() || "this worker"}. Its conversation and worktree are preserved.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				{ text: "Delete session", style: "destructive", onPress: () => void kill(session.id).catch(() => {}) },
+				{ text: "Delete session", style: "destructive", onPress: () => void kill(session.id, sessionHostId(session)).catch(() => {}) },
 			],
 		);
 	}, [kill]);
@@ -266,27 +275,29 @@ export function WorkerBoardList({
 							</BoardRowTransition>
 						);
 					}
-					const session = item.session;
-						return (
-							<BoardRowTransition>
-								<WorkerListRow
-									nowBucket={nowBucket}
-									session={session}
-								projectName={showProject ? projectNames.get(session.projectId) : session.harness || "Agent"}
-								isRenaming={renamingWorkerId === session.id}
-								activeSwipeId={activeSwipeId}
-								onSwipeOpen={openExclusiveSwipe}
-								onSwipeClose={closeExclusiveSwipe}
-								onRenameStart={() => setRenamingWorkerId(session.id)}
-								onRenameCancel={() => setRenamingWorkerId(undefined)}
-								onRename={(title) => renameWorker(session.id, title)}
-								onSetPinned={(next) => updateWorkerPin(session, next)}
-								onDelete={() => confirmDeleteSession(session)}
-								onResume={() => runWorkerRecovery(session, "resume")}
-								onRestore={() => runWorkerRecovery(session, "restore")}
-							/>
-						</BoardRowTransition>
-					);
+				const session = item.session;
+				const rowKey = hostedSessionKey(session);
+				return (
+					<BoardRowTransition>
+						<WorkerListRow
+							nowBucket={nowBucket}
+							session={session}
+							rowKey={rowKey}
+							projectName={showProject ? projectNameFor(session) : session.harness || "Agent"}
+							isRenaming={renamingWorkerId === rowKey}
+							activeSwipeId={activeSwipeId}
+							onSwipeOpen={openExclusiveSwipe}
+							onSwipeClose={closeExclusiveSwipe}
+							onRenameStart={() => setRenamingWorkerId(rowKey)}
+							onRenameCancel={() => setRenamingWorkerId(undefined)}
+							onRename={(title) => renameWorker(session.id, title, sessionHostId(session))}
+							onSetPinned={(next) => updateWorkerPin(session, next)}
+							onDelete={() => confirmDeleteSession(session)}
+							onResume={() => runWorkerRecovery(session, "resume")}
+							onRestore={() => runWorkerRecovery(session, "restore")}
+						/>
+					</BoardRowTransition>
+				);
 				}}
 			/>
 		</LayoutAnimationConfig>

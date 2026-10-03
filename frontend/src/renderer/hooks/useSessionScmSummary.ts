@@ -2,6 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import type { components } from "../../api/schema";
 import { apiClient } from "../lib/api-client";
+import { clientForHost } from "../lib/host-clients";
+import { LOCAL_HOST } from "../lib/hosts";
 import type { CloudCpPullRequestSummary } from "../lib/cloud-cp";
 import { createRendererCloudCpClient } from "../lib/cloud-cp/renderer-client";
 import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
@@ -10,11 +12,11 @@ import { useSettings } from "./useSettings";
 export type SessionPRSummary = components["schemas"]["SessionPRSummary"];
 export type SessionPRReference = components["schemas"]["SessionPRReference"];
 
-export const sessionScmSummaryQueryKey = (sessionId?: string) =>
-	sessionId ? (["session-scm-summary", sessionId] as const) : (["session-scm-summary"] as const);
+export const sessionScmSummaryQueryKey = (sessionId?: string, hostId?: string) =>
+	sessionId ? (["session-scm-summary", hostId ?? LOCAL_HOST, sessionId] as const) : (["session-scm-summary"] as const);
 
-export async function fetchSessionScmSummary(sessionId: string) {
-	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/pr", {
+export async function fetchSessionScmSummary(sessionId: string, hostId?: string) {
+	const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).GET("/api/v1/sessions/{sessionId}/pr", {
 		params: { path: { sessionId } },
 	});
 	if (error) throw error;
@@ -38,12 +40,13 @@ export function cloudPRSummaryToSessionPRSummary(
 	};
 }
 
-export function sessionScmSummaryQueryOptions(sessionId: string) {
+export function sessionScmSummaryQueryOptions(sessionId: string, hostId?: string) {
 	return {
-		queryKey: sessionScmSummaryQueryKey(sessionId),
+		queryKey: sessionScmSummaryQueryKey(sessionId, hostId),
 		enabled: Boolean(sessionId),
-		queryFn: () => fetchSessionScmSummary(sessionId),
+		queryFn: () => fetchSessionScmSummary(sessionId, hostId),
 		retry: 1,
+		...(hostId ? { refetchInterval: 15_000 } : {}),
 	};
 }
 
@@ -52,8 +55,9 @@ export function useSessionScmSummary(
 	enabled = true,
 	cloudOrgId?: string,
 	cloudAutoInjectCI = false,
+	hostId?: string,
 ) {
-	const { settings } = useSettings();
+	const { settings } = useSettings(undefined, Boolean(cloudOrgId));
 	const baseUrl = settings?.cloudControlPlaneUrl ?? "";
 	const cloudClient = useMemo(() => createRendererCloudCpClient(baseUrl), [baseUrl]);
 	const cloud = Boolean(cloudOrgId);
@@ -61,8 +65,8 @@ export function useSessionScmSummary(
 	const queryKey = useMemo(
 		() => cloud
 			? ["cloud-session-scm-summary", baseUrl, cloudOrgId, sessionId] as const
-			: sessionScmSummaryQueryKey(sessionId),
-		[baseUrl, cloud, cloudOrgId, sessionId],
+			: sessionScmSummaryQueryKey(sessionId, hostId),
+		[baseUrl, cloud, cloudOrgId, hostId, sessionId],
 	);
 	useEffect(() => {
 		if (!enabled || !cloudOrgId || !sessionId || baseUrl === "") return;
@@ -88,7 +92,7 @@ export function useSessionScmSummary(
 		queryKey,
 		enabled: enabled && Boolean(sessionId) && (!cloud || baseUrl !== ""),
 		queryFn: async () => {
-			if (!cloudOrgId) return fetchSessionScmSummary(sessionId!);
+			if (!cloudOrgId) return fetchSessionScmSummary(sessionId!, hostId);
 			const response = await cloudClient.listSessionPullRequests(cloudOrgId, sessionId!);
 			return {
 				prs: response.pullRequests.map((pr) => cloudPRSummaryToSessionPRSummary(pr, cloudAutoInjectCI)),
@@ -96,5 +100,6 @@ export function useSessionScmSummary(
 			};
 		},
 		retry: 1,
+		...(hostId ? { refetchInterval: 15_000 } : {}),
 	});
 }

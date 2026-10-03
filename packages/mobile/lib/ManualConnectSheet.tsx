@@ -1,11 +1,14 @@
 import { Feather } from "./icons";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";
-import { DEFAULT_CONFIG, loadConfig, saveConfig, type ServerConfig } from "./config";
-import { saveHost, setActiveHost } from "./hosts";
-import { adoptManualConnection } from "./manualConnect";
-import { probeIdentity } from "./connectRuntime";
+import { DEFAULT_CONFIG, saveConfig, type ServerConfig } from "./config";
+import { saveHost, setActiveHost, renameHost, type Host } from "./hosts";
+import { adoptManualConnection, editedManualHost } from "./manualConnect";
+import { configForEndpoint } from "./connect";
+import { normalizeServerHost } from "./endpoints";
+import { probeEndpoint, probeIdentity } from "./connectRuntime";
+import { IncompatibleHostVersionError } from "./race";
 import {
 	classifyConnectionFailure,
 	describeConnectionFailure,
@@ -20,34 +23,64 @@ import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry } from "./telemetry/runtime";
 import { iconSize, space, touchTarget, type } from "./tokens";
 
-// The typing fallback behind the QR scanner: Tailscale users and anyone whose
-// desktop isn't in front of them. Deliberately narrower than the Settings form —
-// it omits the legacy "TERMINAL PORT" (`muxPort`), which is unused against the
-// Go daemon, and it collapses Settings' three buttons ("Scan QR", "Test
-// connection", "Save & connect") into one: during onboarding there is no reason
-// to make someone test and save as separate acts.
-export function ManualConnectSheet({ onConnected }: { onConnected: () => void }) {
+// The typing fallback behind the QR scanner, also reused to edit a pairing.
+// The legacy mux port is unused against the Go daemon, so it stays hidden.
+export function ManualConnectSheet({ onConnected, editingHost, editingEndpointIndex = 0 }: {
+	onConnected: () => void;
+	editingHost?: Host;
+	editingEndpointIndex?: number;
+}) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	const [cfg, setCfg] = useState<ServerConfig>(DEFAULT_CONFIG);
+	// New pairings start blank; editing preloads only the pairing the user selected.
+	const [cfg, setCfg] = useState<ServerConfig>(() => {
+		const endpoint = editingHost?.endpoints[editingEndpointIndex];
+		return endpoint ? configForEndpoint(endpoint, editingHost.token, editingHost.id) : { ...DEFAULT_CONFIG, password: editingHost?.token ?? "" };
+	});
+	const [machineName, setMachineName] = useState(editingHost?.name ?? "");
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<ConnectionErrorCopy | null>(null);
 	const [showPassword, setShowPassword] = useState(false);
-
-	// Load whatever is already saved when the sheet opens, so a user who closes it
-	// to re-try the scanner doesn't lose what they typed. Mount is the open now
-	// that this is a route rather than an always-rendered component.
-	useEffect(() => {
-		loadConfig().then(setCfg);
-	}, []);
 
 	const set = (k: keyof ServerConfig) => (v: string) => setCfg((prev) => ({ ...prev, [k]: v }));
 
 	async function connect() {
 		setBusy(true);
 		setFailure(null);
-		const target = { ...cfg, host: cfg.host.trim() };
+		const target = { ...cfg, host: normalizeServerHost(cfg.host), httpPort: cfg.httpPort.trim() };
 		try {
+			if (editingHost) {
+				const edited = editedManualHost(editingHost, target, machineName, editingEndpointIndex);
+				const before = editingHost.endpoints[editingEndpointIndex];
+				const after = edited.endpoints[editingEndpointIndex];
+				const connectionChanged = !before || before.host !== after.host || before.port !== after.port ||
+					before.secure !== after.secure || editingHost.token !== target.password;
+				if (connectionChanged) {
+					// Check identity before presenting a stored password to a new address.
+					const { hostId } = await probeEndpoint(after, new AbortController().signal);
+					if (editingHost.id && hostId !== editingHost.id) {
+						setFailure({
+							title: "Different machine",
+							message: "That address belongs to another machine. This pairing was not changed.",
+							icon: "alert-circle",
+							showLocalNetworkHint: false,
+						});
+						haptics.warning();
+						return;
+					}
+					await pingServer({ ...target, hostId: editingHost.id || hostId });
+					await saveHost(edited);
+				} else if (edited.name !== editingHost.name) {
+					await renameHost(editingHost.id, edited.name);
+				}
+				haptics.success();
+				onConnected();
+				return;
+			}
+			// Identity is public; reject unsupported hosts before presenting a password.
+			let hostId = "";
+			try { hostId = await probeIdentity(target); }
+			catch (error) { if (error instanceof IncompatibleHostVersionError) throw error; }
 			// Verify BEFORE persisting. pingServer takes the config it is handed, so
 			// nothing needs to be saved to test it — and saving first would leave
 			// known-bad credentials on disk. The background poller retries every 8s,
@@ -60,36 +93,44 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 			// left resolution reconnecting the previously active machine on the
 			// next launch, so a manual connection silently did not stick.
 			await adoptManualConnection(target, {
-				identity: async (c) => {
-					try {
-						return await probeIdentity(c);
-					} catch {
-						return ""; // Older daemon, or an endpoint that cannot say: still worth storing.
-					}
-				},
+				identity: async () => hostId,
 				saveHost,
 				setActiveHost,
-			});
+			}, machineName);
 			mobileTelemetry()?.capture(MOBILE_EVENTS.paired, { method: "manual" });
 			haptics.success();
 			onConnected();
 		} catch (e) {
 			haptics.warning();
-			const status = e instanceof ApiError ? e.status : undefined;
-			setFailure(
-				describeConnectionFailure(classifyConnectionFailure(status), {
-					host: target.host,
-					port: target.httpPort,
-					platform: Platform.OS,
-				}),
-			);
+			const status = e instanceof IncompatibleHostVersionError ? 426 : e instanceof ApiError ? e.status : undefined;
+			const copy = describeConnectionFailure(classifyConnectionFailure(status), {
+				host: target.host,
+				port: target.httpPort,
+				platform: Platform.OS,
+			});
+			setFailure(editingHost && classifyConnectionFailure(status) === "auth"
+				? { ...copy, message: "That password was rejected. Check it and try again." }
+				: copy);
 		} finally {
 			setBusy(false);
 		}
 	}
 
+	const validPort = /^\d+$/.test(cfg.httpPort) && Number(cfg.httpPort) >= 1 && Number(cfg.httpPort) <= 65535;
+	const title = editingHost ? "Edit connection" : "Connect manually";
+	const subtitle = editingHost
+		? "Update this machine's name, address, port, password, or TLS setting."
+		: "Enter the address and password from Connect Mobile or ao remote-host enable.";
 	const form = (
 		<>
+			<Field
+				label={editingHost ? "MACHINE NAME" : "MACHINE NAME (OPTIONAL)"}
+				value={machineName}
+				onChangeText={setMachineName}
+				placeholder="AzureLinux"
+				maxLength={48}
+				returnKeyType="next"
+			/>
 			<Field
 				label="HOST"
 				value={cfg.host}
@@ -159,10 +200,10 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 			) : null}
 
 			<Button
-				title="Connect"
-				icon="link"
+				title={editingHost ? "Save changes" : "Connect"}
+				icon={editingHost ? "check" : "link"}
 				loading={busy}
-				disabled={!cfg.host.trim()}
+				disabled={!cfg.host.trim() || !validPort || (!!editingHost && !machineName.trim())}
 				onPress={connect}
 				style={{ marginTop: space.lg }}
 			/>
@@ -181,8 +222,8 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				keyboardShouldPersistTaps="handled"
 			>
 				<SheetHeader
-					title="Connect manually"
-					subtitle="Enter your computer's address from AO → Settings → Connect Mobile."
+					title={title}
+					subtitle={subtitle}
 				/>
 				{form}
 			</ScrollView>
@@ -191,7 +232,7 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 
 	// iOS lifts a presented form sheet over the keyboard by itself.
 	return (
-		<SheetScreen title="Connect manually" subtitle="Enter your computer's address from AO → Settings → Connect Mobile.">
+		<SheetScreen title={title} subtitle={subtitle}>
 			{form}
 		</SheetScreen>
 	);

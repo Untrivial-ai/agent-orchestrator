@@ -9,16 +9,25 @@ const { getApiBaseUrlMock, hasTrustedApiBaseUrlMock, subscribeApiBaseUrlMock, un
 		unsubscribeBaseUrlMock: vi.fn(),
 	}),
 );
+const { baseUrlForHostMock, subscribeConnectedHostsMock } = vi.hoisted(() => ({
+	baseUrlForHostMock: vi.fn((_hostId: string): string | undefined => undefined),
+	subscribeConnectedHostsMock: vi.fn(),
+}));
 
 vi.mock("./api-client", () => ({
 	getApiBaseUrl: getApiBaseUrlMock,
 	hasTrustedApiBaseUrl: hasTrustedApiBaseUrlMock,
 	subscribeApiBaseUrl: subscribeApiBaseUrlMock,
 }));
+vi.mock("./host-clients", () => ({
+	baseUrlForHost: baseUrlForHostMock,
+	subscribeConnectedHosts: subscribeConnectedHostsMock,
+}));
 
 import { getWorkspaceFileConnectionState, subscribeWorkspaceFileChanges } from "./workspace-file-events";
 
 let baseUrlListener: (() => void) | undefined;
+let hostListeners: Array<() => void> = [];
 
 class EventSourceStub {
 	static instances: EventSourceStub[] = [];
@@ -63,6 +72,7 @@ beforeEach(() => {
 	EventSourceStub.instances = [];
 	EventSourceStub.throwNext = false;
 	baseUrlListener = undefined;
+	hostListeners = [];
 	getApiBaseUrlMock.mockReset().mockReturnValue("http://127.0.0.1:3001");
 	hasTrustedApiBaseUrlMock.mockReset().mockReturnValue(true);
 	subscribeApiBaseUrlMock.mockReset().mockImplementation((listener: () => void) => {
@@ -70,6 +80,11 @@ beforeEach(() => {
 		return unsubscribeBaseUrlMock;
 	});
 	unsubscribeBaseUrlMock.mockReset();
+	baseUrlForHostMock.mockReset().mockReturnValue(undefined);
+	subscribeConnectedHostsMock.mockReset().mockImplementation((listener: () => void) => {
+		hostListeners.push(listener);
+		return () => { hostListeners = hostListeners.filter((candidate) => candidate !== listener); };
+	});
 	(globalThis as unknown as { EventSource: unknown }).EventSource = EventSourceStub;
 });
 
@@ -80,6 +95,52 @@ afterEach(() => {
 });
 
 describe("subscribeWorkspaceFileChanges", () => {
+	it("polls while probing, then uses SSE after a delivered frame", () => {
+		vi.useFakeTimers();
+		baseUrlForHostMock.mockReturnValue("http://127.0.0.1:4000/host-a");
+		const queryClient = fakeQueryClient();
+		const stop = subscribeWorkspaceFileChanges("session-a", queryClient, "host-a");
+		expect(EventSourceStub.instances).toHaveLength(1);
+		expect(getWorkspaceFileConnectionState("session-a", "host-a")).toBe("connected");
+		vi.advanceTimersByTime(2_150);
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "host-a", "session-a"] });
+		EventSourceStub.instances[0].dispatch("ready");
+		vi.advanceTimersByTime(150);
+		vi.mocked(queryClient.invalidateQueries).mockClear();
+		vi.advanceTimersByTime(2_150);
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+		stop();
+		expect(EventSourceStub.instances[0].closed).toBe(true);
+	});
+
+	it("isolates equal session IDs on remote A and B and closes only the disconnected host", () => {
+		vi.useFakeTimers();
+		baseUrlForHostMock.mockImplementation((hostId: string) => `http://127.0.0.1:4000/${hostId}`);
+		const queryClient = fakeQueryClient();
+		const stopA = subscribeWorkspaceFileChanges("same", queryClient, "host-a");
+		const stopB = subscribeWorkspaceFileChanges("same", queryClient, "host-b");
+		expect(EventSourceStub.instances.map((source) => source.url)).toEqual([
+			"http://127.0.0.1:4000/host-a/api/v1/sessions/same/workspace/events",
+			"http://127.0.0.1:4000/host-b/api/v1/sessions/same/workspace/events",
+		]);
+		vi.advanceTimersByTime(150);
+		vi.mocked(queryClient.invalidateQueries).mockClear();
+		EventSourceStub.instances[0].dispatch("workspace_changed");
+		vi.advanceTimersByTime(150);
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "host-a", "same"] });
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["remote-workspace-file-paths", "host-a", "same"] });
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "host-b", "same"] });
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["remote-workspace-file-paths", "host-b", "same"] });
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "same"] });
+		baseUrlForHostMock.mockImplementation((hostId: string) => hostId === "host-a" ? undefined : `http://127.0.0.1:4000/${hostId}`);
+		for (const listener of hostListeners) listener();
+		expect(EventSourceStub.instances[0].closed).toBe(true);
+		expect(EventSourceStub.instances[1].closed).toBe(false);
+		expect(getWorkspaceFileConnectionState("same", "host-a")).toBe("degraded");
+		stopA();
+		stopB();
+	});
+
 	it("shares one daemon stream until the final Files view unmounts", () => {
 		const queryClient = fakeQueryClient();
 		const unsubscribeRail = subscribeWorkspaceFileChanges("session/a", queryClient);

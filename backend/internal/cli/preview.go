@@ -26,6 +26,8 @@ type previewServerStartRequest struct {
 	Configuration string `json:"configuration,omitempty"`
 }
 
+const previewCapabilityHeader = "X-AO-Preview-Capability"
+
 type previewServerStatusDTO struct {
 	SessionID     string    `json:"sessionId"`
 	State         string    `json:"state"`
@@ -217,10 +219,14 @@ func (c *commandContext) stopPreviewServer(ctx context.Context) (previewServerSt
 
 func previewServerHeaders() (map[string]string, error) {
 	capability := strings.TrimSpace(os.Getenv("AO_BROWSER_CAPABILITY"))
-	if capability == "" {
-		return nil, usageError{errors.New("ao preview server commands require the owning session capability (AO_BROWSER_CAPABILITY is not set)")}
+	if capability != "" {
+		return map[string]string{browserCapabilityHeader: capability}, nil
 	}
-	return map[string]string{browserCapabilityHeader: capability}, nil
+	capability = strings.TrimSpace(os.Getenv("AO_PREVIEW_CAPABILITY"))
+	if capability != "" {
+		return map[string]string{previewCapabilityHeader: capability}, nil
+	}
+	return nil, usageError{errors.New("ao preview server commands require AO_BROWSER_CAPABILITY or AO_PREVIEW_CAPABILITY")}
 }
 
 func writePreviewServerStatus(out io.Writer, status previewServerStatusDTO, jsonOutput bool) error {

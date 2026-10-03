@@ -7,6 +7,7 @@ import type { WorkspaceDiffScope } from "../hooks/useSessionWorkspaceFiles";
 export function SessionFileWorkspace({
 	annotation,
 	commitSha,
+	hostId,
 	initialEditing = false,
 	initialMode = "file",
 	initialRequestKey = 0,
@@ -19,6 +20,7 @@ export function SessionFileWorkspace({
 }: {
 	annotation: FileAnnotationModel;
 	commitSha?: string;
+	hostId?: string;
 	initialEditing?: boolean;
 	initialMode?: FileViewMode;
 	initialRequestKey?: number;
@@ -45,6 +47,8 @@ export function SessionFileWorkspace({
 				<FileContentPane
 					annotation={annotation}
 					commitSha={commitSha}
+					hostId={hostId}
+					rememberDisplayMode
 					initialEditing={initialEditing}
 					initialMode={initialMode}
 					initialRequestKey={initialRequestKey}

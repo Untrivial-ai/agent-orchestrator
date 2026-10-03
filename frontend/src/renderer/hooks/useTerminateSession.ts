@@ -1,6 +1,6 @@
 import { type QueryClient, useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
-import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
+import { cloudSessionsQueryKey, workspaceQueryKeyForHost } from "./useWorkspaceQuery";
 import {
 	applyTerminatedSession,
 	clearOptimisticSessionKill,
@@ -13,6 +13,8 @@ import { settingsQueryKey, type Settings } from "./useSettings";
 import { useUiStore } from "../stores/ui-store";
 import { appI18n } from "../i18n";
 import type { CloudCpSession } from "../lib/cloud-cp";
+import { clientForHost } from "../lib/host-clients";
+import { LOCAL_HOST, refKey } from "../lib/hosts";
 
 type TerminateSessionOptions = {
 	/** Fires synchronously as the kill starts — before the cache drops the row. */
@@ -32,7 +34,7 @@ async function terminateSession(queryClient: QueryClient, session: WorkspaceSess
 		return;
 	}
 
-	const { error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
+	const { error, response } = await (session.hostId ? clientForHost(session.hostId) : apiClient).POST("/api/v1/sessions/{sessionId}/kill", {
 		params: { path: { sessionId: session.id } },
 	});
 	if (error) {
@@ -84,9 +86,10 @@ function summarizeBySession(mutations: TerminateSessionMutationState[]) {
 	>();
 	for (const mutation of mutations) {
 		if (!mutation.session) continue;
-		const current = summaries.get(mutation.session.id);
+		const key = refKey({ host: mutation.session.hostId ?? LOCAL_HOST, id: mutation.session.id });
+		const current = summaries.get(key);
 		if (!current) {
-			summaries.set(mutation.session.id, {
+			summaries.set(key, {
 				isPending: mutation.status === "pending",
 				latest: mutation,
 				session: mutation.session,
@@ -115,19 +118,20 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		// that does not move reads as "the click did nothing" — the reason a
 		// delete needed two or three taps. Roll every optimistic write back in
 		// onError and re-apply it across CDC/refetches while the kill is in flight.
-		onMutate: async (session): Promise<TerminateMutationContext> => {
+			onMutate: async (session): Promise<TerminateMutationContext> => {
 			// Navigate first while the row is still on screen / in closed-over lists.
 			options.onOptimistic?.(session);
 			// Drop in-flight workspace fetches so they cannot overwrite the optimistic
 			// remove with a pre-kill snapshot (CDC + refetchInterval race).
-			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
+			const queryKey = workspaceQueryKeyForHost(session.hostId);
+			await queryClient.cancelQueries({ queryKey });
 			const workspace: WorkspaceSnapshot = [
-				workspaceQueryKey,
-				queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey),
+				queryKey,
+				queryClient.getQueryData<WorkspaceSummary[]>(queryKey),
 			];
-			trackOptimisticSessionKill(session.id);
-			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
-				applyTerminatedSession(workspaces, session.id),
+			trackOptimisticSessionKill(session.id, session.hostId);
+			queryClient.setQueryData<WorkspaceSummary[]>(queryKey, (workspaces) =>
+				applyTerminatedSession(workspaces, session.id, session.hostId),
 			);
 			const cloud: CloudSnapshot[] = [];
 			if (session.cloud) {
@@ -145,10 +149,11 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		onSuccess: async (_data, session) => {
 			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
 			// Reinforce before refresh; keep the optimistic id until this refetch finishes.
-			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
-				applyTerminatedSession(workspaces, session.id),
+			const queryKey = workspaceQueryKeyForHost(session.hostId);
+			queryClient.setQueryData<WorkspaceSummary[]>(queryKey, (workspaces) =>
+				applyTerminatedSession(workspaces, session.id, session.hostId),
 			);
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			await queryClient.invalidateQueries({ queryKey });
 			// A cloud kill also lives in the cloud sessions query, which the board
 			// merges in separately, so refresh it too.
 			if (session.cloud) await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
@@ -158,19 +163,20 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			void captureRendererEvent("ao.renderer.session_kill_failed", { project_id: session.workspaceId });
 			// Restore the pre-mutation snapshots so a failed kill un-archives the card
 			// rather than leaving it wrongly terminated.
-			clearOptimisticSessionKill(session.id);
+			clearOptimisticSessionKill(session.id, session.hostId);
 			const ctx = context as TerminateMutationContext | undefined;
 			if (ctx?.workspace) queryClient.setQueryData(ctx.workspace[0], ctx.workspace[1]);
 			for (const [key, sessions] of ctx?.cloud ?? []) queryClient.setQueryData(key, sessions);
 		},
 		onSettled: (_data, error, session) => {
-			if (!error) clearOptimisticSessionKill(session.id);
+			if (!error) clearOptimisticSessionKill(session.id, session.hostId);
 		},
 	});
 }
 
-export function useTerminateSessionState(sessionId: string) {
-	const summary = summarizeBySession(useTerminateSessionMutations()).find(({ session }) => session.id === sessionId);
+export function useTerminateSessionState(sessionId: string, hostId?: string) {
+	const summary = summarizeBySession(useTerminateSessionMutations()).find(({ session }) =>
+		session.id === sessionId && session.hostId === hostId);
 
 	return {
 		error:
@@ -184,7 +190,7 @@ export function useTerminateSessionState(sessionId: string) {
 export function useProjectTerminateSessionStates(workspaceId: string | undefined) {
 	return summarizeBySession(useTerminateSessionMutations())
 		.filter(({ isPending, latest, session }) => {
-			return session.workspaceId === workspaceId && (isPending || latest.status === "error");
+			return !session.hostId && session.workspaceId === workspaceId && (isPending || latest.status === "error");
 		})
 		.sort((a, b) => b.latest.submittedAt - a.latest.submittedAt)
 		.map(({ isPending, latest, session }) => ({
@@ -194,11 +200,11 @@ export function useProjectTerminateSessionStates(workspaceId: string | undefined
 		}));
 }
 
-export function clearTerminateSessionState(queryClient: QueryClient, sessionId: string) {
+export function clearTerminateSessionState(queryClient: QueryClient, sessionId: string, hostId?: string) {
 	const mutationCache = queryClient.getMutationCache();
 	for (const mutation of mutationCache.findAll({ mutationKey: terminateSessionMutationKey })) {
 		const target = mutation.state.variables as WorkspaceSession | undefined;
-		if (target?.id === sessionId && mutation.state.status !== "pending") {
+		if (target?.id === sessionId && target.hostId === hostId && mutation.state.status !== "pending") {
 			mutationCache.remove(mutation);
 		}
 	}

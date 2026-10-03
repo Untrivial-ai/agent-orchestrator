@@ -20,7 +20,7 @@ import { captureRendererEvent } from "../lib/telemetry";
 import { LOCAL_ECHO_ENABLED, withLineBufferedLocalInput } from "../lib/terminal-local-echo";
 import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
-import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { workspaceQueryKeyForHost } from "./useWorkspaceQuery";
 
 /**
  * The slice of xterm's Terminal the attachment needs. Structural, so tests can
@@ -48,6 +48,12 @@ export type AttachableTerminal = {
 	 * without exposing an intermediate row.
 	 */
 	prepareForActivation: () => Promise<void>;
+	/**
+	 * Restore the caret after the owner re-activates a retained terminal (tab
+	 * switch back to this pane). Must stay guarded: it may not steal focus from
+	 * dialogs or other controls that legitimately hold it.
+	 */
+	requestActivationFocus: () => void;
 	/** Tell Cursor Agent the live light/dark scheme (private 997 notification). */
 	notifyCursorColorScheme: () => void;
 	/** Send an explicit UI action through the same guarded path as user input. */
@@ -115,10 +121,6 @@ const CLOUD_CONNECT_MAX_FAILURES = 8;
 // handles as onConnectionChange("closed") -> scheduleReattach. A client-side
 // cloud open timeout only manufactured reconnect storms (the 3s/30s band-aids).
 const OPEN_TIMEOUT_MS = 3_000;
-// Trailing debounce on grid changes: a pane drag emits a burst of intermediate
-// sizes; the attached program should get one SIGWINCH when the drag settles,
-// not dozens (yyork's terminal-panel does the same at its socket layer).
-const RESIZE_DEBOUNCE_MS = 100;
 // Initial-replay gate. On attach the runtime replays the pane's state, and the
 // daemon pumps it in 32KB reads (attachment.go copyOut) — so the renderer gets
 // N WebSocket frames, N `write()` calls, and N separate event-loop turns. xterm
@@ -202,7 +204,6 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		disposers: [] as Array<() => void>,
 		retryTimer: null as ReturnType<typeof setTimeout> | null,
 		openTimer: null as ReturnType<typeof setTimeout> | null,
-		resizeTimer: null as ReturnType<typeof setTimeout> | null,
 		// Last positive grid claimed by this attachment. This is deliberately
 		// separate from xterm's local grid: hidden fits must not resize the PTY, and
 		// repeated identical visible fits must not manufacture another SIGWINCH.
@@ -250,7 +251,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// news for the session board. Refetching every workspace on `exit` would
 		// be pure churn — the shell terminal list owns that pane's fate instead.
 		if (optionsRef.current.shellTerminalHandleId) return;
-		void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		void queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(sessionRef.current?.hostId) });
 	}, [queryClient]);
 
 	const clearReplayTimers = useCallback(() => {
@@ -305,10 +306,6 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		if (r.openTimer) {
 			clearTimeout(r.openTimer);
 			r.openTimer = null;
-		}
-		if (r.resizeTimer) {
-			clearTimeout(r.resizeTimer);
-			r.resizeTimer = null;
 		}
 		r.inputReady = false;
 		if (r.mux && r.handle) {
@@ -762,23 +759,17 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			mux.sendInput(handle, data);
 			return true;
 		});
-		// xterm only fires onResize when the grid actually changed; the debounce
-		// additionally collapses a drag/fullscreen/layout burst into one PTY
-		// resize. The last published grid is checked again at send time because a
-		// retained activation can report the same final grid through several paths.
+		// xterm only fires onResize when the grid actually changed. Publish that
+		// grid immediately so a separator drag resizes the program while the
+		// handle is still moving. The last published grid is checked because a
+		// retained activation can report the same grid through several paths.
 		const resize = terminal.onResize(({ cols, rows }) => {
 			if (!isCurrentAttachment(generation, handle, mux)) return;
 			if (optionsRef.current.isVisible === false) return;
-			if (r.resizeTimer) clearTimeout(r.resizeTimer);
-			r.resizeTimer = setTimeout(() => {
-				r.resizeTimer = null;
-				if (!isCurrentAttachment(generation, handle, mux)) return;
-				if (optionsRef.current.isVisible === false) return;
-				const published = r.lastPublishedGrid;
-				if (published?.cols === cols && published.rows === rows) return;
-				mux.resize(handle, cols, rows);
-				r.lastPublishedGrid = { cols, rows };
-			}, RESIZE_DEBOUNCE_MS);
+			const published = r.lastPublishedGrid;
+			if (published?.cols === cols && published.rows === rows) return;
+			mux.resize(handle, cols, rows);
+			r.lastPublishedGrid = { cols, rows };
 		});
 		r.disposers.push(
 			() => input.dispose(),
@@ -921,10 +912,6 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		) {
 			return;
 		}
-		if (r.resizeTimer) {
-			clearTimeout(r.resizeTimer);
-			r.resizeTimer = null;
-		}
 		r.needsVisibleSizeSync = false;
 		const published = r.lastPublishedGrid;
 		if (published?.cols === cols && published.rows === rows) return;
@@ -944,19 +931,14 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 	}, [daemonReady, connect]);
 
 	// A parked cache entry keeps parsing output, but it must be inert as a PTY
-	// client. Cancel resize work queued while it was visible and remember that a
-	// hidden local refit cannot be forwarded. useLayoutEffect runs before the
-	// cache's activation preparation, so the first visible frame always publishes
-	// its final positive grid even when xterm's local size no longer changes.
+	// client. A hidden local refit cannot be forwarded. useLayoutEffect runs
+	// before the cache's activation preparation, so the first visible frame
+	// always publishes its final positive grid even when xterm's local size no
+	// longer changes.
 	const isVisible = options.isVisible !== false;
 	useLayoutEffect(() => {
 		if (isVisible) return;
-		const r = runtime.current;
-		r.needsVisibleSizeSync = true;
-		if (r.resizeTimer) {
-			clearTimeout(r.resizeTimer);
-			r.resizeTimer = null;
-		}
+		runtime.current.needsVisibleSizeSync = true;
 	}, [isVisible]);
 
 	useEffect(() => {

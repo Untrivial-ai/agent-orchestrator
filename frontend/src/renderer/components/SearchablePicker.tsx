@@ -1,9 +1,12 @@
-import { Check, ChevronDown, Lock, Search } from "lucide-react";
+import { Check, ChevronDown, Lock, Plus, Search } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
+
+/** Lists with more options than this get a search box. */
+const SEARCH_THRESHOLD = 10;
 export interface SearchablePickerOption {
 	value: string;
 	label: string;
@@ -21,6 +24,7 @@ export function SearchablePicker({
 	disabled = false,
 	fixedScroll = false,
 	className,
+	action,
 }: {
 	ariaLabel: string;
 	placeholder: string;
@@ -31,11 +35,16 @@ export function SearchablePicker({
 	disabled?: boolean;
 	fixedScroll?: boolean;
 	className?: string;
+	/** An action pinned below the options (e.g. "Connect more repositories"). */
+	action?: { label: string; onSelect: () => void; disabled?: boolean };
 }) {
 	const { t } = useTranslation();
 	const [open, setOpen] = useState(false);
 	const [search, setSearch] = useState("");
 	const selected = options.find((option) => option.value === value);
+	// A short list is easier to scan than to search; offer search only once the
+	// list is long enough to need it.
+	const searchable = options.length > SEARCH_THRESHOLD;
 	const filtered = options.filter((option) =>
 		`${option.label} ${option.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()),
 	);
@@ -87,17 +96,19 @@ export function SearchablePicker({
 				</button>
 			</PopoverTrigger>
 			<PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-56 overflow-hidden p-0 shadow-xl">
-				<div className="flex h-10 items-center gap-2 border-b border-border px-3">
-					<Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-					<input
-						autoFocus
-						aria-label={searchPlaceholder}
-						placeholder={searchPlaceholder}
-						value={search}
-						onChange={(event) => setSearch(event.target.value)}
-						className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
-					/>
-				</div>
+				{searchable ? (
+					<div className="flex h-10 items-center gap-2 border-b border-border px-3">
+						<Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+						<input
+							autoFocus
+							aria-label={searchPlaceholder}
+							placeholder={searchPlaceholder}
+							value={search}
+							onChange={(event) => setSearch(event.target.value)}
+							className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+						/>
+					</div>
+				) : null}
 				<div
 					ref={listRef}
 					id={`${ariaLabel.replace(/\W+/g, "-").toLowerCase()}-options`}
@@ -105,7 +116,7 @@ export function SearchablePicker({
 					aria-label={ariaLabel}
 					className={cn(
 						"overscroll-contain p-1",
-						fixedScroll ? "repository-picker-scrollbar h-72 overflow-y-scroll" : "settings-thin-scrollbar max-h-72 overflow-y-auto",
+						fixedScroll ? "repository-picker-scrollbar max-h-72 overflow-y-auto" : "settings-thin-scrollbar max-h-72 overflow-y-auto",
 					)}
 				>
 					{filtered.length === 0 ? <p className="px-3 py-5 text-center text-xs text-muted-foreground">{t("common.noMatches", { defaultValue: "No matches" })}</p> : null}
@@ -128,6 +139,19 @@ export function SearchablePicker({
 						</button>
 					))}
 				</div>
+				{action ? (
+					<div className="border-t border-border p-1">
+						<button
+							type="button"
+							disabled={action.disabled}
+							onClick={() => { setOpen(false); action.onSelect(); }}
+							className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[13px] text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:bg-accent disabled:opacity-60"
+						>
+							<Plus className="size-3.5 shrink-0" aria-hidden="true" />
+							<span className="min-w-0 flex-1 truncate">{action.label}</span>
+						</button>
+					</div>
+				) : null}
 			</PopoverContent>
 		</Popover>
 	);

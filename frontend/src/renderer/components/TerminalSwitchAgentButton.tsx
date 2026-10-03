@@ -60,7 +60,7 @@ export function TerminalSwitchAgentButton({
 	const handleOpenChange = (nextOpen: boolean) => {
 		onOpenChange?.(nextOpen);
 		if (!nextOpen && switchError) {
-			clearSwitchAgentState(queryClient, session.id);
+			clearSwitchAgentState(queryClient, session.id, session.hostId);
 		}
 	};
 

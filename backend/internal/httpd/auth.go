@@ -12,66 +12,112 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 )
 
-// authState holds the current password hash for the LAN listener. Swapped
-// atomically on regenerate so an in-flight request never sees a torn value.
-type authState struct{ hash atomic.Pointer[string] }
+// authState keeps previously valid hashes so a client retrying an old password
+// after rotation cannot lock out a newly paired client behind the same address.
+type authState struct{ hashes atomic.Pointer[authHashes] }
+type authHashes struct {
+	current string
+	retired []string
+}
 
-func (a *authState) setHash(h string) { a.hash.Store(&h) }
+func (a *authState) setHash(h string) {
+	for {
+		previous := a.hashes.Load()
+		if previous != nil && previous.current == h {
+			return
+		}
+		next := &authHashes{current: h}
+		if previous != nil {
+			next.retired = append(next.retired, previous.retired...)
+			if previous.current != "" {
+				next.retired = append(next.retired, previous.current)
+			}
+		}
+		if a.hashes.CompareAndSwap(previous, next) {
+			return
+		}
+	}
+}
 func (a *authState) currentHash() string {
-	if p := a.hash.Load(); p != nil {
-		return *p
+	if hashes := a.hashes.Load(); hashes != nil {
+		return hashes.current
 	}
 	return ""
 }
 
-// lockout throttles password guessing per source address.
-type lockout struct {
-	mu       sync.Mutex
-	limit    int
-	cooldown time.Duration
-	now      func() time.Time
-	fails    map[string]int
-	until    map[string]time.Time
+func (a *authState) retiredPasswordMatches(token string) bool {
+	if hashes := a.hashes.Load(); hashes != nil {
+		for _, hash := range hashes.retired {
+			if mobilebridge.PasswordMatches(hash, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func newLockout(limit int, cooldown time.Duration, now func() time.Time) *lockout {
-	return &lockout{limit: limit, cooldown: cooldown, now: now, fails: map[string]int{}, until: map[string]time.Time{}}
+// lockout throttles password guessing per source address.
+type lockout struct {
+	mu        sync.Mutex
+	now       func() time.Time
+	attempts  map[string]authAttempts
+	lastSweep time.Time
+}
+
+type authAttempts struct {
+	fails   int
+	expires time.Time
+}
+
+func newLockout(now func() time.Time) *lockout {
+	return &lockout{now: now, attempts: map[string]authAttempts{}}
 }
 
 func (l *lockout) blocked(src string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	t, ok := l.until[src]
+	a, ok := l.attempts[src]
 	if !ok {
 		return false
 	}
-	if l.now().Before(t) {
-		return true
+	if l.now().Before(a.expires) {
+		return a.fails >= 5
 	}
-	// Cooldown elapsed: clear the lockout AND the fail counter so the source
-	// starts a fresh window. Without this the counter stays at the limit and the
-	// very next failure would immediately re-lock for another full cooldown —
-	// and a client that keeps polling would stay locked out forever. This also
-	// bounds map growth, since expired entries are pruned on the next request.
-	delete(l.until, src)
-	delete(l.fails, src)
+	delete(l.attempts, src)
 	return false
 }
 
 func (l *lockout) fail(src string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.fails[src]++
-	if l.fails[src] >= l.limit {
-		l.until[src] = l.now().Add(l.cooldown)
+	now := l.now()
+	if now.Sub(l.lastSweep) >= time.Minute {
+		for key, a := range l.attempts {
+			if !now.Before(a.expires) {
+				delete(l.attempts, key)
+			}
+		}
+		l.lastSweep = now
 	}
+	a := l.attempts[src]
+	if !now.Before(a.expires) {
+		a.fails = 0
+	}
+	a.fails++
+	a.expires = now.Add(time.Minute)
+	l.attempts[src] = a
 }
 
 func (l *lockout) reset(src string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.fails, src)
-	delete(l.until, src)
+	delete(l.attempts, src)
+}
+
+func (l *lockout) resetAll() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = map[string]authAttempts{}
 }
 
 func sourceKey(r *http.Request) string {
@@ -191,20 +237,33 @@ func authMiddleware(state *authState, lock *lockout, connected *mobileConnectRep
 				next.ServeHTTP(w, r)
 				return
 			}
-			src := sourceKey(r)
+			remoteSrc := sourceKey(r)
+			src := remoteSrc
+			// Cloudflared connects from loopback, so use its visitor IP for lockout
+			// only. A LAN client must not be able to spoof its source with this header.
+			if ip := net.ParseIP(remoteSrc); ip != nil && ip.IsLoopback() {
+				if forwarded := r.Header.Values("CF-Connecting-IP"); len(forwarded) == 1 {
+					if visitor := net.ParseIP(forwarded[0]); visitor != nil {
+						src = visitor.String()
+					}
+				}
+			}
 			if lock.blocked(src) {
 				envelope.WriteAPIError(w, r, http.StatusTooManyRequests, "too_many_requests", "LOCKED_OUT",
 					"too many failed attempts; try again shortly", nil)
 				return
 			}
-			if tok := connectionToken(r); mobilebridge.PasswordMatches(state.currentHash(), tok) {
+			tok := connectionToken(r)
+			if mobilebridge.PasswordMatches(state.currentHash(), tok) {
 				lock.reset(src)
-				connected.report(src)
+				connected.report(remoteSrc)
 				maybeSetPreviewAuthCookie(w, r, tok)
 				next.ServeHTTP(w, r)
 				return
 			}
-			lock.fail(src)
+			if !state.retiredPasswordMatches(tok) {
+				lock.fail(src)
+			}
 			envelope.WriteAPIError(w, r, http.StatusUnauthorized, "unauthorized", "BAD_PASSWORD",
 				"missing or invalid connection password", nil)
 		})

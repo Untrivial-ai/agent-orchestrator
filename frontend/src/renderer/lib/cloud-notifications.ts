@@ -4,5 +4,5 @@
 // from durable events and pre-durable hints rather than reconstructing that state
 // client-side. The base URL is normalized here so a trailing slash can never make
 // an invalidation key miss the query key.
-export const cloudNotificationsQueryKey = (baseUrl: string, orgId: string, status: "all" | "unread" | "read" = "all") =>
-	["cloud-notifications", baseUrl.replace(/\/+$/, ""), orgId, status] as const;
+export const cloudNotificationsQueryKey = (baseUrl: string, orgId: string, userId: string, status: "all" | "unread" | "read" = "all") =>
+	["cloud-notifications", baseUrl.replace(/\/+$/, ""), orgId, userId, status] as const;

@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleS
 import { cancelSessionReview, getSessionPR, getSessionReviews, killSessionReviewer, mergeSessionPR, restoreSessionReviewer, sendMessage, triggerSessionReview, type ReviewRun, type SessionPRSummary, type SessionReviews } from "../../lib/api";
 import { ChatMarkdown } from "../../lib/chat/ChatMarkdown";
 import { haptics } from "../../lib/haptics";
+import { hostRouteMatches } from "../../lib/hostRoute";
 import { ItemActionsMenu } from "../../lib/item-actions-menu";
 import type { ItemAction } from "../../lib/item-actions-menu.types";
 import { openGitHub } from "../../lib/openGitHub";
@@ -12,7 +13,7 @@ import { useOpenPage } from "../../lib/pageNavigation";
 import { mergeReadiness, type MergeTone } from "../../lib/prMerge";
 import { formatReviewSummaryMessage, reviewRunsForPullRequest, reviewRunUrl } from "../../lib/reviewFeedback";
 import { latestAutoReviewFailure, pullRequestSummaryForURL, reviewBatchAction, reviewerControls, reviewerDestination, reviewForPullRequest, reviewPrimaryActionLabel, reviewRunMeta, reviewRunSendable, reviewStatusLabel, reviewVerdictLabel, shortCommit } from "../../lib/reviewView";
-import { useApp } from "../../lib/store";
+import { HostScope, useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { AgentLogo } from "../../lib/AgentLogo";
@@ -23,13 +24,19 @@ import { Button, Dot, EmptyState, ListSectionHeader } from "../../lib/ui";
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
 export default function ReviewDetailScreen() {
+	const { hostId } = useLocalSearchParams<{ hostId?: string }>();
+	return hostId ? <HostScope key={hostId} hostId={hostId}><ReviewDetailContent /></HostScope> : <ReviewDetailContent />;
+}
+
+function ReviewDetailContent() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const navigation = useNavigation();
 	const router = useRouter();
 	const openPage = useOpenPage();
-	const { sessionId, prUrl, prNumber } = useLocalSearchParams<{ sessionId: string; prUrl?: string; prNumber?: string }>();
-	const { config, sessions } = useApp();
+	const { sessionId, prUrl, prNumber, hostId: routeHostId } = useLocalSearchParams<{ sessionId: string; prUrl?: string; prNumber?: string; hostId?: string }>();
+	const { config, sessions, currentHostId } = useApp();
+	const hostMatches = hostRouteMatches(routeHostId, currentHostId);
 	const autoReviewEnabled = sessions.find((session) => session.id === sessionId)?.autoReviewEnabled === true;
 	const [data, setData] = useState<SessionReviews>();
 	const [prs, setPRs] = useState<SessionPRSummary[]>([]);
@@ -45,7 +52,7 @@ export default function ReviewDetailScreen() {
 	const latestLoad = useRef(0);
 
 	const load = useCallback(async (quiet = false) => {
-		if (!config || !sessionId) return;
+		if (!hostMatches || !config || !sessionId) return;
 		const request = ++latestLoad.current;
 		if (!quiet) setError("");
 		try {
@@ -58,7 +65,7 @@ export default function ReviewDetailScreen() {
 		} catch (value) {
 			if (!quiet && request === latestLoad.current) setError(value instanceof Error ? value.message : "Could not load this review.");
 		}
-	}, [config, sessionId]);
+	}, [config, hostMatches, sessionId]);
 
 	useFocusEffect(useCallback(() => { void load(); }, [load]));
 	const review = reviewForPullRequest(data?.reviews ?? [], prUrl, Number(prNumber) || undefined);
@@ -74,11 +81,11 @@ export default function ReviewDetailScreen() {
 		headerTitleStyle: { color: t.textPrimary, fontFamily: "Geist_600SemiBold", fontWeight: "600" },
 	}), [navigation, review?.title, t.textPrimary]);
 	useLayoutEffect(() => navigation.setOptions({
-		headerRight: review?.prUrl ? () => <View style={styles.headerActions}>
+		headerRight: hostMatches && review?.prUrl ? () => <View style={styles.headerActions}>
 			<Pressable accessibilityRole="link" accessibilityLabel={`Open pull request ${review.prNumber} in GitHub`} hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); void openGitHub(review.prUrl); }}><Feather name="external-link" size={19} color={t.textSecondary} /></Pressable>
-			<Pressable accessibilityRole="button" accessibilityLabel="More review actions" hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); router.push({ pathname: "/sheets/review-actions", params: { sessionId, prUrl: review.prUrl, reviewer: data?.reviewerHarness ?? "" } }); }}><Feather name="more-horizontal" size={21} color={t.textSecondary} /></Pressable>
+			<Pressable accessibilityRole="button" accessibilityLabel="More review actions" hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); router.push({ pathname: "/sheets/review-actions", params: { sessionId, prUrl: review.prUrl, reviewer: data?.reviewerHarness ?? "", hostId: routeHostId } }); }}><Feather name="more-horizontal" size={21} color={t.textSecondary} /></Pressable>
 		</View> : undefined,
-	}), [data?.reviewerHarness, navigation, review?.prNumber, review?.prUrl, router, sessionId, styles.headerAction, styles.headerActions, t.textSecondary]);
+	}), [data?.reviewerHarness, hostMatches, navigation, review?.prNumber, review?.prUrl, routeHostId, router, sessionId, styles.headerAction, styles.headerActions, t.textSecondary]);
 	const observedPR = review ? pullRequestSummaryForURL(prs, review.prUrl) : undefined;
 	const awaitingMerge = Boolean(mergedURL && observedPR && observedPR.url === mergedURL && observedPR.state !== "merged");
 	useEffect(() => {
@@ -100,13 +107,14 @@ export default function ReviewDetailScreen() {
 		setRefreshing(false);
 	};
 
+	if (!hostMatches) return <View style={styles.center}><EmptyState icon="git-pull-request" title="Review belongs to another machine" message="Open it from that machine's session." /></View>;
 	if (!data && !error) return <View style={styles.center}><ActivityIndicator color={t.accent} /></View>;
 	if (!data || !review) return <EmptyState icon={error ? "alert-triangle" : "git-pull-request"} title={error ? "Could not load review" : "No review found"} message={error || "AO has no review state for this pull request yet."} action={<Button title="Try again" icon="refresh-cw" variant="ghost" onPress={() => void load()} />} />;
 	const primaryAction = reviewBatchAction(review, data.reviews);
 	const runs = reviewRunsForPullRequest([...(data.runs ?? []), ...(review.latestRun ? [review.latestRun] : []), ...(review.previousRun ? [review.previousRun] : [])], review.prUrl);
 	const multiplePullRequests = data.reviews.length > 1;
 	const openReviewer = () => {
-		const destination = reviewerDestination(data, review, sessionId);
+		const destination = reviewerDestination(data, review, sessionId, routeHostId);
 		if (!destination) return;
 		haptics.tap();
 		openPage(destination);

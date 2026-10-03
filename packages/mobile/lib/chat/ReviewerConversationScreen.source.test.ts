@@ -17,7 +17,7 @@ describe("reviewer conversation parity", () => {
 	});
 
 	it("stages reviewer attachments against the worker session", () => {
-		expect(source).toContain("useMobileConversation(config, workerSessionId, { reviewId, eventSessionId: workerSessionId }");
+		expect(source).toContain("useMobileConversation(hostMatches ? config : null, workerSessionId, { reviewId, eventSessionId: workerSessionId }");
 		expect(source).not.toContain("sessionId || reviewId");
 		expect(source).toContain("attachmentsEnabled={Boolean(workerSessionId)}");
 		expect(source).toContain("const workerSessionId = sessionId.trim()");

@@ -125,7 +125,7 @@ export default function PairScreen() {
 				: { host: "", port: "", platform: Platform.OS };
 			setFailure(
 				describeConnectionFailure(
-					result.reason === "not-ao-qr" ? "not-ao-qr" : classifyConnectionFailure(undefined),
+					result.reason === "not-ao-qr" ? "not-ao-qr" : result.reason === "incompatible" ? "incompatible-host" : classifyConnectionFailure(undefined),
 					errorTarget,
 				),
 			);
@@ -160,9 +160,9 @@ export default function PairScreen() {
 			<View style={styles.topBar}><MinimalBackButton onPress={back} /></View>
 
 			<View style={styles.steps}>
-				<NumberedStep n={1} title="Open AO on your computer" compact />
-				<NumberedStep n={2} title="Go to Settings → Connect Mobile" compact />
-				<NumberedStep n={3} title="Scan the QR code" compact />
+					<NumberedStep n={1} title="Enable AO on a machine" compact />
+					<NumberedStep n={2} title="Open Connect Mobile or run ao remote-host enable" compact />
+					<NumberedStep n={3} title="Scan the code or enter details manually" compact />
 			</View>
 
 			<View style={styles.viewfinder}>
@@ -262,7 +262,7 @@ function CameraGate({
 			<Text style={styles.gateTitle}>Camera access needed</Text>
 			<Text style={styles.gateHint}>
 				{canAskAgain
-					? "AO uses the camera only to read the pairing QR code on your desktop."
+					? "AO uses the camera only to read a pairing QR code."
 					: "Camera access is turned off for AO. Enable it in system settings, or enter your details manually below."}
 			</Text>
 			{canAskAgain ? (

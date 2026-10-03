@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSessionPR, type SessionPRSummary } from "./api";
-import { useApp } from "./store";
+import { machineIdentity, type ServerConfig } from "./config";
 
 // Lazy, cached loader for the rich PR view.
 //
@@ -25,13 +25,18 @@ const BATCH = 6;
 
 export type PRSummaryLookup = {
 	/** The rich summary for one PR, or undefined until it has loaded. */
-	summaryFor(sessionId: string, number: number): SessionPRSummary | undefined;
+	summaryFor(config: ServerConfig, sessionId: string, number: number): SessionPRSummary | undefined;
 	/** Re-fetch everything — wired to pull-to-refresh. */
 	reload(): void;
 };
 
-export function usePRSummaries(sessionIds: string[]): PRSummaryLookup {
-	const { config } = useApp();
+export type PRSummarySession = { config: ServerConfig; sessionId: string };
+
+export function prSummaryCacheKey(config: ServerConfig, sessionId: string): string {
+	return JSON.stringify([machineIdentity(config), sessionId]);
+}
+
+export function usePRSummaries(sessions: PRSummarySession[]): PRSummaryLookup {
 	const cache = useRef<Record<string, SessionPRSummary[]>>({});
 	const inFlight = useRef<Set<string>>(new Set());
 	const [, bump] = useState(0);
@@ -41,20 +46,24 @@ export function usePRSummaries(sessionIds: string[]): PRSummaryLookup {
 	const [generation, setGeneration] = useState(0);
 	const fetchedGeneration = useRef(-1);
 
-	// Keyed on the ids, not the array: a tick that changes any session field
-	// yields a new array even when the id set is unchanged.
-	const key = sessionIds.join(",");
+	// A board tick may rebuild the array with the same sessions and endpoints.
+	const key = JSON.stringify(sessions.map(({ config, sessionId }) => [
+		prSummaryCacheKey(config, sessionId), config.host, config.httpPort, config.secure, config.password,
+	]));
 
 	useEffect(() => {
-		if (!config) return;
 		// A reload re-fetches everything; otherwise only what was never loaded.
 		const force = fetchedGeneration.current !== generation;
 		fetchedGeneration.current = generation;
-		const targets = sessionIds.filter(
-			(id) => id && !inFlight.current.has(id) && (force || cache.current[id] === undefined),
-		);
+		const seen = new Set<string>();
+		const targets = sessions.filter(({ config, sessionId }) => {
+			const id = prSummaryCacheKey(config, sessionId);
+			if (!sessionId || seen.has(id)) return false;
+			seen.add(id);
+			return !inFlight.current.has(id) && (force || cache.current[id] === undefined);
+		});
 		if (targets.length === 0) return;
-		for (const id of targets) inFlight.current.add(id);
+		for (const { config, sessionId } of targets) inFlight.current.add(prSummaryCacheKey(config, sessionId));
 
 		let cancelled = false;
 		void (async () => {
@@ -62,9 +71,10 @@ export function usePRSummaries(sessionIds: string[]): PRSummaryLookup {
 				if (cancelled) return;
 				const chunk = targets.slice(i, i + BATCH);
 				const results = await Promise.all(
-					chunk.map(async (id) => {
+					chunk.map(async ({ config, sessionId }) => {
+						const id = prSummaryCacheKey(config, sessionId);
 						try {
-							return [id, await getSessionPR(config, id)] as const;
+							return [id, await getSessionPR(config, sessionId)] as const;
 						} catch {
 							// null means "this attempt failed", which is not the same as
 							// "this session has no PRs" — see below.
@@ -89,17 +99,17 @@ export function usePRSummaries(sessionIds: string[]): PRSummaryLookup {
 			cancelled = true;
 			// Release anything this run claimed but never resolved, or a re-run
 			// would skip those sessions forever.
-			for (const id of targets) inFlight.current.delete(id);
+			for (const { config, sessionId } of targets) inFlight.current.delete(prSummaryCacheKey(config, sessionId));
 		};
-		// `sessionIds` is covered by `key`; the cache is a ref by design.
-	}, [key, config, generation]);
+		// `sessions` is covered by `key`; the cache is a ref by design.
+	}, [key, generation]);
 
 	const reload = useCallback(() => setGeneration((g) => g + 1), []);
 
 	// Reads the ref, so it stays correct without being re-created; the bump above
 	// is what re-renders the list to pick up new entries.
 	const summaryFor = useCallback(
-		(sessionId: string, number: number) => cache.current[sessionId]?.find((p) => p.number === number),
+		(config: ServerConfig, sessionId: string, number: number) => cache.current[prSummaryCacheKey(config, sessionId)]?.find((p) => p.number === number),
 		[],
 	);
 

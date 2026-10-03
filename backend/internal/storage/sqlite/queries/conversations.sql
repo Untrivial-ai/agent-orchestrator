@@ -961,9 +961,9 @@ WHERE id = ?
 -- name: InsertConversationMessage :exec
 INSERT INTO conversation_messages (
     id, conversation_id, turn_id, sequence, revision, role, origin,
-    text, streaming, provider_item_id, client_message_id, delivery_content_json,
-    created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    text, streaming, provider_item_id, client_message_id, client_payload_hash,
+    delivery_content_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- Folding a streaming delta: append to the existing text and bump the revision
 -- so a client can detect a gap. The provider item id is the correlation key

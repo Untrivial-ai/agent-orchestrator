@@ -2,8 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
 import { aoBridge } from "../lib/bridge";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { apiErrorMessage } from "../lib/api-client";
+import { clientForSessionHost } from "../lib/host-clients";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import { cn } from "../lib/utils";
@@ -20,29 +21,31 @@ export function ResumeAgentControl({
 	className,
 	containerClassName,
 	session,
+	hostId,
 }: {
 	className?: string;
 	containerClassName?: string;
 	session: WorkspaceSession;
+	hostId?: string;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const canResume = useCanResumeAgent(session);
+	const canResume = useCanResumeAgent(session, hostId);
 	const resume = useMutation({
 		mutationFn: async () => {
 			if (usePreviewData) return;
-			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
+			const { data, error, response } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/resume-agent", {
 				params: { path: { sessionId: session.id } },
 			});
 			if (error) throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
 			return data;
 		},
 		onSuccess: async (data) => {
-			await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+			await queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) });
 			if (data?.resumeMode === "saved_prompt") {
 				void aoBridge.notifications
 					.show({
-						id: `resume-agent-fallback:${session.id}:${Date.now()}`,
+						id: `resume-agent-fallback:${hostId ?? "local"}:${session.id}:${Date.now()}`,
 						title: t("inspector.startedFromPrompt"),
 						body: t("inspector.resumeFallbackBody"),
 					})

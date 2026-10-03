@@ -20,7 +20,10 @@ import {
 	type WorkspaceSession,
 	type WorkspaceSummary,
 } from "../types/workspace";
-import { useWorkspaceQuery, useWorkspaceScope, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceQuery, useWorkspaceScope, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { sessionUiKey } from "../lib/hosts";
+import { labelForHost } from "../lib/host-clients";
+import { projectNavigateTarget, sessionNavigateTarget } from "../lib/navigate-to-session";
 import { archivedStandaloneSessions } from "../lib/standalone-archive";
 import {
 	clearTerminateSessionState,
@@ -88,7 +91,8 @@ export function ShellTopbar({
 	const location = useLocation();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
-	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
+	const params = useParams({ strict: false }) as { hostId?: string; projectId?: string; sessionId?: string };
+	const hostId = params.hostId;
 	const currentSessionId = params.sessionId;
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const isFullScreen = useWindowFullScreen();
@@ -113,7 +117,7 @@ export function ShellTopbar({
 		);
 		return controls.stop;
 	}, [targetPaddingLeft, paddingLeft, prefersReducedMotion]);
-	const workspaceQuery = useWorkspaceScope(params.projectId, params.sessionId);
+	const workspaceQuery = useWorkspaceScope(params.projectId, params.sessionId, hostId);
 	const workspaceScope = workspaceQuery.data;
 	const session = workspaceScope?.session;
 	const isSessionRoute = Boolean(params.sessionId);
@@ -121,7 +125,7 @@ export function ShellTopbar({
 	const isStandaloneBoardRoute = location.pathname === "/sessions" || location.pathname === "/sessions/";
 	const isOrchestrator = session ? isOrchestratorSession(session) : false;
 	const isInspectorOpen = useUiStore((state) =>
-		currentSessionId ? inspectorIsOpen(state.inspectorSessions, currentSessionId) : false,
+		currentSessionId ? inspectorIsOpen(state.inspectorSessions, sessionUiKey(currentSessionId, hostId)) : false,
 	);
 	// Project in scope: the session's workspace wins over the route param so the
 	// cross-project /sessions/$sessionId route still resolves a crumb. A
@@ -132,7 +136,7 @@ export function ShellTopbar({
 	const isProjectBoardRoute = !isSessionRoute && Boolean(projectId);
 	const isRootBoardRoute = !isSessionRoute && !isProjectBoardRoute && !isAutomationsRoute && !isStandaloneBoardRoute;
 	const project = workspaceScope?.project;
-	const supportsLocalCues = Boolean(project && toProjectKind(project.kind));
+	const supportsLocalCues = Boolean(!hostId && project && toProjectKind(project.kind));
 	const projectLabel = project?.name ?? session?.workspaceName ?? (projectId ? "" : t("shell.board"));
 	const orchestrator = workspaceScope?.orchestrator;
 	const supportsProjectActions = project?.kind !== STANDALONE_PROJECT_KIND && projectId !== STANDALONE_WORKSPACE_ID;
@@ -142,6 +146,7 @@ export function ShellTopbar({
 		orchestrator: supportsProjectActions ? orchestrator : undefined,
 		source: "topbar",
 		sessionId: currentSessionId,
+		hostId,
 	});
 	const { isSpawning, isProjectRestarting, isProvisioning, openNewTask, openOrchestrator } = projectActions;
 	const { showProjectEmpty } = useBoardPresentation({
@@ -154,8 +159,7 @@ export function ShellTopbar({
 	const orchestratorTooltip = isProjectRestarting ? t("shell.restarting") : isSpawning
 		? t("shell.spawning") : orchestrator ? t("shell.openOrchestrator") : t("shell.spawnOrchestrator");
 
-	const openBoard = () =>
-		projectId ? void navigate({ to: "/projects/$projectId", params: { projectId } }) : void navigate({ to: "/" });
+	const openBoard = () => void navigate(projectId ? projectNavigateTarget(projectId, hostId) : { to: "/" });
 
 	return (
 		<LayoutGroup id="shell-topbar">
@@ -202,6 +206,7 @@ export function ShellTopbar({
 							>
 								<LayoutDashboard aria-hidden="true" className="size-icon-md" />
 								{t("shell.board")}
+								{hostId ? <span className="truncate text-muted-foreground">· {labelForHost(hostId) ?? hostId}</span> : null}
 							</motion.span>
 						)}
 					</div>
@@ -217,21 +222,13 @@ export function ShellTopbar({
 				data-testid="workspace-topbar-actions"
 			>
 				{!boardActionsInPanel && isProjectBoardRoute ? (
-					<>
-						<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} cloud={project?.kind === CLOUD_PROJECT_KIND} style={noDragStyle} />
-						{supportsLocalCues ? <span className="inline-flex" style={noDragStyle}>
-							<CueRunMenu
-								projectId={projectId!}
-								disabled={isProjectRestarting || isProvisioning}
-							/>
-						</span> : null}
-					</>
+					<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} cloud={project?.kind === CLOUD_PROJECT_KIND} style={noDragStyle} />
 				) : null}
 				{isSessionRoute ? (
 					<>
 						{isOrchestrator ? (
 							<>
-								<ProjectTerminationFeedback projectId={projectId} />
+								{!hostId ? <ProjectTerminationFeedback projectId={projectId} /> : null}
 								{sessionAction ? (
 									<div className="inline-flex shrink-0 items-center" style={noDragStyle}>
 										{sessionAction}
@@ -280,7 +277,7 @@ export function ShellTopbar({
 						    have no local workspace to hand off to an editor: the local daemon
 						    has never heard of them, so querying it just surfaces its 404 as a
 						    confusing "Unknown session" error (see workspace.ts's `kind` doc). */}
-						{session && project?.kind !== CLOUD_PROJECT_KIND ? (
+						{session && !hostId && project?.kind !== CLOUD_PROJECT_KIND ? (
 							// Keyed per session so a stale launch error does not carry over
 							// when switching sessions. The prefix keeps it distinct from the
 							// kill button's key: identical sibling keys make React duplicate
@@ -294,9 +291,7 @@ export function ShellTopbar({
 								style={noDragStyle}
 							/>
 						) : null}
-						{/* Cues run from the topbar, not the composer: with a session in
-						    scope they dispatch into it, where the board's project-level
-						    runner (above) spawns a worker instead. */}
+						{/* Cues run from the topbar into the selected session. */}
 						{session && supportsLocalCues ? (
 							<span className="inline-flex" style={noDragStyle}>
 								<CueRunMenu
@@ -322,21 +317,18 @@ export function ShellTopbar({
 										session={session}
 										orchestratorId={orchestrator?.id}
 										onKilled={(workspaceId) => {
-											const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
+											const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKeyForHost(hostId)) ?? [];
 											const fullWorkspace = workspaces.find((w: WorkspaceSummary) => w.id === workspaceId);
 											const nextRoute = resolveNextNavigationAfterSessionKill(fullWorkspace, session.id);
 											if (nextRoute.target === "session") {
-												void navigate({
-													to: "/projects/$projectId/sessions/$sessionId",
-													params: { projectId: workspaceId, sessionId: nextRoute.sessionId },
-												});
+												void navigate(sessionNavigateTarget(workspaceId, nextRoute.sessionId, hostId));
 												return;
 											}
 											if (workspaceId === STANDALONE_WORKSPACE_ID) {
 												void navigate({ to: "/" });
 												return;
 											}
-											void navigate({ to: "/projects/$projectId", params: { projectId: workspaceId } });
+											void navigate(projectNavigateTarget(workspaceId, hostId));
 										}}
 									/>
 								) : null}
@@ -433,7 +425,7 @@ export function TopbarArchiveButton({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const queryClient = useQueryClient();
 	const kill = useTerminateSession();
-	const { error, isPending } = useTerminateSessionState(session.id);
+	const { error, isPending } = useTerminateSessionState(session.id, session.hostId);
 
 	const confirmKill = () => {
 		setConfirmOpen(false);
@@ -456,7 +448,7 @@ export function TopbarArchiveButton({
 									aria-label={isPending ? t("shell.archiving") : t("shell.archiveSession")}
 									disabled={isPending}
 									onClick={() => {
-										clearTerminateSessionState(queryClient, session.id);
+										clearTerminateSessionState(queryClient, session.id, session.hostId);
 										// Always open the confirm; the modal owns its own dismissal.
 										setConfirmOpen(true);
 									}}

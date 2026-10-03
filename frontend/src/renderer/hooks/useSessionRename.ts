@@ -4,7 +4,7 @@ import type { WorkspaceSession } from "../types/workspace";
 
 export const MAX_SESSION_DISPLAY_NAME_LEN = 100;
 
-type RenameableSession = Pick<WorkspaceSession, "id" | "title">;
+type RenameableSession = Pick<WorkspaceSession, "id" | "title" | "hostId">;
 
 export function useSessionRename(session?: RenameableSession, onRenamed?: () => void | Promise<void>) {
   const [isEditing, setIsEditing] = useState(false);
@@ -35,7 +35,8 @@ export function useSessionRename(session?: RenameableSession, onRenamed?: () => 
     const name = draft.trim();
     if (!name || name === session.title) return;
 		try {
-			await renameSession(session.id, name);
+			if (session.hostId) await renameSession(session.id, name, session.hostId);
+			else await renameSession(session.id, name);
 			await onRenamed?.();
 		} catch (error) {
       console.error("Failed to rename session:", error);

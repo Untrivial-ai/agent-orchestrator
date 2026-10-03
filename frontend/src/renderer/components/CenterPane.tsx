@@ -26,12 +26,14 @@ import {
 import { useObservedAgentSwitchLifecycle } from "../hooks/useObservedAgentSwitchLifecycle";
 import { useAgentSwitchPresentationVisibility, useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
-import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
+import { useHostConnection } from "../hooks/useHostConnection";
 import { MAX_SESSION_DISPLAY_NAME_LEN, useSessionRename } from "../hooks/useSessionRename";
 import { useSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useTruncatedText } from "../hooks/useTruncatedText";
 import type { ShellTerminal } from "../hooks/useShellTerminals";
-import { TERMINAL_FONT_SIZE_DEFAULT, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN } from "../lib/design-tokens";
+import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../lib/terminal-font-size";
+import { createTerminalMux, muxUrlFromApiBase } from "../lib/terminal-mux";
 import { getAgentActivityView } from "../lib/session-presentation";
 import {
 	deriveAgentSwitchPresentation,
@@ -55,11 +57,13 @@ import { AgentSwitchProgressTrack } from "./AgentSwitchProgressTrack";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalTabFrame } from "./TerminalTabFrame";
 import { TerminalPane } from "./TerminalPane";
+import { sessionUiKey } from "../lib/hosts";
 import { SessionTopbarPortal } from "./SessionTopbarPortal";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "./ui/context-menu";
 
 type CenterPaneProps = {
 	session?: WorkspaceSession;
+	hostId?: string;
 	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
@@ -112,7 +116,6 @@ type AuxiliaryTab =
 	| { key: string; kind: "shell"; terminal: ShellTerminal }
 	| { key: string; kind: "workspace"; tab: CenterPaneWorkspaceTab };
 
-const terminalFontSizeStorageKey = "ao.terminal.fontSize";
 const WHEEL_ZOOM_THRESHOLD = 80;
 const WHEEL_ZOOM_RESET_MS = 250;
 const isMac = isMacPlatform();
@@ -141,20 +144,9 @@ function DraggableWorkspaceTab({ children, value }: { children: ReactNode; value
 	);
 }
 
-function clampTerminalFontSize(size: number): number {
-	return Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, size));
-}
-
-function initialTerminalFontSize(): number {
-	if (typeof window === "undefined") return TERMINAL_FONT_SIZE_DEFAULT;
-	const raw = window.localStorage?.getItem(terminalFontSizeStorageKey);
-	const parsed = raw === null ? Number.NaN : Number(raw);
-	if (!Number.isFinite(parsed)) return TERMINAL_FONT_SIZE_DEFAULT;
-	return clampTerminalFontSize(parsed);
-}
-
 export function CenterPane({
 	session,
+	hostId,
 	terminalGeneration,
 	theme,
 	daemonReady,
@@ -194,8 +186,13 @@ export function CenterPane({
 	const [tabOrderBySession, setTabOrderBySession] = useState<Record<string, string[]>>({});
 	const queryClient = useQueryClient();
 	const refreshWorkspaces = useCallback(
-		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
-		[queryClient],
+		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }),
+		[hostId, queryClient],
+	);
+	const { baseUrl: remoteBase } = useHostConnection(hostId);
+	const remoteCreateMux = useMemo(
+		() => remoteBase ? () => createTerminalMux(muxUrlFromApiBase(remoteBase)) : undefined,
+		[remoteBase],
 	);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const sessionId = session?.id;
@@ -238,9 +235,9 @@ export function CenterPane({
 		showRightFade,
 	} = useTabScrollEdges([tabOverflowWatch]);
 	const previousTabCountRef = useRef(availableAuxiliaryKeys.length);
-	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "", !session?.cloud);
+	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "", hostId ?? !session?.cloud);
 	const agentSwitches = agentSwitchesQuery.data ?? [];
-	const switchMutation = useSwitchAgentState(session?.id ?? "");
+	const switchMutation = useSwitchAgentState(session?.id ?? "", hostId);
 	const mountedSessionIdRef = useRef(session?.id);
 	const sourceFocusSwitchIdRef = useRef<string | undefined>(undefined);
 	const announcedAlertKeysRef = useRef(new Set<string>());
@@ -298,7 +295,7 @@ export function CenterPane({
 		admissionAgentSwitch ??
 		latestCompletedSwitch ??
 		observedTerminalSwitch;
-	useAgentSwitchRouteVisibility(`session/${session?.id ?? "unavailable"}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
+	useAgentSwitchRouteVisibility(`session/${sessionUiKey(session?.id ?? "unavailable", hostId)}`, agentSwitch && agentSwitch.state !== "completed" && agentSwitch.state !== "failed" ? "active" : "history", undefined, false);
 	const presentation =
 		agentSwitch && session
 			? deriveAgentSwitchPresentation({
@@ -342,7 +339,7 @@ export function CenterPane({
 	const shownAgentSwitch = agentSwitch ?? displayedSuccessNotice?.agentSwitch;
 	const visibilityPresentationKind = agentSwitchVisibilityPresentationKind(shownPresentation);
 	useAgentSwitchPresentationVisibility({
-		localRouteKey: `session/${session?.id ?? "unavailable"}`,
+		localRouteKey: `session/${sessionUiKey(session?.id ?? "unavailable", hostId)}`,
 		agentSwitch: shownAgentSwitch,
 		presentationKind: visibilityPresentationKind,
 		visible: Boolean(shownPresentation && shownAgentSwitch && !workspaceFileActive && !handoffDialogOpen),
@@ -755,8 +752,10 @@ export function CenterPane({
 						data-testid="terminal-interaction-surface"
 						inert={workerInputDisabled ? true : undefined}
 					>
-						<TerminalPane
-							daemonReady={daemonReady}
+						{hostId && !remoteBase ? null : <TerminalPane
+							key={hostId ? `${hostId}:${remoteBase}` : undefined}
+							createMux={hostId ? remoteCreateMux : undefined}
+							daemonReady={hostId ? Boolean(remoteBase) : daemonReady}
 							fontSize={fontSize}
 						// A terminal you can type into should already hold the caret when you
 						// open or switch to the session, the same way the chat composer does.
@@ -774,7 +773,7 @@ export function CenterPane({
 							terminalGeneration={terminalGeneration}
 							terminalTarget={target}
 							theme={theme}
-						/>
+						/>}
 					</div>
 				)}
 				{handoffDialogOpen ? null : shownPresentation && shownAgentSwitch && target.kind === "worker" ? (

@@ -2,6 +2,7 @@ import { createContext } from "react";
 
 export type MarkdownFileContextValue = {
 	sessionId: string;
+	hostId?: string;
 	filePath: string;
 	/**
 	 * The file detail's load timestamp. The blob route sets `no-store`, so this is

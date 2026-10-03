@@ -20,6 +20,11 @@ export function refKey(ref: Ref): string {
 	return `${encodeURIComponent(ref.host)}:${encodeURIComponent(ref.id)}`;
 }
 
+/** Keep existing local UI state while isolating equal IDs on different hosts. */
+export function sessionUiKey(id: string, host?: HostId): string {
+	return host && !isLocal(host) ? `remote:${refKey({ host, id })}` : id;
+}
+
 export function parseRefKey(key: string): Ref {
 	const separator = key.indexOf(":");
 	if (separator === -1) throw new Error(`malformed ref key: ${key}`);

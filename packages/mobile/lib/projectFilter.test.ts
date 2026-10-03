@@ -9,6 +9,7 @@ import {
 	resolveActiveProject,
 	resolveSpawnProject,
 	retainProjects,
+	sessionRowsForMachine,
 	type KnownProjects,
 } from "./projectFilter";
 
@@ -20,6 +21,16 @@ const listed = [
 const session = (projectId: string, over: Partial<DashboardSession> = {}): DashboardSession =>
 	({ id: `${projectId}-1`, projectId, status: null, ...over }) as DashboardSession;
 const archived = (projectId: string) => session(projectId, { isTerminated: true });
+
+describe("sessionRowsForMachine", () => {
+	it("does not show A's session when B has the same session ID", () => {
+		const a = [session("a", { id: "session-1", displayName: "A's worker" })];
+		const b = [session("b", { id: "session-1", displayName: "B's worker" })];
+
+		expect(sessionRowsForMachine(a, "host.h_a", "host.h_b")).toEqual([]);
+		expect(sessionRowsForMachine(b, "host.h_b", "host.h_b")).toEqual(b);
+	});
+});
 
 describe("resolveActiveProject", () => {
 	// The bug this exists for: the filter named a project removed on the desktop

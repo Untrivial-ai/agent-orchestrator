@@ -1,15 +1,16 @@
 import type { components } from "../../api/schema";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiErrorMessage } from "../lib/api-client";
+import { clientForSessionHost } from "../lib/host-clients";
 import { isChangedWorkspaceFile, type WorkspaceFileSummary } from "./useSessionWorkspaceFiles";
 
 export type WorkspaceTreeEntry = components["schemas"]["WorkspaceTreeEntry"];
 export type WorkspaceTreeResponse = components["schemas"]["ListWorkspaceTreeResponse"];
 
-export const sessionWorkspaceTreeQueryKey = (sessionId: string, dir: string) =>
-	["session-workspace-tree", sessionId, dir] as const;
+export const sessionWorkspaceTreeQueryKey = (sessionId: string, dir: string, hostId?: string) =>
+	hostId ? ["session-workspace-tree", hostId, sessionId, dir] as const : ["session-workspace-tree", sessionId, dir] as const;
 
-async function fetchSessionWorkspaceTree(sessionId: string, dir: string, errorMessage: string): Promise<WorkspaceTreeResponse> {
-	const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/workspace/tree", {
+async function fetchSessionWorkspaceTree(sessionId: string, dir: string, errorMessage: string, hostId?: string): Promise<WorkspaceTreeResponse> {
+	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/workspace/tree", {
 		params: { path: { sessionId }, query: dir ? { path: dir } : {} },
 	});
 	if (error) throw new Error(apiErrorMessage(error, errorMessage));
@@ -21,10 +22,10 @@ async function fetchSessionWorkspaceTree(sessionId: string, dir: string, errorMe
 // coarse "something changed" signal (see workspace-file-events.ts), which
 // invalidates every mounted directory query by key prefix — a directory the
 // user isn't currently looking at just stays stale until they revisit it.
-export function sessionWorkspaceTreeQueryOptions(sessionId: string, dir: string, errorMessage = "Unable to load workspace tree") {
+export function sessionWorkspaceTreeQueryOptions(sessionId: string, dir: string, errorMessage = "Unable to load workspace tree", hostId?: string) {
 	return {
-		queryKey: sessionWorkspaceTreeQueryKey(sessionId, dir),
-		queryFn: () => fetchSessionWorkspaceTree(sessionId, dir, errorMessage),
+		queryKey: sessionWorkspaceTreeQueryKey(sessionId, dir, hostId),
+		queryFn: () => fetchSessionWorkspaceTree(sessionId, dir, errorMessage, hostId),
 	};
 }
 

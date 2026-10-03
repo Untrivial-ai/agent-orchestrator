@@ -24,6 +24,17 @@ describe("ReviewerSelect", () => {
 		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex" }));
 		expect(onChange).not.toHaveBeenCalled();
 	});
+	it("opens Harness on the selected remote host", async () => {
+		useUiStore.setState({ settingsModal: null });
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="codex" defaultHarness="claude-code" hostId="box-a" onChange={() => undefined}
+			agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
+		/></QueryClientProvider>);
+		await userEvent.click(screen.getByRole("button", { name: "Reviewer" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex", hostId: "box-a" }));
+	});
 	it("shows the resolved reviewer while keeping the inherited selection", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
@@ -110,7 +121,8 @@ describe("ReviewerSelect", () => {
 		/></QueryClientProvider>);
 
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
-		expect(trigger).toHaveTextContent("Model not reported");
+		// The unidentified model is left off the trigger.
+		expect(trigger).toHaveTextContent(/^Codex$/);
 		await userEvent.click(trigger);
 		await userEvent.click(screen.getByRole("menuitem", { name: /Codex/ }));
 		expect(screen.queryByRole("menuitem", { name: "Agent choice" })).not.toBeInTheDocument();

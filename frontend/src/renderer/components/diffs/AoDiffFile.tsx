@@ -49,6 +49,7 @@ export function AoDiffFile({
 	onActiveSelectionChange,
 	scope = "combined",
 	sessionId,
+	hostId,
 	split,
 	commitSha,
 	source = { kind: "workspace" },
@@ -61,6 +62,7 @@ export function AoDiffFile({
 	onActiveSelectionChange: (active: boolean) => void;
 	scope?: WorkspaceDiffScope;
 	sessionId: string;
+	hostId?: string;
 	split: boolean;
 	commitSha?: string;
 	source?: FilesSource;
@@ -95,8 +97,8 @@ export function AoDiffFile({
 	const loadDiffFiles = useCallback(
 		async (fileDiff: FileDiffMetadata) => {
 			const [before, after] = await Promise.all([
-				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "before", commitSha) : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion }),
-				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "after", commitSha) : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion }),
+				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "before", commitSha, hostId) : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "before", workspaceVersion: detail.workspaceVersion, hostId }),
+				source.kind === "pull_request" ? fetchPRFileRevision(sessionId, source.number, source.url, detail.path, "after", commitSha, hostId) : fetchWorkspaceFileRevision({ commitSha, sessionId, path: detail.path, scope, side: "after", workspaceVersion: detail.workspaceVersion, hostId }),
 			]);
 			if (before.binary || after.binary || before.truncated || after.truncated) {
 				throw new Error(t("files.explorer.tooLarge", { size: Math.max(before.size, after.size) }));
@@ -108,14 +110,15 @@ export function AoDiffFile({
 				newFile,
 			};
 		},
-		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, source, t],
+		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, hostId, source, t],
 	);
 	// The detail patch is git's --unified=3, which endsAtLastHunk assumes. When it
 	// proves the file ends at the last hunk, load the full contents up front so
 	// Pierre has no dead "More unchanged context may be available" row to draw.
 	const endsAtEndOfFile = metadata != null && detail.size <= END_OF_FILE_PREFETCH_MAX_BYTES && endsAtLastHunk(metadata);
 	const endOfFileContents = useQuery({
-		queryKey: ["files-preview-end-of-file", sessionId, source.kind === "pull_request" ? source.url : "workspace", scope, commitSha ?? "", detail.path, endsAtEndOfFile && metadata ? patchIdentity(metadata) : ""] as const,
+		queryKey: hostId ? ["files-preview-end-of-file", hostId, sessionId, source.kind === "pull_request" ? source.url : "workspace", scope, commitSha ?? "", detail.path, endsAtEndOfFile && metadata ? patchIdentity(metadata) : ""] as const
+			: ["files-preview-end-of-file", sessionId, source.kind === "pull_request" ? source.url : "workspace", scope, commitSha ?? "", detail.path, endsAtEndOfFile && metadata ? patchIdentity(metadata) : ""] as const,
 		queryFn: () => loadDiffFiles(metadata as FileDiffMetadata),
 		enabled: endsAtEndOfFile,
 		retry: false,

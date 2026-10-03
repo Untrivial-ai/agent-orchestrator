@@ -10,12 +10,20 @@ const { cloudCpMock, deleteMock, getMock, postMock, putMock } = vi.hoisted(() =>
 	postMock: vi.fn(),
 	putMock: vi.fn(),
 }));
+const { remoteGetMock, remotePostMock, remoteDeleteMock, remotePutMock, clientForSessionHostMock } = vi.hoisted(() => ({
+	remoteGetMock: vi.fn(),
+	remotePostMock: vi.fn(),
+	remoteDeleteMock: vi.fn(),
+	remotePutMock: vi.fn(),
+	clientForSessionHostMock: vi.fn(),
+}));
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, POST: postMock, PUT: putMock, DELETE: deleteMock },
 	apiErrorMessage: () => "request failed",
 	hasTrustedApiBaseUrl: () => true,
 }));
+vi.mock("../lib/host-clients", () => ({ clientForSessionHost: clientForSessionHostMock }));
 
 // Keep these hook tests focused on the local daemon path. The real Cloud
 // readiness hooks subscribe to settings/auth queries and can trigger an
@@ -46,12 +54,56 @@ beforeEach(() => {
 	getMock.mockReset();
 	postMock.mockReset();
 	putMock.mockReset();
+	remoteGetMock.mockReset();
+	remotePostMock.mockReset();
+	remoteDeleteMock.mockReset();
+	remotePutMock.mockReset();
+	clientForSessionHostMock.mockReset().mockImplementation((hostId?: string) => hostId
+		? { GET: remoteGetMock, POST: remotePostMock, DELETE: remoteDeleteMock, PUT: remotePutMock }
+		: { GET: getMock, POST: postMock, DELETE: deleteMock, PUT: putMock });
 	cloudCpMock.client = {};
 	cloudCpMock.ready = false;
 	cloudCpMock.baseUrl = "";
 });
 
 describe("session-scoped interface transition mutations", () => {
+	it("keeps same-ID transitions on their owning host", async () => {
+		const pendingA = deferred<{ data: { ok: boolean }; error: undefined }>();
+		const postA = vi.fn().mockReturnValue(pendingA.promise);
+		const postB = vi.fn().mockResolvedValue({ data: { ok: true }, error: undefined });
+		const status = vi.fn().mockResolvedValue({ data: { supported: true, targetMode: "tui" }, error: undefined });
+		clientForSessionHostMock.mockImplementation((hostId?: string) => hostId === "box-a"
+			? { GET: status, POST: postA }
+			: hostId === "box-b"
+				? { GET: status, POST: postB }
+				: { GET: getMock, POST: postMock });
+		getMock.mockResolvedValue({ data: { supported: true, targetMode: "tui" }, error: undefined });
+		postMock.mockResolvedValue({ data: { ok: true }, error: undefined });
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		const HookWrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+		const { result, rerender } = renderHook(
+			({ hostId }) => useSessionInterfaceTransition("same", hostId),
+			{ initialProps: { hostId: "box-a" as string | undefined }, wrapper: HookWrapper },
+		);
+		let startA!: Promise<unknown>;
+		act(() => { startA = result.current.start({ targetMode: "tui", policy: "drain" }); });
+		await waitFor(() => expect(result.current.starting).toBe(true));
+		rerender({ hostId: "box-b" });
+		expect(result.current.starting).toBe(false);
+		await act(async () => { await result.current.start({ targetMode: "tui", policy: "drain" }); });
+		expect(postB).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/interface-transition", {
+			params: { path: { sessionId: "same" } }, body: { targetMode: "tui", policy: "drain" },
+		});
+		rerender({ hostId: undefined });
+		expect(result.current.starting).toBe(false);
+		await act(async () => { await result.current.start({ targetMode: "tui", policy: "drain" }); });
+		expect(postMock).toHaveBeenCalledOnce();
+		pendingA.resolve({ data: { ok: true }, error: undefined });
+		await act(async () => { await startA; });
+		expect(postA).toHaveBeenCalledOnce();
+		expect(queryClient.getQueryData(["session-interface-transition", "box-a", "same"])).toBeDefined();
+		expect(queryClient.getQueryData(["session-interface-transition", "box-b", "same"])).toBeDefined();
+	});
 	it.each([
 		["tui", "chat"],
 		["chat", "tui"],

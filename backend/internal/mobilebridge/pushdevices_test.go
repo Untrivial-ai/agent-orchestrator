@@ -122,6 +122,28 @@ func TestUpsertPreservesCreatedAt(t *testing.T) {
 	}
 }
 
+func TestUpsertKeepsPushHostLabelAcrossTokenlessAnnounce(t *testing.T) {
+	reg, err := LoadRegistry(PushDevicesPath(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Upsert(PushDevice{InstallID: "phone", Token: "ExpoPushToken[a]", HostName: "Host A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Upsert(PushDevice{InstallID: "phone"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.List()[0].HostName; got != "Host A" {
+		t.Fatalf("host name = %q", got)
+	}
+	if err := reg.Upsert(PushDevice{InstallID: "phone", HostName: "Renamed A"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.List()[0].HostName; got != "Renamed A" {
+		t.Fatalf("renamed host = %q", got)
+	}
+}
+
 func TestUpsertRejectsInvalidToken(t *testing.T) {
 	reg, _ := LoadRegistry(PushDevicesPath(t.TempDir()))
 	if err := reg.Upsert(PushDevice{Token: "garbage"}); err == nil {

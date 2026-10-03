@@ -97,6 +97,13 @@ describe("attentionOf", () => {
 		expect(attentionOf(session({ prs: [{ number: 1, url: "u", ciStatus: "failing" }] as never }))).toBe("review");
 	});
 
+	// An unresolved comment from a non-blocking review must still flag the
+	// session as needing attention, same as a formal changes-requested
+	// decision -- see agent-orchestrator#5765.
+	it("maps unresolved comments to review", () => {
+		expect(attentionOf(session({ status: "commented" }))).toBe("review");
+	});
+
 	it("defaults to working", () => {
 		expect(attentionOf(session())).toBe("working");
 	});

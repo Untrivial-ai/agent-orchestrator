@@ -34,7 +34,7 @@ import {
 	type TerminalMuxPool,
 } from "../lib/terminal-mux";
 import { cn } from "../lib/utils";
-import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useWorkspaceQuery, workspaceQueryKeyForHost } from "../hooks/useWorkspaceQuery";
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
@@ -273,6 +273,10 @@ function CachedTerminalPortal({
 		// Fit and scroll after the host is visible. This retains the cache's
 		// settled viewport behavior without putting a blank frame in front of it.
 		void terminal.prepareForActivation();
+		// Returning to a tab is a focus handoff: the terminal was blurred when it
+		// was parked, so ask it to take the caret back (issue #6140). The guard
+		// inside keeps this from stealing focus from dialogs or other controls.
+		terminal.requestActivationFocus();
 	}, [
 		active,
 		entry,
@@ -694,6 +698,7 @@ export function TerminalPane({
 	onTerminalContentReadyChange,
 	inputRequest,
 	onInputRequestResult,
+	createMux,
 }: TerminalPaneProps) {
 	const { t } = useTranslation();
 	const terminalTarget =
@@ -795,9 +800,12 @@ export function TerminalPane({
 		onTerminalContentReadyChange,
 		inputRequest,
 		onInputRequestResult,
+		createMux,
 	};
 	const descriptor = cacheDescriptor(session, terminalTarget, terminalGeneration);
-	if (cache && descriptor) {
+	// The retained cache validates shells against the local daemon's shell list.
+	// A caller-owned transport may belong to another host.
+	if (cache && descriptor && !createMux) {
 		return <CachedTerminalSlot descriptor={descriptor} props={props} />;
 	}
 
@@ -817,6 +825,7 @@ export function TerminalPane({
 			onTerminalContentReadyChange={onTerminalContentReadyChange}
 			inputRequest={inputRequest}
 			onInputRequestResult={onInputRequestResult}
+			createMux={createMux}
 			terminalTarget={terminalTarget}
 		/>
 	);
@@ -1091,7 +1100,12 @@ function AttachedTerminal({
 		// fresh connection attempt once the user has fixed their network policy.
 		if (terminal) attach(terminal);
 	}, [attach, terminal]);
-	const provider = terminalTarget?.kind === "reviewer" ? terminalTarget.harness : session?.provider;
+	const provider =
+		terminalTarget?.kind === "reviewer"
+			? terminalTarget.harness
+			: terminalTarget?.kind === "shell"
+				? undefined
+				: session?.provider;
 	const isSessionActive = session ? sessionIsActive(session) : false;
 	// A standalone shell is never restorable: there is no session row to restore.
 	const canRestoreSession =
@@ -1118,13 +1132,13 @@ function AttachedTerminal({
 		}
 	}, [initFailed, onFatal, onTerminalStateChange]);
 	const handleLinkOpen = useSessionBrowserLink(session);
-	const handleSessionLinkOpen = useSessionLinkNavigation();
+	const handleSessionLinkOpen = useSessionLinkNavigation(session?.hostId);
 	const restoreSession = useCallback(async () => {
 		if (!session?.id || !canRestoreSession || isRestoring) return;
 		setIsRestoring(true);
 		setRestoreError(undefined);
 		try {
-			const result = await restoreSessionById(session.id);
+			const result = await restoreSessionById(session.id, session.hostId);
 			if (result.status === "not_resumable") {
 				setRestoreUnavailable(true);
 				return;
@@ -1137,7 +1151,7 @@ function AttachedTerminal({
 		} finally {
 			setIsRestoring(false);
 		}
-	}, [canRestoreSession, isRestoring, restoreSessionById, session?.id, t]);
+	}, [canRestoreSession, isRestoring, restoreSessionById, session?.hostId, session?.id, t]);
 
 	useEffect(() => {
 		if (!terminal) return;
@@ -1315,7 +1329,7 @@ function AttachedTerminal({
 					session={session}
 					onOpenChange={setRestoreUnavailable}
 					onRecreated={async () => {
-						await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+						await queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(session.hostId) });
 					}}
 				/>
 			)}

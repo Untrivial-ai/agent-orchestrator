@@ -177,6 +177,16 @@ export async function sendReviewerConversationMessage(
 	return (await res.json()) as SendMessageResult;
 }
 
+/** Check an uncertain attachment send without re-sending a partial payload. */
+export async function recoverSentConversationMessage(cfg: ServerConfig, sessionId: string, clientMessageId: string): Promise<void> {
+	const res = await apiRequest(cfg, conversationPath(sessionId, "/steer-or-send"), {
+		method: "POST",
+		body: JSON.stringify({ clientMessageId, recoverOnly: true }),
+	});
+	const result = (await res.json()) as { outcome: "sent" | "steered" };
+	if (result.outcome !== "sent") throw new Error("Could not confirm this message was delivered. Check history, then discard and reattach the files before sending again.");
+}
+
 export async function steerConversation(cfg: ServerConfig, sessionId: string, text: string, clientMessageId: string) {
 	const res = await apiRequest(cfg, conversationPath(sessionId, "/steer"), {
 		method: "POST",
@@ -400,7 +410,7 @@ export async function streamGlobalConversationEvents(
 		signal,
 	});
 	if (!res.ok) throw await streamError(res);
-	if (!res.body) throw new Error("Couldn't open live updates from your desktop.");
+	if (!res.body) throw new Error("Couldn't open live updates from your machine.");
 	const advertisedAfterHeader = res.headers.get("X-AO-Event-After");
 	const advertisedAfter = advertisedAfterHeader === null ? Number.NaN : Number(advertisedAfterHeader);
 	const effectiveAfter = Number.isSafeInteger(advertisedAfter) && advertisedAfter >= 0

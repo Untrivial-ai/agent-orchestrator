@@ -58,7 +58,7 @@ func TestRegisterPushDevice(t *testing.T) {
 	reg := &fakePushRegistry{}
 	srv := newPushTestServer(t, reg)
 
-	body := `{"installId":"inst-1","token":"ExponentPushToken[abc]","platform":"android","deviceName":"Pixel"}`
+	body := `{"installId":"inst-1","token":"ExponentPushToken[abc]","platform":"android","deviceName":"Pixel","hostName":"Host A"}`
 	res, err := http.Post(srv.URL+"/api/v1/push/devices", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -71,7 +71,7 @@ func TestRegisterPushDevice(t *testing.T) {
 		t.Fatalf("upserts = %d, want 1", len(reg.upserts))
 	}
 	got := reg.upserts[0]
-	if got.InstallID != "inst-1" || got.Token != "ExponentPushToken[abc]" || got.Platform != "android" || got.DeviceName != "Pixel" {
+	if got.InstallID != "inst-1" || got.Token != "ExponentPushToken[abc]" || got.Platform != "android" || got.DeviceName != "Pixel" || got.HostName != "Host A" {
 		t.Fatalf("upserted device = %+v", got)
 	}
 	if got.CreatedAt.IsZero() || got.LastSeenAt.IsZero() {

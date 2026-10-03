@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -652,5 +653,5 @@ func validAgentCredentialType(agent, credentialType string) bool {
 }
 
 func providerSecretAssociatedData(orgID, provider string) string {
-	return orgID + "|" + provider + "|" + defaultAgentConnectionLabel
+	return secrets.ProviderConnectionAssociatedData(orgID, provider, defaultAgentConnectionLabel)
 }

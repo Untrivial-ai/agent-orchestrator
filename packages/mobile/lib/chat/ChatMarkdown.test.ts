@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { allowsUnderscoreEmphasis } from "./inlineEmphasis";
 import { readFileSync } from "node:fs";
 import { parseBlocks } from "./markdownBlocks";
 
@@ -18,6 +19,13 @@ describe("mobile Chat markdown blocks", () => {
 		expect(blocks[1]).toMatchObject({ kind: "list", items: [{ text: "inspect", checked: true }, { text: "test", checked: false }] });
 		expect(blocks[2]).toEqual({ kind: "image", alt: "result", url: "https://example.com/result.png" });
 	});
+});
+
+it("keeps identifier underscores while allowing standalone emphasis", () => {
+	const identifier = "NEW_TASK_HOST_B_OK";
+	expect(allowsUnderscoreEmphasis(identifier, 3, 9)).toBe(false);
+	expect(allowsUnderscoreEmphasis("_emphasis_", 0, 10)).toBe(true);
+	expect(allowsUnderscoreEmphasis("before _emphasis_ after", 7, 17)).toBe(true);
 });
 
 describe("mobile Chat markdown layout", () => {

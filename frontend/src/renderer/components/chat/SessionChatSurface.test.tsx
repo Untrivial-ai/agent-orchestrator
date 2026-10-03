@@ -822,8 +822,8 @@ describe("SessionChatSurface link routing", () => {
 		);
 
 		await waitFor(() => {
-			expect(clearCatalogsMock).toHaveBeenCalledWith(queryClient, session.id);
-			expect(invalidateCatalogsMock).toHaveBeenCalledWith(queryClient, session.id);
+			expect(clearCatalogsMock).toHaveBeenCalledWith(queryClient, session.id, undefined);
+			expect(invalidateCatalogsMock).toHaveBeenCalledWith(queryClient, session.id, undefined);
 		});
 		expect(catalogObserverState.enabled).toContain(false);
 		await waitFor(() => expect(catalogObserverState.enabled.at(-1)).toBe(true));
@@ -1103,13 +1103,13 @@ describe("controller catalogs during an interface handoff", () => {
 		const client = new QueryClient();
 		const { rerender } = render(<Wrapper client={client}><SessionChatSurface session={session} controllerTransitioning /></Wrapper>);
 		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
-			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+			expect(hook).toHaveBeenLastCalledWith(session.id, false, undefined);
 		}
 
 		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "ready" } };
 		rerender(<Wrapper client={client}><SessionChatSurface session={session} /></Wrapper>);
 		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
-			expect(hook).toHaveBeenLastCalledWith(session.id, true);
+			expect(hook).toHaveBeenLastCalledWith(session.id, true, undefined);
 		}
 	});
 
@@ -1117,7 +1117,7 @@ describe("controller catalogs during an interface handoff", () => {
 		conversationState.snapshot = { capabilities: ["config_options"], controller: { state: "stopped" } };
 		render(<Wrapper client={new QueryClient()}><SessionChatSurface session={session} /></Wrapper>);
 		for (const hook of [useConversationConfigOptions, useConversationModels, useConversationSkills]) {
-			expect(hook).toHaveBeenLastCalledWith(session.id, false);
+			expect(hook).toHaveBeenLastCalledWith(session.id, false, undefined);
 		}
 	});
 });

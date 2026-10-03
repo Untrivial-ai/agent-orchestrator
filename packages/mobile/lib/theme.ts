@@ -306,6 +306,10 @@ export function statusVisual(t: Theme, status?: string | null): StatusVisual {
 			return { color: t.amber, label: "Needs input" };
 		case "changes_requested":
 			return { color: t.amber, label: "Changes req." };
+		// Unresolved comments from a non-blocking review (not a formal
+		// changes-requested decision) -- see agent-orchestrator#5765.
+		case "commented":
+			return { color: t.amber, label: "Commented" };
 		case "stuck":
 			return { color: t.red, label: "Stuck" };
 		case "errored":

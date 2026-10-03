@@ -3,7 +3,8 @@ import { useMemo, useState } from "react";
 import { ActivityIndicator, RefreshControl, SectionList, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { haptics } from "../../lib/haptics";
-import { orchestratorProjectSections, type OrchestratorProjectRow } from "../../lib/orchestratorView";
+import { hostedProjectKey, hostedProjectSections, type HostedProjectRow } from "../../lib/hostedRows";
+import type { OrchestratorProjectRow } from "../../lib/orchestratorView";
 import { ProjectCard } from "../../lib/project-card";
 import { StaleBanner } from "../../lib/StaleBanner";
 import { useApp } from "../../lib/store";
@@ -26,18 +27,24 @@ export default function ProjectsScreen() {
 		configured,
 		loading,
 		error,
-		projects,
-		sessions,
-		orchestrators,
+		allProjects,
+		hostStates,
 		notificationsUnread,
-		refresh,
+		refreshAll,
 	} = useApp();
+	const fleetLoading = hostStates.length ? hostStates.some((host) => host.loading) : loading;
+	const fleetError = hostStates.length > 1
+		? hostStates.every((host) => host.connection === "closed" && !host.loading)
+		: Boolean(error);
+	const unreadCount = hostStates.length > 1
+		? hostStates.reduce((count, host) => count + host.notificationsUnread, 0)
+		: notificationsUnread;
 	const [refreshing, setRefreshing] = useState(false);
 	const { busyProjects, openOrchestrator } = useOrchestratorLauncher();
-	const listRef = useTabScrollToTop<SectionList<OrchestratorProjectRow>>();
+	const listRef = useTabScrollToTop<SectionList<HostedProjectRow>>();
 	const sections = useMemo(
-		() => orchestratorProjectSections(projects, sessions, orchestrators),
-		[projects, sessions, orchestrators],
+		() => hostedProjectSections(hostStates),
+		[hostStates],
 	);
 	const failure = useBoardFailure();
 
@@ -45,18 +52,20 @@ export default function ProjectsScreen() {
 		haptics.tap();
 		setRefreshing(true);
 		try {
-			await refresh();
+			await refreshAll();
 		} finally {
 			setRefreshing(false);
 		}
 	};
 
 	const openProject = (row: OrchestratorProjectRow) => {
+		const hostId = "hostId" in row.project && typeof row.project.hostId === "string" ? row.project.hostId : undefined;
+		if (!hostId) return;
 		haptics.select();
-		router.push({ pathname: "/project/[id]", params: { id: row.project.id } });
+		router.push({ pathname: "/project/[id]", params: { id: row.project.id, hostId } });
 	};
 
-	if (!configured) {
+	if (!configured && hostStates.length === 0) {
 		return (
 			<View style={styles.screen}>
 				<View style={{ height: insets.top }} />
@@ -75,14 +84,14 @@ export default function ProjectsScreen() {
 					<HeaderIconButton
 						icon="bell"
 						label="Notifications"
-						badge={notificationsUnread}
+						badge={unreadCount}
 						onPress={() => router.navigate("/notifications")}
 					/>
 				}
 			/>
-			<StaleBanner error={!!error} onRetry={onRefresh} />
+			{hostStates.length <= 1 ? <StaleBanner error={!!error} onRetry={onRefresh} /> : null}
 
-			{loading && projects.length === 0 ? (
+			{fleetLoading && allProjects.length === 0 ? (
 				<View style={styles.center}>
 					<ActivityIndicator color={t.accent} />
 				</View>
@@ -90,7 +99,7 @@ export default function ProjectsScreen() {
 				<SectionList
 					ref={listRef}
 					sections={sections}
-					keyExtractor={(row) => row.project.id}
+					keyExtractor={(row) => hostedProjectKey(row.project)}
 					contentInsetAdjustmentBehavior="automatic"
 					contentContainerStyle={{ paddingBottom: insets.bottom + 92 }}
 					stickySectionHeadersEnabled={false}
@@ -101,17 +110,17 @@ export default function ProjectsScreen() {
 					renderItem={({ item }) => (
 						<ProjectCard
 							row={item}
-							busy={busyProjects.has(item.project.id)}
+							busy={busyProjects.has(hostedProjectKey(item.project))}
 							onOpenProject={openProject}
 							onOrchestrator={openOrchestrator}
 						/>
 					)}
 					ListEmptyComponent={
-						error ? (
+						fleetError ? (
 							<EmptyState
-								icon={failure.icon}
-								title={failure.title}
-								message={failure.hint}
+								icon={hostStates.length > 1 ? "unplug" : failure.icon}
+								title={hostStates.length > 1 ? "No machines connected" : failure.title}
+								message={hostStates.length > 1 ? undefined : failure.hint}
 								action={<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={onRefresh} />}
 							/>
 						) : (

@@ -103,21 +103,25 @@ describe("conversation cursor persistence", () => {
 });
 
 describe("conversation event subscriptions", () => {
-	it("publishes an event only to listeners for its session", () => {
-		const createRegistry = (
-			sse as unknown as {
-				createConversationEventRegistry?: () => {
-					subscribe(sessionId: string, listener: (event: sse.ConversationEvent) => void): () => void;
-					publish(event: sse.ConversationEvent): void;
-				};
-			}
-		).createConversationEventRegistry;
-		const registry = createRegistry?.();
+	it("does not wake the same session ID on another host", () => {
+		const registry = createConversationEventRegistry();
 		const received: string[] = [];
-		registry?.subscribe("session-1", () => received.push("session-1"));
-		registry?.subscribe("session-2", () => received.push("session-2"));
+		registry.subscribe("host-a", "same-session", () => received.push("a"));
+		registry.subscribe("host-b", "same-session", () => received.push("b"));
 
-		registry?.publish(event("session-2", 4));
+		registry.publish("host-a", event("same-session", 1));
+		expect(received).toEqual(["a"]);
+		registry.publish("host-b", event("same-session", 2));
+		expect(received).toEqual(["a", "b"]);
+	});
+
+	it("publishes an event only to listeners for its session", () => {
+		const registry = createConversationEventRegistry();
+		const received: string[] = [];
+		registry.subscribe("host-a", "session-1", () => received.push("session-1"));
+		registry.subscribe("host-a", "session-2", () => received.push("session-2"));
+
+		registry.publish("host-a", event("session-2", 4));
 
 		expect(received).toEqual(["session-2"]);
 	});
@@ -125,37 +129,31 @@ describe("conversation event subscriptions", () => {
 	it("reports whether anything is listening, so the stream can skip parsing", () => {
 		let now = 1_000_000;
 		const registry = sse.createConversationEventRegistry(() => now);
-		expect(registry.hasListeners()).toBe(false);
+		expect(registry.hasListeners("host-a")).toBe(false);
 
-		const unsubscribe = registry.subscribe("session-1", () => {});
-		expect(registry.hasListeners()).toBe(true);
+		const unsubscribe = registry.subscribe("host-a", "session-1", () => {});
+		expect(registry.hasListeners("host-a")).toBe(true);
+		expect(registry.hasListeners("host-b")).toBe(false);
 
 		// Unsubscribing no longer flips this straight to false. A skipped payload
 		// is unrecoverable, and a chat screen re-subscribing across a network
 		// change would otherwise drop the events that arrive in the gap. It goes
 		// false once the grace has passed with nothing listening.
 		unsubscribe();
-		expect(registry.hasListeners()).toBe(true);
+		expect(registry.hasListeners("host-a")).toBe(true);
+		expect(registry.hasListeners("host-b")).toBe(false);
 
 		now += sse.LISTENER_GRACE_MS + 1;
-		expect(registry.hasListeners()).toBe(false);
+		expect(registry.hasListeners("host-a")).toBe(false);
 	});
 
 	it("stops publishing after a listener unsubscribes", () => {
-		const createRegistry = (
-			sse as unknown as {
-				createConversationEventRegistry?: () => {
-					subscribe(sessionId: string, listener: (event: sse.ConversationEvent) => void): () => void;
-					publish(event: sse.ConversationEvent): void;
-				};
-			}
-		).createConversationEventRegistry;
-		const registry = createRegistry?.();
+		const registry = createConversationEventRegistry();
 		const received: number[] = [];
-		const unsubscribe = registry?.subscribe("session-1", (next) => received.push(next.seq));
-		unsubscribe?.();
+		const unsubscribe = registry.subscribe("host-a", "session-1", (next) => received.push(next.seq));
+		unsubscribe();
 
-		registry?.publish(event("session-1", 5));
+		registry.publish("host-a", event("session-1", 5));
 
 		expect(received).toEqual([]);
 	});
@@ -182,32 +180,32 @@ describe("registry listener grace", () => {
 	it("still wants payloads briefly after the last listener goes", () => {
 		let now = 1_000_000;
 		const registry = createConversationEventRegistry(() => now);
-		const off = registry.subscribe("s1", () => {});
+		const off = registry.subscribe("host-a", "s1", () => {});
 		off();
 
-		expect(registry.hasListeners()).toBe(true);
+		expect(registry.hasListeners("host-a")).toBe(true);
 	});
 
 	it("stops wanting payloads once nothing has listened for a while", () => {
 		let now = 1_000_000;
 		const registry = createConversationEventRegistry(() => now);
-		const off = registry.subscribe("s1", () => {});
+		const off = registry.subscribe("host-a", "s1", () => {});
 		off();
 		now += LISTENER_GRACE_MS + 1;
 
-		expect(registry.hasListeners()).toBe(false);
+		expect(registry.hasListeners("host-a")).toBe(false);
 	});
 
 	// A cold start where no chat has ever been opened must still skip the
 	// backlog, which is what the optimisation is for.
 	it("does not want payloads when nothing has ever subscribed", () => {
 		const registry = createConversationEventRegistry(() => 1_000_000);
-		expect(registry.hasListeners()).toBe(false);
+		expect(registry.hasListeners("host-a")).toBe(false);
 	});
 
 	it("wants payloads while a listener is active", () => {
 		const registry = createConversationEventRegistry(() => 1_000_000);
-		registry.subscribe("s1", () => {});
-		expect(registry.hasListeners()).toBe(true);
+		registry.subscribe("host-a", "s1", () => {});
+		expect(registry.hasListeners("host-a")).toBe(true);
 	});
 });

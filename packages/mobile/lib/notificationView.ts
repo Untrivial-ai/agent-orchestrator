@@ -20,6 +20,10 @@ export type NotificationSection<T> = {
 	data: T[];
 };
 
+export function notificationRowsForHost<T>(items: readonly T[], itemsHostId: string | undefined, activeHostId: string | undefined): readonly T[] {
+	return activeHostId && itemsHostId === activeHostId ? items : [];
+}
+
 /**
  * Keeps actionable unread history ahead of settled items without disturbing
  * the daemon's newest-first order inside either group.
@@ -63,12 +67,17 @@ export function notificationVisual(t: Theme, type: string): NotificationVisual {
  * opening it from the tray agree — the rule lives here rather than being written
  * twice.
  */
-export function notificationTarget(n: { type: string; sessionId?: string; prUrl?: string }): string {
+export function notificationTarget(n: { type: string; sessionId?: string; hostId?: string; prUrl?: string }, knownHosts: string | ReadonlySet<string> | undefined): string {
+	// An older push has no machine identity. It cannot safely open (or mark read)
+	// a same-ID session on whichever machine is currently selected. History passes
+	// its current host; push taps can name any paired host.
+	if (!n.hostId || !(typeof knownHosts === "string" ? n.hostId === knownHosts : knownHosts?.has(n.hostId))) return "/";
 	const sessionId = n.sessionId?.trim();
+	const hostId = encodeURIComponent(n.hostId);
 	if ((n.type === "review_completed" || n.type === "review_changes_requested") && sessionId && n.prUrl) {
-		return `/review/${encodeURIComponent(sessionId)}?prUrl=${encodeURIComponent(n.prUrl)}`;
+		return `/review/${encodeURIComponent(sessionId)}?prUrl=${encodeURIComponent(n.prUrl)}&hostId=${hostId}`;
 	}
-	return n.type === "needs_input" && sessionId ? `/session/${encodeURIComponent(sessionId)}` : "/prs";
+	return n.type === "needs_input" && sessionId ? `/session/${encodeURIComponent(sessionId)}?hostId=${hostId}` : `/prs?hostId=${hostId}`;
 }
 
 /** Compact "3m" / "4h" / "2d" stamp. Returns "" for an unparseable timestamp. */

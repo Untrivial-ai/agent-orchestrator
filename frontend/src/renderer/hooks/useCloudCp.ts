@@ -36,9 +36,9 @@ export interface UseCloudCpResult {
  */
 export { cloudCpFetch, createRendererCloudCpClient } from "../lib/cloud-cp/renderer-client";
 
-export function useCloudCp(): UseCloudCpResult {
-	const { settings } = useSettings();
-	const { cloudEnabled } = useCloudGate();
+export function useCloudCp(enabled = true): UseCloudCpResult {
+	const { settings } = useSettings(undefined, enabled);
+	const { cloudEnabled } = useCloudGate(enabled);
 	const { session, status } = useCloudSession();
 	const baseUrl = settings?.cloudControlPlaneUrl ?? "";
 	const client = useMemo(() => createRendererCloudCpClient(baseUrl), [baseUrl]);

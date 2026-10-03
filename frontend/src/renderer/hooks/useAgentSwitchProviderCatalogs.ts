@@ -5,6 +5,7 @@ import {
 	conversationQueryKey,
 	invalidateConversationProviderCatalogs,
 } from "./useConversation";
+import { sessionUiKey } from "../lib/hosts";
 
 /**
  * Keeps Chat provider catalogs aligned with the controller epoch during agent switches.
@@ -18,24 +19,27 @@ import {
  */
 export function useAgentSwitchProviderCatalogs({
 	sessionId,
+	hostId,
 	agentSwitching,
 	settledSwitchId,
 }: {
 	sessionId: string;
+	hostId?: string;
 	agentSwitching: boolean;
 	settledSwitchId?: string;
 }): boolean {
 	const queryClient = useQueryClient();
+	const stateSessionId = sessionUiKey(sessionId, hostId);
 	const refreshedSwitchIdsRef = useRef(new Set<string>());
 	const clearedWhileSwitchingRef = useRef(false);
-	const mountedSessionIdRef = useRef(sessionId);
+	const mountedSessionIdRef = useRef(stateSessionId);
 	const [reconciledSettlement, setReconciledSettlement] = useState<{
 		sessionId: string;
 		switchId: string;
 	}>();
 
-	if (mountedSessionIdRef.current !== sessionId) {
-		mountedSessionIdRef.current = sessionId;
+	if (mountedSessionIdRef.current !== stateSessionId) {
+		mountedSessionIdRef.current = stateSessionId;
 		refreshedSwitchIdsRef.current = new Set();
 		clearedWhileSwitchingRef.current = false;
 	}
@@ -47,32 +51,32 @@ export function useAgentSwitchProviderCatalogs({
 		}
 		if (clearedWhileSwitchingRef.current) return;
 		clearedWhileSwitchingRef.current = true;
-		clearConversationProviderCatalogs(queryClient, sessionId);
-	}, [agentSwitching, queryClient, sessionId]);
+		clearConversationProviderCatalogs(queryClient, sessionId, hostId);
+	}, [agentSwitching, hostId, queryClient, sessionId]);
 
 	useEffect(() => {
 		if (!settledSwitchId) return;
 		if (refreshedSwitchIdsRef.current.has(settledSwitchId)) {
 			setReconciledSettlement((current) =>
-				current?.sessionId === sessionId && current.switchId === settledSwitchId
+				current?.sessionId === stateSessionId && current.switchId === settledSwitchId
 					? current
-					: { sessionId, switchId: settledSwitchId },
+					: { sessionId: stateSessionId, switchId: settledSwitchId },
 			);
 			return;
 		}
 		// The renderer may first learn about a fast switch after it has already
 		// completed. Clear before invalidating so outgoing controls cannot remain
 		// visible while active observers refetch from the live controller.
-		clearConversationProviderCatalogs(queryClient, sessionId);
+		clearConversationProviderCatalogs(queryClient, sessionId, hostId);
 		refreshedSwitchIdsRef.current.add(settledSwitchId);
-		invalidateConversationProviderCatalogs(queryClient, sessionId);
-		void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
-		setReconciledSettlement({ sessionId, switchId: settledSwitchId });
-	}, [queryClient, sessionId, settledSwitchId]);
+		invalidateConversationProviderCatalogs(queryClient, sessionId, hostId);
+		void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) });
+		setReconciledSettlement({ sessionId: stateSessionId, switchId: settledSwitchId });
+	}, [hostId, queryClient, sessionId, settledSwitchId, stateSessionId]);
 
 	const settlementReconciled =
 		!settledSwitchId ||
-		(reconciledSettlement?.sessionId === sessionId &&
+		(reconciledSettlement?.sessionId === stateSessionId &&
 			reconciledSettlement.switchId === settledSwitchId);
 	return !agentSwitching && settlementReconciled;
 }

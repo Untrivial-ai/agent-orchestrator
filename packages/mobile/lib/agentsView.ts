@@ -107,6 +107,7 @@ export function workerStatusGlyph(status?: string | null): WorkerStatusGlyph | n
 		case "needs_input":
 			return "message-square";
 		case "changes_requested":
+		case "commented":
 			return "message-square";
 		case "stuck":
 		case "errored":

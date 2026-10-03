@@ -23,6 +23,11 @@ export type KnownProjects = {
 
 export const NO_PROJECTS_KNOWN: KnownProjects = { machine: "", projects: [], known: false };
 
+/** A row from one daemon is never evidence about another, even if IDs match. */
+export function sessionRowsForMachine<T>(rows: T[], rowMachine: string, activeMachine: string): T[] {
+	return rowMachine === activeMachine ? rows : [];
+}
+
 /**
  * Fold one tick's answer into what is known.
  *

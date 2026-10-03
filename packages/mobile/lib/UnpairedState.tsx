@@ -20,7 +20,19 @@ import { Button, EmptyState } from "./ui";
  */
 export function UnpairedState() {
 	const router = useRouter();
-	const { configResolved } = useApp();
+	const { selectedHostName, loading, reloadConfig, configResolved } = useApp();
+	if (selectedHostName) {
+		const connecting = loading || !configResolved;
+		return (
+			<EmptyState
+				icon="server"
+				pulse={connecting}
+				title={connecting ? `Connecting to ${selectedHostName}` : `${selectedHostName} is unavailable`}
+				message={connecting ? "Checking saved addresses…" : "This machine is paired but cannot be reached right now."}
+				action={connecting ? undefined : <Button title="Retry connection" icon="refresh-cw" onPress={() => { void reloadConfig(); }} />}
+			/>
+		);
+	}
 	// On launch the store has no config until the endpoint race finishes, which
 	// on a slow network takes seconds. Offering the scanner during that window
 	// told a paired user their phone had forgotten the desktop, moments before it
@@ -30,14 +42,14 @@ export function UnpairedState() {
 			<EmptyState
 				icon="monitor-smartphone"
 				pulse
-				title="Connecting to your desktop…"
+				title="Connecting to your machine…"
 			/>
 		);
 	}
 	return (
 		<EmptyState
 			icon="monitor-smartphone"
-			title="No desktop paired"
+			title="No machine paired"
 			action={<Button title="Scan pairing code" icon="maximize" onPress={() => router.push("/pair")} />}
 		/>
 	);

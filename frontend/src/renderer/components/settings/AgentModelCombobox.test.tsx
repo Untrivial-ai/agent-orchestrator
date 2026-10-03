@@ -159,11 +159,14 @@ describe("AgentModelCombobox", () => {
 			{ id: "sonnet", label: "Sonnet" },
 		]);
 		const picker = screen.getByRole("button", { name: "Worker model" });
-		expect(picker).toHaveTextContent("Model not reported");
+		expect(picker).toHaveTextContent("Select model");
+		expect(picker).not.toHaveTextContent("Model not reported");
 		expect(onChange).not.toHaveBeenCalled();
 		await userEvent.click(picker);
 		expect(screen.queryByRole("menuitem", { name: /Default/ })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitem", { name: "Sonnet" })).toBeInTheDocument();
+		// The models are listed with none selected.
+		const sonnet = screen.getByRole("menuitem", { name: "Sonnet" });
+		expect(sonnet).not.toHaveAttribute("aria-current");
 	});
 
 	it("keeps the model menu closed while its owning operation is pending", async () => {

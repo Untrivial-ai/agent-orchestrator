@@ -159,11 +159,19 @@ describe("theme-aware helpers", () => {
 		expect(statusVisual(darkTheme, "unknown").label).toBe("Unknown");
 	});
 
+	// Regression: an unresolved comment from a non-blocking review used to
+	// arrive as "changes_requested"; it now arrives as "commented" and must not
+	// fall through to the raw-wire-value default -- see agent-orchestrator#5765.
+	it("labels an unresolved comment distinctly from changes requested", () => {
+		expect(statusVisual(darkTheme, "commented").label).toBe("Commented");
+		expect(statusVisual(darkTheme, "commented").label).not.toBe(statusVisual(darkTheme, "changes_requested").label);
+	});
+
 	// A label that still contains an underscore is a wire value that leaked.
 	it("never renders a raw enum for a known status", () => {
 		const known = [
 			"working", "idle", "needs_input", "exited", "no_signal", "ci_failed",
-			"changes_requested", "review_pending", "draft", "pr_open", "approved",
+			"changes_requested", "commented", "review_pending", "draft", "pr_open", "approved",
 			"mergeable", "merged", "terminated", "unknown", "spawning", "detecting",
 			"stuck", "errored", "done", "cleanup", "killed",
 		];

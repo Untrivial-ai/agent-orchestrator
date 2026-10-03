@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -80,6 +81,32 @@ func TestDelegateTaskSpawnsWorkerAndRefinesTitleThroughBackgroundHarness(t *test
 				t.Fatalf("display name = %q, want generated title", got)
 			}
 		})
+	}
+}
+
+func TestDelegateTaskClientRequestReplaysAndConflictsBeforeSpawn(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", ProjectID: "ao", Kind: domain.KindWorker, ClientRequestID: "draft-1", ClientRequestHash: "v1:original", ClientRequestCommitted: true}
+	cmd := &fakeCommander{}
+	svc := &Service{store: st, manager: cmd}
+	input := DelegateTaskInput{ProjectID: "ao", Brief: "Fix it", ClientRequestID: "draft-1", ClientRequestHash: "v1:original"}
+	out, err := svc.DelegateTask(context.Background(), input)
+	if err != nil || out.WorkerID != "ao-1" || cmd.spawnCalls != 0 {
+		t.Fatalf("replay = %+v, spawnCalls=%d, err=%v", out, cmd.spawnCalls, err)
+	}
+	input.ClientRequestHash = "v1:changed"
+	_, err = svc.DelegateTask(context.Background(), input)
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "CLIENT_REQUEST_CONFLICT" || cmd.spawnCalls != 0 {
+		t.Fatalf("changed payload: spawnCalls=%d, err=%v", cmd.spawnCalls, err)
+	}
+	rec := st.sessions["ao-1"]
+	rec.ClientRequestCommitted = false
+	st.sessions["ao-1"] = rec
+	input.ClientRequestHash = "v1:original"
+	_, err = svc.DelegateTask(context.Background(), input)
+	if !errors.As(err, &apiError) || apiError.Code != "CLIENT_REQUEST_INCOMPLETE" || cmd.spawnCalls != 0 {
+		t.Fatalf("incomplete retry: spawnCalls=%d, err=%v", cmd.spawnCalls, err)
 	}
 }
 

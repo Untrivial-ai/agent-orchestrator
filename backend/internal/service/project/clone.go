@@ -35,7 +35,7 @@ const clonePreparationMarker = ".ao-clone-prepared"
 // The checkout is staged in a unique sibling directory so a failed or cancelled
 // clone can never leave a half-populated destination behind.
 func (m *Service) Clone(ctx context.Context, in CloneInput) (Project, error) {
-	prepared, err := m.prepareClone(ctx, in)
+	prepared, err := m.prepareClone(ctx, in, false)
 	if err != nil {
 		return Project{}, err
 	}
@@ -60,7 +60,7 @@ func (m *Service) Clone(ctx context.Context, in CloneInput) (Project, error) {
 
 // PrepareClone checks out a repository without registering it as a project.
 func (m *Service) PrepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error) {
-	return m.prepareClone(ctx, in)
+	return m.prepareClone(ctx, in, true)
 }
 
 // CleanupPreparedClone removes an unregistered checkout created by PrepareClone.
@@ -104,7 +104,7 @@ func (m *Service) cleanupPreparedCloneAfterFailure(ctx context.Context, prepared
 	}
 }
 
-func (m *Service) prepareClone(ctx context.Context, in CloneInput) (ClonePreparationResult, error) {
+func (m *Service) prepareClone(ctx context.Context, in CloneInput, resume bool) (ClonePreparationResult, error) {
 	remoteURL := strings.TrimSpace(in.RemoteURL)
 	repositoryName, err := cloneRepositoryName(remoteURL)
 	if err != nil {
@@ -129,7 +129,20 @@ func (m *Service) prepareClone(ctx context.Context, in CloneInput) (ClonePrepara
 	if err := validateRepositorySetupPathSafety(target); err != nil {
 		return ClonePreparationResult{}, err
 	}
-	if _, err := os.Lstat(target); err == nil {
+	if info, err := os.Lstat(target); err == nil {
+		if resume && info.IsDir() {
+			markerID, exists, markerErr := readClonePreparationID(target)
+			if markerErr == nil && exists {
+				storedURL, gitErr := aoprocess.CommandContext(ctx, "git", "-C", target, "config", "--local", "--get", "remote.origin.url").Output()
+				if gitErr == nil && strings.TrimSpace(string(storedURL)) == remoteURL {
+					if _, registered, storeErr := m.store.FindProjectByPath(ctx, target); storeErr != nil {
+						return ClonePreparationResult{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to inspect existing project")
+					} else if !registered {
+						return ClonePreparationResult{Path: target, RemoteURL: remoteURL, PreparationID: markerID}, nil
+					}
+				}
+			}
+		}
 		return ClonePreparationResult{}, apierr.Conflict("CLONE_DESTINATION_EXISTS", "A folder with this repository name already exists in the selected destination.", map[string]any{"path": target})
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return ClonePreparationResult{}, apierr.Invalid("CLONE_DESTINATION_UNAVAILABLE", "The clone destination could not be inspected.", map[string]any{"path": target})
@@ -188,14 +201,27 @@ func newClonePreparationID() (string, error) {
 }
 
 func readClonePreparationID(path string) (string, bool, error) {
-	value, err := os.ReadFile(filepath.Join(path, ".git", clonePreparationMarker))
+	marker := filepath.Join(path, ".git", clonePreparationMarker)
+	info, err := os.Lstat(marker)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	return strings.TrimSpace(string(value)), true, nil
+	if !info.Mode().IsRegular() {
+		return "", false, errors.New("clone preparation marker is not a regular file")
+	}
+	value, err := os.ReadFile(marker)
+	if err != nil {
+		return "", false, err
+	}
+	id := strings.TrimSpace(string(value))
+	decoded, err := hex.DecodeString(id)
+	if err != nil || len(decoded) != 32 {
+		return "", false, errors.New("invalid clone preparation marker")
+	}
+	return id, true, nil
 }
 
 func sameClonePreparationID(actual, requested string) bool {

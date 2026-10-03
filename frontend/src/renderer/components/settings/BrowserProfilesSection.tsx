@@ -1,12 +1,17 @@
-import { Check, Eraser, Import, Pencil, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Eraser, Import, MoreHorizontal, Pencil, Plus, Trash2, UserRound } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AoBridge } from "../../../preload";
 import { aoBridge } from "../../lib/bridge";
-import { cn } from "../../lib/utils";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Button } from "../ui/button";
-import { Input } from "../ui/input";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
 import { BrowserImportDialog } from "./BrowserImportDialog";
@@ -18,11 +23,11 @@ type DestructiveAction = { kind: "clear" | "delete"; profile: Profile };
 export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean }) {
 	const { t } = useTranslation();
 	const bridge = (aoBridge as Partial<AoBridge>).browserProfiles as ProfileBridge | undefined;
-	const [profiles, setProfiles] = useState<Awaited<ReturnType<ProfileBridge["list"]>>["profiles"]>([]);
+	const [profiles, setProfiles] = useState<Profile[]>([]);
 	const [loading, setLoading] = useState(Boolean(bridge));
 	const [error, setError] = useState("");
 	const [name, setName] = useState("");
-	const [editing, setEditing] = useState<Record<string, string>>({});
+	const [renamingId, setRenamingId] = useState<string | null>(null);
 	const [pendingAction, setPendingAction] = useState<DestructiveAction | null>(null);
 	const [actionBusy, setActionBusy] = useState(false);
 	const [actionError, setActionError] = useState("");
@@ -61,22 +66,22 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 		}
 	};
 
-	const rename = async (id: string) => {
-		if (!bridge) return;
-		const nextName = editing[id]?.trim();
-		if (!nextName) return;
+	const rename = async (profile: Profile, value: string) => {
+		setRenamingId(null);
+		const nextName = value.trim();
+		if (!bridge || !nextName || nextName === profile.name) return;
 		try {
-			const updated = await bridge.rename({ id, name: nextName });
-			setProfiles((current) => current.map((profile) => (profile.id === id ? updated : profile)));
-			setEditing((current) => {
-				const next = { ...current };
-				delete next[id];
-				return next;
-			});
+			const updated = await bridge.rename({ id: profile.id, name: nextName });
+			setProfiles((current) => current.map((entry) => (entry.id === profile.id ? updated : entry)));
 			setError("");
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : t("settings.browserProfiles.saveFailed"));
 		}
+	};
+
+	const requestAction = (kind: DestructiveAction["kind"], profile: Profile) => {
+		setActionError("");
+		setPendingAction({ kind, profile });
 	};
 
 	const confirmAction = async () => {
@@ -115,81 +120,66 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 				titleHidden={titleHidden}
 				grouped
 			>
-			<p className="text-xs leading-relaxed text-muted-foreground">
-				{t("settings.browserProfiles.description")}
-			</p>
-			<SettingsRow label={t("settings.browserImport.rowLabel")}>
-				<Button disabled={!bridge} onClick={() => setImportOpen(true)} size="sm" type="button" variant="outline">
-					<Import aria-hidden="true" className="size-icon-base" />
-					{t("settings.browserImport.action")}
-				</Button>
-			</SettingsRow>
-			<SettingsRow label={t("settings.browserProfiles.create")}>
-				<form
-					className="flex min-w-0 max-w-full items-center gap-1.5"
-					onSubmit={(event) => {
-						event.preventDefault();
-						void create();
-					}}
-				>
-					<Input
-						aria-label={t("settings.browserProfiles.name")}
-						className="h-control-md w-36"
-						disabled={!bridge || loading}
-						maxLength={64}
-						onChange={(event) => setName(event.target.value)}
-						placeholder={t("settings.browserProfiles.namePlaceholder")}
-						value={name}
-					/>
-					<Button aria-label={t("settings.browserProfiles.create")} disabled={!name.trim() || !bridge || loading} size="icon-sm" type="submit" variant="outline">
-						<Plus aria-hidden="true" className="size-icon-base" />
+				<SettingsRow label={t("settings.browserImport.rowLabel")}>
+					<Button disabled={!bridge} onClick={() => setImportOpen(true)} type="button" variant="secondary">
+						<Import aria-hidden="true" className="size-icon-base" />
+						{t("settings.browserImport.action")}
 					</Button>
-				</form>
-			</SettingsRow>
-			{loading ? (
-				<p className="px-3 py-3 text-xs text-muted-foreground">{t("settings.browserProfiles.loading")}</p>
-			) : profiles.length === 0 ? (
-				<p className="px-3 py-3 text-xs text-muted-foreground">{t("settings.browserProfiles.empty")}</p>
-			) : (
-				profiles.map((profile) => (
-					<SettingsRow key={profile.id} label={profile.name}>
-						<div className="flex min-w-0 items-center gap-1.5">
-							<Input
-								aria-label={t("settings.browserProfiles.renameInput", { profile: profile.name })}
-								className={cn("h-control-md w-36", !editing[profile.id] && "hidden")}
-								maxLength={64}
-								onChange={(event) => setEditing((current) => ({ ...current, [profile.id]: event.target.value }))}
-								value={editing[profile.id] ?? profile.name}
+				</SettingsRow>
+				<SettingsRow label={t("settings.browserProfiles.create")}>
+					{/* One field with its submit embedded at the trailing edge. */}
+					<form
+						className="flex h-control-form w-52 min-w-0 items-center gap-1 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) pl-3 pr-1"
+						onSubmit={(event) => {
+							event.preventDefault();
+							void create();
+						}}
+					>
+						<input
+							aria-label={t("settings.browserProfiles.name")}
+							className="h-full min-w-0 flex-1 bg-transparent text-sm text-settings-label outline-none placeholder:text-settings-muted disabled:cursor-not-allowed disabled:opacity-50"
+							disabled={!bridge || loading}
+							maxLength={64}
+							onChange={(event) => setName(event.target.value)}
+							placeholder={t("settings.browserProfiles.namePlaceholder")}
+							value={name}
+						/>
+						<Button
+							aria-label={t("settings.browserProfiles.create")}
+							className="size-control-sm text-settings-muted hover:text-settings-label"
+							disabled={!name.trim() || !bridge || loading}
+							size="none"
+							type="submit"
+							variant="ghost"
+						>
+							<Plus aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</form>
+				</SettingsRow>
+			</SettingsSection>
+			<SettingsSection title={t("settings.browserProfiles.profiles")}>
+				{error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+				{loading ? (
+					<p className="py-2 text-xs text-settings-muted">{t("settings.browserProfiles.loading")}</p>
+				) : profiles.length === 0 ? (
+					<p className="py-2 text-xs text-settings-muted">{t("settings.browserProfiles.empty")}</p>
+				) : (
+					<ul className="flex flex-col divide-y divide-border">
+						{profiles.map((profile) => (
+							<BrowserProfileRow
+								key={profile.id}
+								profile={profile}
+								renaming={renamingId === profile.id}
+								onRenameStart={() => setRenamingId(profile.id)}
+								onRenameEnd={(value) => void rename(profile, value)}
+								onRenameCancel={() => setRenamingId(null)}
+								onClear={() => requestAction("clear", profile)}
+								onDelete={() => requestAction("delete", profile)}
 							/>
-							<Button
-								aria-label={t("settings.browserProfiles.rename", { profile: profile.name })}
-								onClick={() => {
-									if (editing[profile.id] === undefined) setEditing((current) => ({ ...current, [profile.id]: profile.name }));
-									else void rename(profile.id);
-								}}
-								size="icon-sm"
-								type="button"
-								variant="ghost"
-							>
-								{editing[profile.id] === undefined ? <Pencil aria-hidden="true" className="size-icon-base" /> : <Check aria-hidden="true" className="size-icon-base" />}
-							</Button>
-							<Button aria-label={t("settings.browserProfiles.clear", { profile: profile.name })} onClick={() => {
-								setActionError("");
-								setPendingAction({ kind: "clear", profile });
-							}} size="icon-sm" type="button" variant="ghost">
-								<Eraser aria-hidden="true" className="size-icon-base" />
-							</Button>
-							<Button aria-label={t("settings.browserProfiles.delete", { profile: profile.name })} onClick={() => {
-								setActionError("");
-								setPendingAction({ kind: "delete", profile });
-							}} size="icon-sm" type="button" variant="ghost">
-								<Trash2 aria-hidden="true" className="size-icon-base" />
-							</Button>
-						</div>
-					</SettingsRow>
-				))
-			)}
-			{error ? <p className="px-3 py-2 text-xs text-destructive" role="alert">{error}</p> : null}
+						))}
+					</ul>
+				)}
+				<p className="text-xs leading-relaxed text-settings-muted">{t("settings.browserProfiles.description")}</p>
 			</SettingsSection>
 			<ConfirmDialog
 				open={pendingAction !== null}
@@ -227,5 +217,125 @@ export function BrowserProfilesSection({ titleHidden }: { titleHidden?: boolean 
 				open={importOpen}
 			/>
 		</>
+	);
+}
+
+/**
+ * One named profile: its name, renamed in place, and a menu for the rest. The
+ * menu keeps the row down to a single quiet control and names each action in
+ * words, so clearing site data never hides behind an ambiguous icon.
+ */
+function BrowserProfileRow({
+	profile,
+	renaming,
+	onRenameStart,
+	onRenameEnd,
+	onRenameCancel,
+	onClear,
+	onDelete,
+}: {
+	profile: Profile;
+	renaming: boolean;
+	onRenameStart: () => void;
+	onRenameEnd: (value: string) => void;
+	onRenameCancel: () => void;
+	onClear: () => void;
+	onDelete: () => void;
+}) {
+	const { t } = useTranslation();
+	const [draft, setDraft] = useState(profile.name);
+	const inputRef = useRef<HTMLInputElement>(null);
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	// The menu is still closing when Rename is chosen, and a modal menu pulls
+	// focus back into itself until it has gone, so focus the field only once
+	// the menu hands focus back.
+	const focusFieldOnMenuClose = useRef(false);
+	const cancelOnBlur = useRef(false);
+
+	return (
+		<li className="flex min-h-11 min-w-0 items-center gap-3 py-1.5">
+			<UserRound aria-hidden="true" className="size-4 shrink-0 text-settings-muted" />
+			{/* The name slot keeps the row's width whether it shows the name or the
+			    field, so the menu button never moves while renaming. */}
+			<div className="min-w-0 flex-1">
+				{renaming ? (
+					<input
+						aria-label={t("settings.browserProfiles.renameInput", { profile: profile.name })}
+						className="-ml-2 h-control-md w-full max-w-52 rounded-md border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-2 text-sm text-settings-label outline-none"
+						data-settings-inline-edit=""
+						maxLength={64}
+						onBlur={() => {
+							// Blur is the one place an edit ends: Enter and Escape move focus
+							// to the row's menu button, so each path settles exactly once.
+							if (cancelOnBlur.current) {
+								cancelOnBlur.current = false;
+								onRenameCancel();
+							} else {
+								onRenameEnd(draft);
+							}
+						}}
+						onChange={(event) => setDraft(event.target.value)}
+						onKeyDown={(event) => {
+							if (event.key !== "Enter" && event.key !== "Escape") return;
+							event.preventDefault();
+							cancelOnBlur.current = event.key === "Escape";
+							triggerRef.current?.focus();
+						}}
+						ref={inputRef}
+						value={draft}
+					/>
+				) : (
+					<span className="block truncate text-sm text-settings-label" title={profile.name}>
+						{profile.name}
+					</span>
+				)}
+			</div>
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<button
+						aria-label={t("settings.browserProfiles.actions", { profile: profile.name })}
+						className="settings-close-button shrink-0 focus-visible:bg-(--color-bg-settings-row-hover) focus-visible:text-settings-title data-[state=open]:bg-(--color-bg-settings-row-hover) data-[state=open]:text-settings-title"
+						ref={triggerRef}
+						type="button"
+					>
+						<MoreHorizontal aria-hidden="true" className="size-4" />
+					</button>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent
+					align="end"
+					className="min-w-40"
+					onCloseAutoFocus={(event) => {
+						if (!focusFieldOnMenuClose.current) return;
+						focusFieldOnMenuClose.current = false;
+						event.preventDefault();
+						inputRef.current?.focus();
+						inputRef.current?.select();
+					}}
+				>
+					<DropdownMenuItem
+						onSelect={() => {
+							setDraft(profile.name);
+							focusFieldOnMenuClose.current = true;
+							onRenameStart();
+						}}
+					>
+						<Pencil aria-hidden="true" />
+						{t("shell.rename")}
+					</DropdownMenuItem>
+					<DropdownMenuItem onSelect={onClear}>
+						<Eraser aria-hidden="true" />
+						{t("settings.browserProfiles.clearConfirm")}
+					</DropdownMenuItem>
+					<DropdownMenuSeparator />
+					<DropdownMenuItem
+						className="text-destructive focus:text-destructive [&_svg]:text-destructive focus:[&_svg]:text-destructive"
+						onSelect={onDelete}
+					>
+						<Trash2 aria-hidden="true" />
+						{t("settings.browserProfiles.deleteConfirm")}
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</li>
 	);
 }

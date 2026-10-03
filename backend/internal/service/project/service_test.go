@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
+	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
@@ -415,6 +416,89 @@ func TestManager_PrepareCloneCancellationLeavesNoCheckout(t *testing.T) {
 	}
 	if temporary, err := filepath.Glob(filepath.Join(destinationParent, ".ao-clone-*")); err != nil || len(temporary) != 0 {
 		t.Fatalf("temporary clone directories = %#v, %v", temporary, err)
+	}
+}
+
+func TestManager_PrepareCloneResumesAfterRestartOnlyForMatchingCheckout(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	store, err := sqlitetest.Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := project.New(store)
+	source := gitRepo(t)
+	remoteURL := (&url.URL{Scheme: "file", Path: source}).String()
+	parent := t.TempDir()
+	in := project.CloneInput{RemoteURL: remoteURL, DestinationParent: parent}
+	prepared, err := m.PrepareClone(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(prepared.Path, "keep.txt")
+	if err := os.WriteFile(userFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = sqlite.OpenPreMigrated(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m = project.New(store)
+
+	resumed, err := m.PrepareClone(ctx, in)
+	if err != nil {
+		t.Fatalf("resume prepared clone: %v", err)
+	}
+	if resumed != prepared {
+		t.Fatalf("resumed = %+v, want %+v", resumed, prepared)
+	}
+	if got, err := os.ReadFile(userFile); err != nil || string(got) != "keep" {
+		t.Fatalf("user file after resume = %q, %v", got, err)
+	}
+	if listed, err := m.List(ctx); err != nil || len(listed) != 0 {
+		t.Fatalf("projects before registration = %+v, %v", listed, err)
+	}
+	if _, err := m.Add(ctx, project.AddInput{Path: resumed.Path, ClonePreparationID: resumed.PreparationID}); err != nil {
+		t.Fatalf("register resumed clone: %v", err)
+	}
+	if listed, err := m.List(ctx); err != nil || len(listed) != 1 {
+		t.Fatalf("projects after registration = %+v, %v", listed, err)
+	}
+	if got, err := os.ReadFile(userFile); err != nil || string(got) != "keep" {
+		t.Fatalf("user file after registration = %q, %v", got, err)
+	}
+
+	otherParent := t.TempDir()
+	in.DestinationParent = otherParent
+	prepared, err = m.PrepareClone(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(prepared.Path, ".git", ".ao-clone-prepared")
+	if out, err := exec.Command("git", "-C", prepared.Path, "remote", "set-url", "origin", "file:///different/repo").CombinedOutput(); err != nil {
+		t.Fatalf("set mismatched origin: %v (%s)", err, out)
+	}
+	_, err = m.PrepareClone(ctx, in)
+	wantCode(t, err, "CLONE_DESTINATION_EXISTS")
+	if out, err := exec.Command("git", "-C", prepared.Path, "remote", "set-url", "origin", remoteURL).CombinedOutput(); err != nil {
+		t.Fatalf("restore origin: %v (%s)", err, out)
+	}
+	if err := os.WriteFile(marker, []byte("arbitrary-marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.PrepareClone(ctx, in)
+	wantCode(t, err, "CLONE_DESTINATION_EXISTS")
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.PrepareClone(ctx, in)
+	wantCode(t, err, "CLONE_DESTINATION_EXISTS")
+	if _, err := os.Stat(prepared.Path); err != nil {
+		t.Fatalf("refused checkout was modified or removed: %v", err)
 	}
 }
 

@@ -24,6 +24,55 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	return created, err
 }
 
+// CreateClientRequestSession atomically decides which session owns a request
+// key. The caller launches only when fresh is true.
+func (s *Store) CreateClientRequestSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+	if rec.ClientRequestID == "" || rec.ClientRequestHash == "" {
+		return domain.SessionRecord{}, false, fmt.Errorf("client request id and hash are required")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.createSessionLocked(ctx, rec)
+}
+
+// GetSessionByClientRequestID finds the session created for a retryable request.
+func (s *Store) GetSessionByClientRequestID(ctx context.Context, key string) (domain.SessionRecord, bool, error) {
+	return s.getSessionByClientRequestID(ctx, s.qr, key)
+}
+
+func (s *Store) getSessionByClientRequestID(ctx context.Context, q *gen.Queries, key string) (domain.SessionRecord, bool, error) {
+	row, err := q.GetClientRequestSession(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SessionRecord{}, false, nil
+	}
+	if err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("find client request %s: %w", key, err)
+	}
+	session, err := q.GetSession(ctx, row.ID)
+	if err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("load client request session %s: %w", row.ID, err)
+	}
+	rec := rowToRecord(session)
+	rec.ClientRequestID = key
+	rec.ClientRequestHash = row.ClientRequestHash
+	rec.ClientRequestCommitted = row.ClientRequestCommitted
+	return rec, true, nil
+}
+
+// CommitClientRequestSession marks a successfully launched session replayable.
+func (s *Store) CommitClientRequestSession(ctx context.Context, id domain.SessionID) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.CommitClientRequestSession(ctx, id)
+	if err != nil {
+		return fmt.Errorf("commit client request session %s: %w", id, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("client request session %s is missing", id)
+	}
+	return nil
+}
+
 // CreateAutomationSession reports whether it inserted the seed. Callers must
 // not continue launching when fresh=false unless the returned row carries the
 // durable launch-complete marker.
@@ -37,6 +86,12 @@ func (s *Store) CreateAutomationSession(ctx context.Context, rec domain.SessionR
 }
 
 func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+	if rec.ClientRequestID != "" {
+		existing, found, err := s.getSessionByClientRequestID(ctx, s.qw, rec.ClientRequestID)
+		if err != nil || found {
+			return existing, false, err
+		}
+	}
 	if rec.AutomationRunID != nil {
 		existing, err := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
 		if err == nil {
@@ -71,6 +126,12 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 		num++
 	}
 	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
+		if rec.ClientRequestID != "" {
+			existing, found, reloadErr := s.getSessionByClientRequestID(ctx, s.qw, rec.ClientRequestID)
+			if reloadErr == nil && found {
+				return existing, false, nil
+			}
+		}
 		if rec.AutomationRunID != nil {
 			existing, reloadErr := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
 			if reloadErr == nil {
@@ -167,6 +228,8 @@ func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID,
 		AutoInjectReview:   rec.AutoInjectReview,
 		AutoInjectCI:       rec.AutoInjectCI,
 		ProvisionState:     rec.ProvisionState.WithDefault(),
+		ClientRequestID:    rec.ClientRequestID,
+		ClientRequestHash:  rec.ClientRequestHash,
 		ID:                 id,
 	})
 	if err != nil {
@@ -815,6 +878,8 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		IsTaskPreparation:                rec.IsTaskPreparation,
 		AutomationRunID:                  rec.AutomationRunID,
 		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
+		ClientRequestID:                  rec.ClientRequestID,
+		ClientRequestHash:                rec.ClientRequestHash,
 	}
 }
 

@@ -203,6 +203,43 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("loads a remote session's staged image from its proxy, not the local daemon", () => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			items: [humanMessage("See image\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-remote.png")],
+			latestSequence: 1,
+		};
+		render(<ChatWorkspace snapshot={snapshot} assetBaseUrl="http://127.0.0.1:4000/token-a" />);
+		expect(screen.getByRole("img", { name: "attachment-remote.png" })).toHaveAttribute(
+			"src",
+			`http://127.0.0.1:4000/token-a/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/preview/files/.ao/attachments/attachment-remote.png`,
+		);
+	});
+
+	it("does not read an offline remote session's image from the laptop daemon", () => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			items: [humanMessage("See image\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-remote.png")],
+			latestSequence: 1,
+		};
+		render(<ChatWorkspace snapshot={snapshot} remoteHostId="box-a" />);
+		expect(screen.queryByRole("img", { name: "attachment-remote.png" })).not.toBeInTheDocument();
+		expect(screen.getByText("attachment-remote.png")).toBeInTheDocument();
+	});
+
+	it("keeps offline remote preview links classified as remote", () => {
+		const assistant = chatFixture.items.find((item): item is ConversationMessage => item.kind === "message" && item.role === "assistant");
+		if (!assistant) throw new Error("Fixture needs an assistant message");
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			items: [{ ...assistant, id: "offline-preview", sequence: 1, text: "[preview](http://localhost:5173)" }],
+			latestSequence: 1,
+		};
+		render(<ChatWorkspace snapshot={snapshot} remoteHostId="box-a" />);
+		expect(screen.getByText("preview")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "preview" })).not.toBeInTheDocument();
+	});
+
 	it("hides appended worker report context from the human message", async () => {
 		const text =
 			"Please continue\n\n<ao-worker-reports>\nReports since your previous turn:\n\n[done] ao://sessions/project/worker\nFinished\n</ao-worker-reports>";
@@ -1867,6 +1904,37 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("keeps queued browser feedback visible while the agent is busy", () => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixture,
+			turns: [
+				...chatFixture.turns,
+				{ id: "queued-feedback", state: "queued", requestedAt: "2026-09-28T12:00:00Z" },
+			],
+			items: [
+				...chatFixture.items,
+				{
+					kind: "message",
+					id: "queued-feedback-message",
+					turnId: "queued-feedback",
+					sequence: 15,
+					revision: 0,
+					role: "user",
+					origin: "automation",
+					text: "<browser_annotations>\nBrowser feedback\nPage: Example\nURL: https://example.com/\nAnnotations: 1\n\nAnnotation 1 (comment):\nTarget: button\nComment: Make this clearer.\n\n</browser_annotations>",
+					streaming: false,
+					createdAt: "2026-09-28T12:00:00Z",
+				},
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText("Browser feedback")).toBeInTheDocument();
+		expect(screen.getByText("1 annotation on Example")).toBeInTheDocument();
+		expect(screen.getByText("Make this clearer.")).toBeInTheDocument();
+	});
+
 	it("renders browser annotation transport as a compact feedback card", () => {
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
 		const message: ConversationMessage = {
@@ -2242,6 +2310,28 @@ describe("ChatWorkspace message actions", () => {
 
 		render(<ChatWorkspace snapshot={sessionB} onSend={vi.fn()} />);
 		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("session B draft");
+	});
+
+	it("keeps renderer drafts separate for two hosts with the same daemon session ID", async () => {
+		const snapshot = idleSnapshot();
+		const session = { ...chatSession, createdAt: "2026-08-25T09:00:00.000Z" };
+		const a = `host-A:${snapshot.sessionId}`;
+		const b = `host-B:${snapshot.sessionId}`;
+		const first = render(<ChatWorkspace snapshot={snapshot} session={session} uiSessionId={a} onSend={vi.fn()} />);
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "draft on A");
+		first.unmount();
+
+		const second = render(<ChatWorkspace snapshot={snapshot} session={session} uiSessionId={b} onSend={vi.fn()} />);
+		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("");
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "draft on B");
+		second.unmount();
+
+		const restored = render(<ChatWorkspace snapshot={snapshot} session={session} uiSessionId={a} onSend={vi.fn()} />);
+		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("draft on A");
+		restored.unmount();
+
+		render(<ChatWorkspace snapshot={snapshot} session={session} uiSessionId={b} onSend={vi.fn()} />);
+		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("draft on B");
 	});
 
 	it("lets only the newest daemon session incarnation own restored drafts", async () => {

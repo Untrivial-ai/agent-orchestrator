@@ -461,6 +461,19 @@ func (c *Controller) SteerOrSend(
 	); err != nil {
 		return SteerOrSendResult{}, fmt.Errorf("recover sent message: %w", err)
 	} else if found {
+		if !recoverOnly {
+			hash, err := clientPayloadHash(msg)
+			if err != nil {
+				return SteerOrSendResult{}, err
+			}
+			if existing.ClientPayloadHash != "" {
+				if existing.ClientPayloadHash != hash {
+					return SteerOrSendResult{}, domain.ErrClientMessageConflict
+				}
+			} else if !legacyMessageMatches(existing, msg) {
+				return SteerOrSendResult{}, domain.ErrClientMessageConflict
+			}
+		}
 		turn, err := c.store.TurnByID(ctx, existing.TurnID)
 		if err != nil {
 			return SteerOrSendResult{}, fmt.Errorf("recover sent turn: %w", err)

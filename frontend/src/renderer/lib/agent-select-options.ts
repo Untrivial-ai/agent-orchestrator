@@ -133,10 +133,9 @@ export function isReadyAgent(agent: AgentInfo): boolean {
 		(agent.authentication.state === "authorized" || agent.authentication.state === "not_applicable");
 }
 
-/** Installed agents with locally configured credentials can attempt a launch. */
+/** Unknown readiness is not a rejection; only definite failures block launch. */
 export function isLaunchableAgent(agent: AgentInfo): boolean {
-	return isReadyAgent(agent) ||
-		(agent.installation.state === "installed" && agent.authentication.state === "configured");
+	return agent.installation.state !== "not_installed" && agent.authentication.state !== "unauthorized";
 }
 
 export function buildRankedAgentOptions({

@@ -325,6 +325,7 @@ type ConversationMessage struct {
 	UpdatedAt           time.Time
 	DeliveryContentJson string
 	BranchID            string
+	ClientPayloadHash   sql.NullString
 }
 
 type ConversationProviderEvent struct {
@@ -674,6 +675,9 @@ type Session struct {
 	IsTaskPreparation                bool
 	AutomationRunID                  *domain.AutomationRunID
 	AutomationLaunchCompleted        bool
+	ClientRequestID                  string
+	ClientRequestHash                string
+	ClientRequestCommitted           bool
 	HibernatedAt                     sql.NullTime
 }
 
@@ -727,14 +731,15 @@ type SessionWorktree struct {
 }
 
 type ShellTerminal struct {
-	HandleID   string
-	ProjectID  *domain.ProjectID
-	WorkingDir string
-	Title      string
-	AppRunID   string
-	CreatedAt  time.Time
-	SessionID  sql.NullString
-	Transient  bool
+	HandleID                  string
+	ProjectID                 *domain.ProjectID
+	WorkingDir                string
+	Title                     string
+	AppRunID                  string
+	CreatedAt                 time.Time
+	SessionID                 sql.NullString
+	Transient                 bool
+	PreviewCapabilityVerifier string
 }
 
 type TelemetryEvent struct {

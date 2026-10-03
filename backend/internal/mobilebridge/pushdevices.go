@@ -29,6 +29,7 @@ type PushDevice struct {
 	Token      string    `json:"token,omitempty"`
 	Platform   string    `json:"platform,omitempty"`
 	DeviceName string    `json:"deviceName,omitempty"`
+	HostName   string    `json:"hostName,omitempty"`
 	Muted      bool      `json:"muted,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 	LastSeenAt time.Time `json:"lastSeenAt"`
@@ -185,12 +186,22 @@ func (r *DeviceRegistry) Upsert(dev PushDevice) error {
 		case hasInstall && hasToken:
 			// Same phone, two identities. Fold them together before writing, so the
 			// token is never left behind on the row being abandoned.
-			dev.CreatedAt, dev.Muted, dev.Token = carryOver(mergeIdentities(byInstall, byToken), dev)
+			merged := mergeIdentities(byInstall, byToken)
+			dev.CreatedAt, dev.Muted, dev.Token = carryOver(merged, dev)
+			if dev.HostName == "" {
+				dev.HostName = merged.HostName
+			}
 			delete(r.devices, tokenKey)
 		case hasInstall:
 			dev.CreatedAt, dev.Muted, dev.Token = carryOver(byInstall, dev)
+			if dev.HostName == "" {
+				dev.HostName = byInstall.HostName
+			}
 		case hasToken:
 			dev.CreatedAt, dev.Muted, dev.Token = carryOver(byToken, dev)
+			if dev.HostName == "" {
+				dev.HostName = byToken.HostName
+			}
 			delete(r.devices, tokenKey) // re-key from the legacy/synthesized id
 		}
 		r.consumeTombstoneLocked(&dev)
@@ -250,6 +261,9 @@ func mergeIdentities(primary, other PushDevice) PushDevice {
 	}
 	if out.DeviceName == "" {
 		out.DeviceName = other.DeviceName
+	}
+	if out.HostName == "" {
+		out.HostName = other.HostName
 	}
 	if out.Platform == "" {
 		out.Platform = other.Platform

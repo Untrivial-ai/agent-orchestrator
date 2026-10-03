@@ -3,6 +3,7 @@
 // the same split as orchestratorView.ts / projectFilter.ts.
 import type { DashboardSession, OrchestratorLink } from "../api";
 import { isSessionGone, shouldKeepPolling } from "../connectionError";
+import { hostRouteMatches } from "../hostRoute";
 import type { ConnStatus } from "../store";
 
 export type RouteSession = DashboardSession | OrchestratorLink;
@@ -19,6 +20,7 @@ export type KeyedSessionLookup = { key: string; lookup: SessionLookup };
 export type SessionRouteView =
 	| { kind: "screen"; session: RouteSession }
 	| { kind: "loading" }
+	| { kind: "wrongHost" }
 	| { kind: "unpaired" }
 	| { kind: "offline" }
 	| { kind: "ended" }
@@ -121,8 +123,12 @@ export function sessionRouteView(args: {
 	connection: ConnStatus;
 	loading: boolean;
 	lookup: SessionLookup;
+	routeHostId: string | undefined;
+	currentHostId: string | undefined;
 }): SessionRouteView {
-	if (args.configured === null) return { kind: "loading" };
+	if (args.configured === null && args.loading) return { kind: "loading" };
+	if (!hostRouteMatches(args.routeHostId, args.currentHostId)) return { kind: "wrongHost" };
+	if (args.configured === null) return args.connection === "connecting" ? { kind: "loading" } : { kind: "offline" };
 	if (!args.configured) return { kind: "unpaired" };
 	if (args.listed) return { kind: "screen", session: args.listed };
 	const { lookup } = args;

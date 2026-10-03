@@ -3951,8 +3951,7 @@ html.sidebar-reordering * {
 
 /* Files tab: the filter field sits in the inspector top bar exactly where the
    browser's address field does, with the same centered track and focus
-   widening. It always stays on the top row; the panel shares the browser's
-   minimum width, so the track shrinks instead of wrapping. */
+   widening, and drops to its own row at the same narrow width (below). */
 .session-inspector__topbar:has(> .files-panel__topbar-host) {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(0, 240px) minmax(0, 1fr);
@@ -3981,6 +3980,45 @@ html.sidebar-reordering * {
 .session-inspector__topbar:has(> .files-panel__topbar-host) > .session-inspector-actions-spacer {
 	grid-column: 3;
 	justify-self: end;
+}
+
+/* Like the browser's URL field: once zoom or a narrow window leaves too little
+   room, the filter takes its own row so it cannot slide under the tabs. The
+   focused selector repeats the plain one so its wider focus track above never
+   overrides the two-column layout here. */
+@container inspector (max-width: 440px) {
+	.session-inspector__topbar:has(> .files-panel__topbar-host),
+	.session-inspector__topbar:has(> .files-panel__topbar-host :focus) {
+		height: calc(var(--size-inspector-tabs) + var(--size-inspector-tabs));
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-rows: var(--size-inspector-tabs) var(--size-inspector-tabs);
+	}
+
+	.session-inspector__topbar:has(> .files-panel__topbar-host) > .session-inspector__tablist {
+		grid-column: 1;
+		grid-row: 1;
+	}
+
+	.session-inspector__topbar:has(> .files-panel__topbar-host) > .session-inspector-actions-spacer {
+		grid-column: 2;
+		grid-row: 1;
+	}
+
+	.session-inspector__topbar > .files-panel__topbar-host {
+		grid-column: 1 / -1;
+		grid-row: 2;
+		width: 180px;
+		justify-self: center;
+		transition: width var(--duration-fast) ease;
+	}
+
+	.session-inspector__topbar > .files-panel__topbar-host > * {
+		transform: none;
+	}
+
+	.session-inspector__topbar > .files-panel__topbar-host:focus-within {
+		width: min(400px, calc(100cqw - 16px));
+	}
 }
 
 .session-inspector__tab-button {

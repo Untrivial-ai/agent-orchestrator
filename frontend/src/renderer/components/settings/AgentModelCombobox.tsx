@@ -182,7 +182,8 @@ export function AgentModelCombobox({
 	);
 	const customSearchValue = search.trim();
 	const showCustomSearchAction = allowDirectCustom && customSearchValue !== "" && rankedModels.length === 0;
-	const currentLabel = (triggerLabel ?? selected?.label ?? explicitModel) || emptyLabel || t("settings.models.modelNotReported");
+	// With no identified model, nothing is selected and the menu just lists models.
+	const currentLabel = (triggerLabel ?? selected?.label ?? explicitModel) || emptyLabel || t("settings.models.selectModel");
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const effortTriggerRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);

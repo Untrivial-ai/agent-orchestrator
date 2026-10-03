@@ -24,6 +24,14 @@ func (fakeMobileBridge) Enable() (controllers.MobileStatusResponse, error) {
 	return controllers.MobileStatusResponse{}, nil
 }
 
+func (fakeMobileBridge) EnableLANOnly() (controllers.MobileStatusResponse, error) {
+	return controllers.MobileStatusResponse{}, nil
+}
+
+func (fakeMobileBridge) EnableTunnelOnly() (controllers.MobileStatusResponse, error) {
+	return controllers.MobileStatusResponse{}, nil
+}
+
 func (fakeMobileBridge) Disable() error { return nil }
 
 func (fakeMobileBridge) Regenerate() (controllers.MobileStatusResponse, error) {

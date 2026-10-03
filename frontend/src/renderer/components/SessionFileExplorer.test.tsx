@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,9 +7,11 @@ import { SessionFileExplorer } from "./SessionFileExplorer";
 import { FilesTopbarHostContext } from "./files-topbar-host";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
+import { sessionScmSummaryQueryKey } from "../hooks/useSessionScmSummary";
+import { sessionUiKey } from "../lib/hosts";
 import type { TreeNode } from "../hooks/useSessionWorkspaceTree";
 
-const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
+const { getMock, postMock, hostAGetMock, hostBGetMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn(), hostAGetMock: vi.fn(), hostBGetMock: vi.fn() }));
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, POST: postMock },
@@ -20,6 +22,24 @@ vi.mock("../lib/api-client", () => ({
 		if (error instanceof Error) return error.message;
 		return fallback;
 	},
+}));
+
+vi.mock("../lib/host-clients", () => ({
+	clientForHost: (hostId: string) => {
+		if (hostId === "host-a") return { GET: hostAGetMock };
+		if (hostId === "host-b") return { GET: hostBGetMock };
+		throw new Error(`Host ${hostId} is not connected`);
+	},
+	clientForSessionHost: (hostId?: string) => {
+		if (!hostId) return { GET: getMock, POST: postMock };
+		if (hostId === "host-a") return { GET: hostAGetMock };
+		if (hostId === "host-b") return { GET: hostBGetMock };
+		throw new Error(`Host ${hostId} is not connected`);
+	},
+	baseUrlForHost: (hostId: string) => hostId === "host-a" || hostId === "host-b" ? `http://127.0.0.1:4000/${hostId}` : undefined,
+	connectedHost: (hostId: string) => hostId === "host-a" || hostId === "host-b" ? { base: `http://127.0.0.1:4000/${hostId}` } : undefined,
+	isQuickTunnelHost: () => false,
+	subscribeConnectedHosts: () => () => undefined,
 }));
 
 vi.mock("./FileTree", () => ({
@@ -96,6 +116,41 @@ describe("SessionFileExplorer", () => {
 			},
 		});
 		postMock.mockReset();
+		hostAGetMock.mockReset();
+		hostBGetMock.mockReset();
+	});
+
+	it("keeps same-id remote file state on A and B separate while opening center tabs", async () => {
+		const response = (content: string) => ({
+			data: {
+				sessionId: "same-id",
+				files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false, content }],
+				sections: { committed: [], staged: [], unstaged: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }], untracked: [] },
+				commits: [], summary: { additions: 1, deletions: 0, files: 1 }, truncated: false, workspaceVersion: content,
+			},
+		});
+		hostAGetMock.mockImplementation(async (path: string) => path.endsWith("/pr") ? { data: { prs: [] } } : response("A"));
+		hostBGetMock.mockImplementation(async (path: string) => path.endsWith("/pr") ? { data: { prs: [] } } : response("B"));
+		const openOnA = vi.fn();
+		const openOnB = vi.fn();
+		const { client } = renderWithQuery(<>
+			<SessionFileExplorer hostId="host-a" onOpenFile={openOnA} sessionId="same-id" />
+			<SessionFileExplorer hostId="host-b" onOpenFile={openOnB} sessionId="same-id" />
+		</>);
+		await waitFor(() => {
+			expect(client.getQueryData(["session-workspace-files", "host-a", "same-id"])).toMatchObject({ workspaceVersion: "A" });
+			expect(client.getQueryData(["session-workspace-files", "host-b", "same-id"])).toMatchObject({ workspaceVersion: "B" });
+		});
+		const [a, b] = screen.getAllByRole("region", { name: "Session files" });
+		await userEvent.click(within(a).getByRole("tab", { name: "Files" }));
+		expect(useUiStore.getState().inspectorSessions[sessionUiKey("same-id", "host-a")]?.filesChangedOnly).toBe(false);
+		expect(useUiStore.getState().inspectorSessions[sessionUiKey("same-id", "host-b")]?.filesChangedOnly).toBeUndefined();
+		await userEvent.click(within(a).getByRole("button", { name: "select src/App.tsx" }));
+		expect(openOnA).toHaveBeenCalledWith("src/App.tsx", { mode: "file" });
+		expect(openOnB).not.toHaveBeenCalled();
+		expect(within(a).queryByTestId("content-pane")).not.toBeInTheDocument();
+		expect(within(b).queryByTestId("content-pane")).not.toBeInTheDocument();
+		expect(getMock).not.toHaveBeenCalled();
 	});
 
 	it("keeps the filtered tree visible and opens a selected file in the center", async () => {
@@ -150,6 +205,30 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 		expect(onOpenFile).toHaveBeenCalledWith("docs/notes.txt", { mode: "file" });
+	});
+
+	it("reports a reveal handled once it opens the file, and keeps it pending while maximized", () => {
+		const onOpenFile = vi.fn();
+		const onRevealHandled = vi.fn();
+		const reveal = { path: "docs/notes.txt", key: 3 };
+		const { client, rerender } = renderWithQuery(
+			<SessionFileExplorer isMaximized onOpenFile={onOpenFile} onRevealHandled={onRevealHandled} revealRequest={reveal} sessionId="sess-explorer-reveal-once" />,
+		);
+		// Maximized, the file shows in this view's own preview; the request stays pending.
+		expect(onOpenFile).not.toHaveBeenCalled();
+		expect(onRevealHandled).not.toHaveBeenCalled();
+
+		rerender(
+			<QueryClientProvider client={client}>
+				<TooltipProvider>
+					<SessionFileExplorer onOpenFile={onOpenFile} onRevealHandled={onRevealHandled} revealRequest={reveal} sessionId="sess-explorer-reveal-once" />
+				</TooltipProvider>
+			</QueryClientProvider>,
+		);
+		expect(onOpenFile).toHaveBeenCalledOnce();
+		expect(onOpenFile).toHaveBeenCalledWith("docs/notes.txt", { mode: "file" });
+		expect(onRevealHandled).toHaveBeenCalledOnce();
+		expect(onRevealHandled).toHaveBeenCalledWith(3);
 	});
 
 	it("keeps the tree and content side by side when maximized", async () => {
@@ -260,11 +339,17 @@ describe("SessionFileExplorer", () => {
 		renderWithQuery(<SessionFileExplorer sessionId="sess-pr" />);
 		expect(await screen.findByRole("tablist", { name: "File view" })).toBeInTheDocument();
 
+		// On the workspace the trigger already names it, so there is no Workspace button,
+		// and Branch › lists only PRs because Workspace is not a branch.
+		expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "File source" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · feature/files" }));
+		const prItem = await screen.findByRole("menuitem", { name: "PR #42 · feature/files" });
+		expect(screen.queryByRole("menuitem", { name: "Workspace" })).not.toBeInTheDocument();
+		await userEvent.click(prItem);
 
 		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("PR #42 · feature/files");
+		expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
 		// The Changes view is workspace-only, so a PR source hides the switch.
 		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
@@ -285,6 +370,25 @@ describe("SessionFileExplorer", () => {
 		);
 	});
 
+	it("lets the user return to Workspace while an active PR has no SCM summary yet", async () => {
+		const sessionId = "sess-pr-scm-loading";
+		const url = "https://example.test/pr/42";
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 42, url, label: "PR #42 · files" });
+		getMock.mockImplementation((path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") return new Promise(() => {});
+			return Promise.resolve({ data: { sessionId, files: [], truncated: false } });
+		});
+		renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
+
+		// Workspace is a button before the picker; the picker itself has nothing
+		// to list until the PR summary arrives, so it stays hidden.
+		const workspaceButton = await screen.findByRole("button", { name: "Workspace" });
+		expect(screen.queryByRole("button", { name: "File source" })).not.toBeInTheDocument();
+		await userEvent.click(workspaceButton);
+
+		expect(useUiStore.getState().inspectorSessions[sessionId]?.filesSource).toEqual({ kind: "workspace" });
+	});
+
 	it("refreshes PR files when the observed head changes", async () => {
 		const sessionId = "sess-pr-refresh";
 		const url = "https://example.test/pr/42";
@@ -298,7 +402,7 @@ describe("SessionFileExplorer", () => {
 		const { client } = renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
 
 		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-1"])).toBeDefined());
-		client.setQueryData(["session-scm-summary", sessionId], { prs: [{ headSha: "head-2", number: 42, url, sourceBranch: "files", title: "Files" }], linkedPrs: [] });
+		client.setQueryData(sessionScmSummaryQueryKey(sessionId), { prs: [{ headSha: "head-2", number: 42, url, sourceBranch: "files", title: "Files" }], linkedPrs: [] });
 		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-2"])).toBeDefined());
 	});
 

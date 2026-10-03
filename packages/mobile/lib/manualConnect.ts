@@ -1,5 +1,5 @@
 import type { ServerConfig } from "./config";
-import type { Endpoint } from "./endpoints";
+import { normalizeServerHost, type Endpoint } from "./endpoints";
 import type { Host } from "./hosts";
 
 export type AdoptManualDeps = {
@@ -24,11 +24,13 @@ export type AdoptManualDeps = {
 export async function adoptManualConnection(
 	cfg: ServerConfig,
 	deps: AdoptManualDeps,
+	name?: string,
 ): Promise<string> {
 	const hostId = await deps.identity(cfg);
+	const hostname = normalizeServerHost(cfg.host);
 	await deps.saveHost({
 		id: hostId,
-		name: cfg.host,
+		name: name?.trim() || hostname,
 		platform: "",
 		endpoints: [manualEndpoint(cfg)],
 		token: cfg.password,
@@ -38,6 +40,16 @@ export async function adoptManualConnection(
 	// unset would resolve back to the previous machine on the next launch.
 	await deps.setActiveHost(hostId);
 	return hostId;
+}
+
+/** Replace one saved address and its password without dropping other discovered addresses. */
+export function editedManualHost(host: Host, cfg: ServerConfig, name: string, endpointIndex: number): Host {
+	const endpoint = manualEndpoint(cfg);
+	const previous = host.endpoints[endpointIndex];
+	if (previous) endpoint.kind = previous.kind;
+	const endpoints = [...host.endpoints];
+	endpoints[endpointIndex] = endpoint;
+	return { ...host, name: name.trim(), token: cfg.password, endpoints };
 }
 
 /**
@@ -50,7 +62,7 @@ function manualEndpoint(cfg: ServerConfig): Endpoint {
 	const secure = cfg.secure === true;
 	return {
 		kind: secure ? "tailscale" : "lan",
-		host: cfg.host.trim(),
+		host: normalizeServerHost(cfg.host),
 		port: Number(cfg.httpPort) || 3011,
 		secure,
 	};

@@ -2191,10 +2191,12 @@ it("does not dispatch a restored image after its session incarnation was replace
 });
 
 
-it("restores an image thumbnail from its durable path after the composer remounts", async () => {
-	const sessionId = "composer-restored-thumbnail";
+it.each([
+	{ name: "local", draftSessionId: "composer-restored-thumbnail" },
+	{ name: "remote", draftSessionId: "host-a:composer-restored-thumbnail", assetSessionId: "composer-restored-thumbnail", assetBaseUrl: "http://127.0.0.1:4000/token-a" },
+])("restores a $name image thumbnail from its durable path after the composer remounts", async ({ draftSessionId, assetSessionId, assetBaseUrl }) => {
 	const path = ".ao/attachments/restored-thumbnail.png";
-	const props = { onSend: vi.fn(), draftSessionId: sessionId,
+	const props = { onSend: vi.fn(), draftSessionId, assetSessionId, assetBaseUrl,
 		onStageAttachments: vi.fn().mockResolvedValue([path]) };
 	const view = render(<ChatComposer {...props} />);
 	fireEvent.paste(screen.getByLabelText("Message the agent"), { clipboardData: clipboardData([png()]) });
@@ -2203,9 +2205,9 @@ it("restores an image thumbnail from its durable path after the composer remount
 		.toHaveAttribute("src", expect.stringContaining("data:image/png;base64,"));
 	view.unmount();
 	// A new renderer only has persisted descriptors, never cached image bytes.
-	purgeFileAttachmentsForSession(sessionId);
+	purgeFileAttachmentsForSession(draftSessionId);
 	render(<ChatComposer {...props} />);
 	expect(screen.getByRole("list", { name: "Attached files" }).querySelector("img"))
-		.toHaveAttribute("src", attachmentURL(getApiBaseUrl(), sessionId, path));
+		.toHaveAttribute("src", attachmentURL(assetBaseUrl ?? getApiBaseUrl(), assetSessionId ?? draftSessionId, path));
 	expect(props.onStageAttachments).toHaveBeenCalledOnce();
 });

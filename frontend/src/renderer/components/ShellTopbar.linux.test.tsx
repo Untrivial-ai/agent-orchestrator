@@ -27,6 +27,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 		return { ...result, data: result.data ?? {} };
 	},
 	workspaceQueryKey: ["workspaces"],
+	workspaceQueryKeyForHost: (hostId?: string) => hostId ? ["remote-workspaces", hostId] : ["workspaces"],
 }));
 
 vi.mock("../lib/platform", async (importOriginal) => {
@@ -83,7 +84,7 @@ describe("ShellTopbar on Linux", () => {
 		expect(header).toHaveStyle({ paddingLeft: "18px" });
 	});
 
-	it("shows the play-icon cue runner on project boards", () => {
+	it("hides the cue runner on project boards", () => {
 		paramsMock.projectId = "proj-1";
 		useWorkspaceQueryMock.mockReturnValue({
 			data: { project: { id: "proj-1", name: "Project", kind: "single_repo" } },
@@ -98,6 +99,6 @@ describe("ShellTopbar on Linux", () => {
 			</QueryClientProvider>,
 		);
 
-		expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Run a cue" })).not.toBeInTheDocument();
 	});
 });

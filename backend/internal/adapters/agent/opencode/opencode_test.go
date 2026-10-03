@@ -166,6 +166,40 @@ func TestOpenCodeLocalAuthStatusAuthorizedWithControlDBAccount(t *testing.T) {
 	}
 }
 
+func TestOpenCodeLocalAuthStatusWithV2Credential(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		active int
+		value  string
+		want   ports.AgentAuthStatus
+	}{
+		{"active credential", 1, `{"key":"test"}`, ports.AgentAuthStatusAuthorized},
+		{"inactive credential", 0, `{"key":"test"}`, ports.AgentAuthStatusUnknown},
+		{"empty credential", 1, "", ports.AgentAuthStatusUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			clearOpenCodeAuthEnv(t)
+			dataDir := writeOpenCodeDB(t, func(db *sql.DB) {
+				if _, err := db.Exec(`CREATE TABLE credential (active integer, value text)`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`INSERT INTO credential (active, value) VALUES (?, ?)`, tt.active, tt.value); err != nil {
+					t.Fatal(err)
+				}
+			})
+			t.Setenv("OPENCODE_DATA_DIR", dataDir)
+
+			status, ok, err := opencodeLocalAuthStatus(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || status != tt.want {
+				t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenCodeLocalAuthStatusUnknownWithEmptyDBAccounts(t *testing.T) {
 	clearOpenCodeAuthEnv(t)
 	dataDir := writeOpenCodeDB(t, func(db *sql.DB) {

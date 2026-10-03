@@ -10,6 +10,7 @@ import {
 	type OrchestratorProjectRow,
 } from "./orchestratorView";
 import type { Theme } from "./theme";
+import type { HostedProjectRow } from "./hostedRows";
 import { rowDividerWidth } from "./divider";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { fontScaleCap, space, type } from "./tokens";
@@ -31,7 +32,7 @@ export function ProjectCard({
 	onOpenProject,
 	onOrchestrator,
 }: {
-	row: OrchestratorProjectRow;
+	row: HostedProjectRow;
 	busy: boolean;
 	onOpenProject: (row: OrchestratorProjectRow) => void;
 	onOrchestrator: (row: OrchestratorProjectRow) => void;
@@ -46,7 +47,7 @@ export function ProjectCard({
 		<View style={styles.row}>
 			<Pressable
 				accessibilityRole="button"
-				accessibilityLabel={`${row.project.name}, ${status.label}, ${summary.workers}`}
+				accessibilityLabel={`${row.project.name}, ${row.project.hostName} machine, ${status.label}, ${summary.workers}`}
 				accessibilityHint="Opens the project"
 				onPress={() => onOpenProject(row)}
 				style={({ pressed }) => [styles.body, pressed && styles.pressed]}
@@ -55,6 +56,9 @@ export function ProjectCard({
 					<Text style={styles.project} numberOfLines={1}>
 						{row.project.name}
 					</Text>
+					<View style={styles.machineBadge}>
+						<Text style={styles.machineBadgeText} numberOfLines={1}>{row.project.hostName}</Text>
+					</View>
 					<Feather name="chevron-right" size={15} color={t.textFaint} />
 				</View>
 
@@ -224,6 +228,8 @@ const makeStyles = (t: Theme) =>
 
 		titleRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
 		project: { fontFamily: "Geist_600SemiBold", flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		machineBadge: { maxWidth: 112, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, borderRadius: 999, paddingHorizontal: space.xs, paddingVertical: 2 },
+		machineBadgeText: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 		timestamp: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontVariant: ["tabular-nums"], fontFamily: t.fontMono },
 
 		summaryRow: { flexDirection: "row", alignItems: "center", minWidth: 0 },

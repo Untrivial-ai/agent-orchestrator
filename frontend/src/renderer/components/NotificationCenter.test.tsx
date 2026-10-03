@@ -161,6 +161,7 @@ vi.mock("../hooks/useRestoreSession", () => ({
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	useWorkspaceQuery: () => workspaceQueryMock(),
+	useRemoteWorkspaces: () => ({ data: [], failedHostIds: [], loadedProjectHostIds: [], loadedSessionHostIds: [], refetch: vi.fn() }),
 	workspaceQueryKey: ["workspaces"],
 }));
 

@@ -33,6 +33,13 @@ func (s *Service) queueWithoutController(
 	record domain.SessionRecord,
 	msg ports.ChatUserMessage,
 ) (domain.ConversationTurn, error) {
+	if msg.ClientPayloadHash == "" {
+		var err error
+		msg.ClientPayloadHash, err = clientPayloadHash(msg)
+		if err != nil {
+			return domain.ConversationTurn{}, err
+		}
+	}
 	if !record.ProvisionState.IsProvisioning() {
 		return domain.ConversationTurn{}, ErrNotProvisioning
 	}
@@ -58,6 +65,7 @@ func (s *Service) queueWithoutController(
 		Text:                msg.Text,
 		Origin:              normalizeOrigin(msg.Origin),
 		ClientMessageID:     msg.ClientMessageID,
+		ClientPayloadHash:   msg.ClientPayloadHash,
 		DeliveryContentJSON: deliveryContent,
 		AuthoredByUser:      msg.AuthoredByUser,
 	}, turnID, now)

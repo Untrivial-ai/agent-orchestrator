@@ -42,7 +42,7 @@ export function StaleBanner({ error = false, onRetry }: { error?: boolean; onRet
 	const text = error
 		? host
 			? `Can't reach ${host} — showing data from ${age}`
-			: `Can't reach your desktop — showing data from ${age}`
+			: `Can't reach your machine — showing data from ${age}`
 		: `Showing data from ${age}`;
 
 	return (

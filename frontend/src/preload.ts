@@ -22,7 +22,8 @@ import {
 } from "./shared/tray";
 import type { DaemonStatus } from "./shared/daemon-status";
 import type { RemoteHostView } from "./main/remotes-ipc";
-import type { RemoteHealth, RemoteRequestInit, RemoteResponse } from "./main/remote-request";
+import type { ConnectedHostView } from "./main/remote-registry";
+import type { RemoteHealth } from "./main/remote-request";
 import type {
 	EditorHandoffState,
 	OpenSessionTargetInput,
@@ -640,7 +641,7 @@ const api = {
 	},
 	// Saved AO daemons, shared with the CLI's ~/.ao/remotes.json. Everything the
 	// renderer receives back is password-free (see main/remotes-ipc.ts); the
-	// plaintext password only ever travels renderer -> main, on `add`.
+	// plaintext password only travels renderer -> main on add or credential edit.
 	remotes: {
 		list: () => ipcRenderer.invoke("remotes:list") as Promise<RemoteHostView[]>,
 		add: (input: { label: string; url: string; password: string }) =>
@@ -651,16 +652,19 @@ const api = {
 		update: (url: string, changes: { label?: string; url?: string; password?: string }) =>
 			ipcRenderer.invoke("remotes:update", url, changes) as Promise<RemoteHealth>,
 		remove: (url: string) => ipcRenderer.invoke("remotes:remove", url) as Promise<void>,
-		probe: (url: string) => ipcRenderer.invoke("remotes:probe", url) as Promise<RemoteHealth>,
-		request: (url: string, init: RemoteRequestInit) =>
-			ipcRenderer.invoke("remotes:request", url, init) as Promise<RemoteResponse>,
+		connect: (url: string, hostId?: string) => ipcRenderer.invoke("remotes:connect", url, hostId) as Promise<ConnectedHostView>,
+		disconnect: (url: string) => ipcRenderer.invoke("remotes:disconnect", url) as Promise<void>,
+		previewUrl: (hostId: string, sessionId: string, sourceUrl: string) =>
+			ipcRenderer.invoke("remotes:previewUrl", hostId, sessionId, sourceUrl) as Promise<string>,
+		resolvePreviewUrl: (hostId: string, sessionId: string, viewedUrl: string) =>
+			ipcRenderer.invoke("remotes:resolvePreviewUrl", hostId, sessionId, viewedUrl) as Promise<string>,
 	},
 	cloud: {
 		getSession: () => ipcRenderer.invoke("cloud:getSession") as Promise<CloudAccount | null>,
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
 		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
-		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string; pushTarget?: "org" | "me"; persistLocalClaudeToken?: boolean }) =>
+		connectProviderAuth: (input: { baseUrl: string; provider: string; persistLocalClaudeToken?: boolean }) =>
 			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<
 				| string
 				| { secret: string; refreshToken?: string; expiresIn?: number; refreshTokenExpiresIn?: number }

@@ -5,10 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { settingsQueryKey } from "./useSettings";
 
-const { createCloudClientMock, deleteSessionMock, postMock } = vi.hoisted(() => ({
+const { createCloudClientMock, deleteSessionMock, postMock, remotePostMock } = vi.hoisted(() => ({
 	createCloudClientMock: vi.fn(),
 	deleteSessionMock: vi.fn(),
 	postMock: vi.fn(),
+	remotePostMock: vi.fn(),
 }));
 
 vi.mock("../lib/api-client", () => ({
@@ -19,11 +20,14 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("./useCloudCp", () => ({
 	createRendererCloudCpClient: createCloudClientMock,
 }));
+vi.mock("../lib/host-clients", () => ({
+	clientForHost: (hostId: string) => ({ POST: (...args: unknown[]) => remotePostMock(hostId, ...args) }),
+}));
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
 
-import { useTerminateSession } from "./useTerminateSession";
-import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { useTerminateSession, useTerminateSessionState } from "./useTerminateSession";
+import { remoteWorkspaceQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
 
 const localSession: WorkspaceSession = {
 	id: "session-1",
@@ -75,6 +79,7 @@ beforeEach(() => {
 	deleteSessionMock.mockReset().mockResolvedValue({ session: { id: "session-1", desiredState: "deleted" } });
 	createCloudClientMock.mockReturnValue({ deleteSession: deleteSessionMock });
 	postMock.mockReset().mockResolvedValue({ data: { ok: true }, error: undefined });
+	remotePostMock.mockReset().mockResolvedValue({ data: { ok: true }, error: undefined });
 });
 
 describe("useTerminateSession", () => {
@@ -88,6 +93,38 @@ describe("useTerminateSession", () => {
 			params: { path: { sessionId: "session-1" } },
 		});
 		expect(createCloudClientMock).not.toHaveBeenCalled();
+	});
+
+	it("isolates a pending remote kill from matching local and other-host session IDs", async () => {
+		let finishKill: (() => void) | undefined;
+		remotePostMock.mockImplementation(() => new Promise((resolve) => {
+			finishKill = () => resolve({ data: { ok: true }, error: undefined });
+		}));
+		const queryClient = newQueryClient();
+		for (const hostId of ["box-a", "box-b"]) {
+			queryClient.setQueryData(remoteWorkspaceQueryKey(hostId), [{
+				...workspaces[0], hostId, sessions: [{ ...session, hostId }],
+			}]);
+		}
+		const remoteSession = { ...session, hostId: "box-b" };
+		const { result } = renderHook(() => ({
+			terminate: useTerminateSession(),
+			local: useTerminateSessionState(session.id),
+			boxA: useTerminateSessionState(session.id, "box-a"),
+			boxB: useTerminateSessionState(session.id, "box-b"),
+		}), { wrapper: wrapper(queryClient) });
+		act(() => result.current.terminate.mutate(remoteSession));
+		await waitFor(() => expect(result.current.boxB.isPending).toBe(true));
+		expect(result.current.boxA.isPending).toBe(false);
+		expect(result.current.local.isPending).toBe(false);
+		expect(queryClient.getQueryData<WorkspaceSummary[]>(remoteWorkspaceQueryKey("box-b"))?.[0]?.sessions[0]?.isTerminated).toBe(true);
+		expect(queryClient.getQueryData<WorkspaceSummary[]>(remoteWorkspaceQueryKey("box-a"))?.[0]?.sessions[0]?.isTerminated).toBeUndefined();
+		expect(queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey)?.[0]?.sessions[0]?.isTerminated).toBeUndefined();
+		expect(remotePostMock).toHaveBeenCalledWith("box-b", "/api/v1/sessions/{sessionId}/kill", {
+			params: { path: { sessionId: session.id } },
+		});
+		expect(postMock).not.toHaveBeenCalled();
+		await act(async () => finishKill?.());
 	});
 
 	it("routes cloud sessions to their control-plane organization", async () => {

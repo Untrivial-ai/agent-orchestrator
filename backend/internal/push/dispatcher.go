@@ -2,10 +2,13 @@ package push
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
@@ -68,6 +71,7 @@ type Dispatcher struct {
 	sub     Subscriber
 	devices DeviceStore
 	sender  Sender
+	hostID  string
 	log     *slog.Logger
 	clock   func() time.Time
 
@@ -76,11 +80,11 @@ type Dispatcher struct {
 }
 
 // NewDispatcher constructs a Dispatcher. A nil logger is tolerated (discarded).
-func NewDispatcher(sub Subscriber, devices DeviceStore, sender Sender, log *slog.Logger) *Dispatcher {
+func NewDispatcher(sub Subscriber, devices DeviceStore, sender Sender, hostID string, log *slog.Logger) *Dispatcher {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Dispatcher{sub: sub, devices: devices, sender: sender, log: log, clock: time.Now}
+	return &Dispatcher{sub: sub, devices: devices, sender: sender, hostID: hostID, log: log, clock: time.Now}
 }
 
 // Run subscribes and dispatches until ctx is cancelled. It blocks, so callers run
@@ -114,6 +118,10 @@ func (d *Dispatcher) Run(ctx context.Context) {
 // dispatch sends one notification record to every registered device and prunes
 // any token Expo reports as no longer registered.
 func (d *Dispatcher) dispatch(ctx context.Context, rec domain.NotificationRecord) {
+	// Without a host ID the phone cannot safely route a session-scoped push.
+	if d.hostID == "" {
+		return
+	}
 	devices := d.devices.List()
 	if len(devices) == 0 {
 		return
@@ -134,7 +142,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, rec domain.NotificationRecord
 		if dev.Token == "" {
 			continue
 		}
-		messages = append(messages, messageFor(rec, dev.Token))
+		messages = append(messages, messageFor(rec, dev.Token, d.hostID, dev.HostName))
 	}
 	if len(messages) == 0 {
 		return
@@ -276,16 +284,34 @@ func (d *Dispatcher) sweepReceipts(ctx context.Context) {
 // messageFor builds the Expo message for one device from a notification record.
 // The data blob carries exactly what the app needs to deep-link on tap and to
 // mark the record read; nothing secret beyond the human-readable title/body.
-func messageFor(rec domain.NotificationRecord, token string) Message {
+func messageFor(rec domain.NotificationRecord, token, hostID, hostName string) Message {
+	// Device-provided labels appear in an OS banner: keep them one line and
+	// prevent control/format characters from altering what the user sees.
+	label := strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ' '
+		}
+		return r
+	}, hostName)), " ")
+	if label == "" {
+		label = hostID
+		if len(label) > 10 {
+			label = label[:10]
+		}
+	}
+	if runes := []rune(label); len(runes) > 40 {
+		label = string(runes[:40]) + "…"
+	}
 	return Message{
 		To:        token,
-		Title:     rec.Title,
+		Title:     fmt.Sprintf("%s · %s", label, rec.Title),
 		Body:      rec.Body,
 		Sound:     "default",
 		Priority:  "high",
 		ChannelID: androidChannelID,
 		Data: map[string]any{
 			"type":           string(rec.Type),
+			"hostId":         hostID,
 			"sessionId":      string(rec.SessionID),
 			"projectId":      string(rec.ProjectID),
 			"prUrl":          rec.PRURL,

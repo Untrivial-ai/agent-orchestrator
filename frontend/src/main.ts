@@ -169,6 +169,8 @@ import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenu
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
 import { registerRemotesIpc, remotesFilePath } from "./main/remotes-main";
+import { RemoteRegistry } from "./main/remote-registry";
+import { startRemoteProxy } from "./main/remote-proxy";
 import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
@@ -802,6 +804,14 @@ async function createWindowInternal(): Promise<void> {
 				cancelId: 0,
 			});
 			return result.response === 1;
+		},
+		reportSwitchFailure: (message, labels) => {
+			if (!mainWindow || mainWindow.isDestroyed()) return;
+			void dialog.showMessageBox(mainWindow, {
+				type: "error",
+				title: labels.switchTitle,
+				message,
+			}).catch((error) => console.error("browser profile error dialog failed:", error));
 		},
 	});
 	if (daemonStatus.state === "ready") establishBrowserRuntimeLink();
@@ -2171,12 +2181,13 @@ async function chooseDirectory(title: string, defaultPath?: string): Promise<str
 	return result.filePaths[0] ?? null;
 }
 
-registerRemotesIpc(ipcMain, {
-	file: remotesFilePath(),
-	// No host is ever connected yet; the proxy registry that owns live
-	// connections lands in the next change and replaces this.
-	disconnect: async () => undefined,
+const remoteRegistry = new RemoteRegistry((entry) => {
+	// Node reports "null" for the custom app:// origin; only Vite's HTTP URL
+	// needs parsing. Never reflect an arbitrary request Origin here.
+	const devUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === "undefined" ? undefined : MAIN_WINDOW_VITE_DEV_SERVER_URL;
+	return startRemoteProxy(entry, devUrl ? new URL(devUrl).origin : RENDERER_ORIGIN);
 });
+registerRemotesIpc(ipcMain, { file: remotesFilePath(), registry: remoteRegistry });
 
 ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
 	const title = typeof input === "string"
@@ -2935,6 +2946,7 @@ app.on("before-quit", (event) => {
 		if (!browserQuitCleanupPromise) {
 			const cleanup = Promise.all([
 				disposeAllBrowserViewHosts(),
+				remoteRegistry.closeAll(),
 				telemetryPolicyController?.close() ?? Promise.resolve(),
 			]);
 			const finishQuit = () => {

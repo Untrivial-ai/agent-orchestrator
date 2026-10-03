@@ -4,7 +4,7 @@ import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ initialEditing, initialMode, initialRequestKey, onDirtyChange, split }: { initialEditing?: boolean; initialMode?: string; initialRequestKey?: number; onDirtyChange?: (dirty: boolean) => void; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-request-key={initialRequestKey} data-split={String(split)} data-testid="file-content"><button onClick={() => onDirtyChange?.(true)} type="button">mark dirty</button></div>,
+	FileContentPane: ({ initialEditing, initialMode, initialRequestKey, onDirtyChange, rememberDisplayMode, split }: { initialEditing?: boolean; initialMode?: string; initialRequestKey?: number; onDirtyChange?: (dirty: boolean) => void; rememberDisplayMode?: boolean; split: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-request-key={initialRequestKey} data-split={String(split)} data-remember-mode={String(Boolean(rememberDisplayMode))} data-testid="file-content"><button onClick={() => onDirtyChange?.(true)} type="button">mark dirty</button></div>,
 }));
 
 const annotation: FileAnnotationModel = {
@@ -25,6 +25,8 @@ describe("SessionFileWorkspace", () => {
 		expect(screen.getByTestId("session-file-workspace").querySelector("header")).not.toBeInTheDocument();
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-split", "true");
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-mode", "file");
+		// Centre tabs remember the display mode picked in the toolbar.
+		expect(screen.getByTestId("file-content")).toHaveAttribute("data-remember-mode", "true");
 	});
 
 	it("leaves whole-file feedback rendering to the focused file pane", () => {

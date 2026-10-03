@@ -14,7 +14,7 @@ export type WorkerDockProps = {
 	onSearchClose: () => void;
 	onOpenControls: () => void;
 	projectFiltered: boolean;
-	projects: readonly { id: string; name: string }[];
+	projects: readonly { id: string; name: string; hostId?: string; hostName?: string }[];
 	selectedProjectId: string;
 	onSelectProject: (projectId: string) => void;
 };

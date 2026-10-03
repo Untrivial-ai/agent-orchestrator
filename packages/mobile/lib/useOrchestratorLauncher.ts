@@ -6,7 +6,12 @@ import { chatErrorCopy, isChatPreflightError } from "./chatError";
 import { classifyConnectionFailure, describeConnectionFailure } from "./connectionError";
 import { haptics } from "./haptics";
 import type { OrchestratorProjectRow } from "./orchestratorView";
+import { hostedRowKey } from "./hostedRows";
 import { useApp } from "./store";
+
+function rowHostId(row: OrchestratorProjectRow, fallback?: string): string {
+	return "hostId" in row.project && typeof row.project.hostId === "string" ? row.project.hostId : fallback ?? "";
+}
 
 /**
  * Opening, starting and resuming a project's orchestrator.
@@ -18,7 +23,7 @@ import { useApp } from "./store";
  */
 export function useOrchestratorLauncher() {
 	const router = useRouter();
-	const { config, refresh, launchConductor } = useApp();
+	const { currentHostId, configForHost, refreshHost, launchConductor } = useApp();
 	const [busyProjects, setBusyProjects] = useState<ReadonlySet<string>>(() => new Set());
 	// A ref as well as state: state is a render behind, and a fast double tap must
 	// not slip a second launch in before the first one has re-rendered.
@@ -34,17 +39,19 @@ export function useOrchestratorLauncher() {
 	}, []);
 
 	const openSession = useCallback((row: OrchestratorProjectRow, id: string) => {
-		router.push({ pathname: "/session/[id]", params: { id, projectId: row.project.id } });
-	}, [router]);
+		router.push({ pathname: "/session/[id]", params: { id, projectId: row.project.id, hostId: rowHostId(row, currentHostId) } });
+	}, [currentHostId, router]);
 
 	const runLaunch = useCallback(async (row: OrchestratorProjectRow, mode: "chat" | "tui" = "chat") => {
-		if (launching.current.has(row.project.id)) return;
-		launching.current.add(row.project.id);
-		setBusy(row.project.id, true);
+		const hostId = rowHostId(row, currentHostId);
+		const key = hostedRowKey(hostId, row.project.id);
+		if (launching.current.has(key)) return;
+		launching.current.add(key);
+		setBusy(key, true);
 		try {
-			const next = await launchConductor(row.project.id, false, mode);
+			const next = await launchConductor(row.project.id, false, mode, hostId);
 			if (next?.id) openSession(row, next.id);
-			else await refresh();
+			else await refreshHost(hostId);
 		} catch (cause) {
 			haptics.error();
 			if (mode === "chat" && isChatPreflightError(cause)) {
@@ -55,17 +62,18 @@ export function useOrchestratorLauncher() {
 				return;
 			}
 			const httpStatus = cause instanceof ApiError ? cause.status : undefined;
+			const target = configForHost(hostId);
 			const copy = describeConnectionFailure(classifyConnectionFailure(httpStatus), {
-				host: config?.host ?? "",
-				port: config?.httpPort ?? "",
+				host: target?.host ?? "",
+				port: target?.httpPort ?? "",
 				platform: Platform.OS,
 			});
 			Alert.alert(copy.title, copy.message);
 		} finally {
-			launching.current.delete(row.project.id);
-			setBusy(row.project.id, false);
+			launching.current.delete(key);
+			setBusy(key, false);
 		}
-	}, [config?.host, config?.httpPort, launchConductor, openSession, refresh, setBusy]);
+	}, [currentHostId, configForHost, launchConductor, openSession, refreshHost, setBusy]);
 
 	/** Opens a running orchestrator, or starts or resumes one that is not. */
 	const openOrchestrator = useCallback((row: OrchestratorProjectRow) => {

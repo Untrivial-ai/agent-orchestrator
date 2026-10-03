@@ -48,6 +48,8 @@ const AGENT_MENU_WIDTH = "w-56! min-w-56! max-w-56!";
 type CreateProjectAgentSheetProps = {
 	error?: string | null;
 	action?: "create" | "clone";
+	connected?: boolean;
+	hostId?: string;
 	isCreating: boolean;
 	isInitializing?: boolean;
 	kind: ProjectKind;
@@ -107,7 +109,9 @@ function projectSheetError(error: string, action: "create" | "clone"): SheetErro
 
 export function CreateProjectAgentSheet({
 	action = "create",
+	connected = true,
 	error,
+	hostId,
 	isCreating,
 	isInitializing = false,
 	kind,
@@ -131,46 +135,49 @@ export function CreateProjectAgentSheet({
 		displayedError.current = error;
 		displayedOnBack.current = onBack;
 	}
-	const agentsQuery = useAgentReadinessQuery(contentOpen);
-	useEnsureAgentReadiness({ enabled: contentOpen });
+	const agentsQuery = useAgentReadinessQuery(contentOpen && connected, hostId);
+	useEnsureAgentReadiness({ enabled: contentOpen && connected, hostId });
 	const agents = agentsQuery.data;
 	const agentOptions = useMemo(() => agents?.agents ?? [], [agents]);
+	const selectableAgents = useMemo(() => hostId ? agentOptions.filter(isLaunchableAgent) : agentOptions, [agentOptions, hostId]);
 	// "configured" belongs here even though it is not a verified credential.
 	// This picks the default preselection, not a gate — every agent stays
 	// selectable — and excluding it would silently stop preselecting an agent
 	// whose credentials AO simply cannot validate, which is most of them.
 	const authorizedAgents = useMemo(
 		() =>
-			agentOptions.filter((agent) =>
+			selectableAgents.filter((agent) =>
 				["authorized", "not_applicable", "configured"].includes(agent.authentication.state),
 			),
-		[agentOptions],
+		[selectableAgents],
 	);
-	// This sheet creates local projects only (cloud uses CloudProjectCard),
-	// so local session history is the inference signal.
-	const workspacesQuery = useQuery({ ...workspaceQueryOptions, enabled: open });
+	// Local history is an inference signal only for local projects. A remote
+	// project must never infer its agent from this laptop's sessions.
+	const workspacesQuery = useQuery({ ...workspaceQueryOptions, enabled: open && !hostId });
 	const sessionHistory = useMemo(
 		() => (workspacesQuery.data ?? []).flatMap((workspace) => workspace.sessions),
 		[workspacesQuery.data],
 	);
-	const isLoadingAgents = agents === undefined && agentsQuery.isFetching;
-	const agentsError = agentsQuery.isError
+	const isLoadingAgents = connected && agents === undefined && agentsQuery.isFetching;
+	const agentsError = !connected ? t("remote.connectBeforeStart") : agentsQuery.isError
 		? agentsQuery.error instanceof Error
 			? agentsQuery.error.message
 			: t("createProject.couldNotLoadAgents")
 		: null;
-	const displayError = agentsError;
+	const displayError = agentsError ?? (hostId && agents && selectableAgents.length === 0 ? t("agentSelector.noneReady") : null);
 	const [workerAgent, setWorkerAgent] = useState("");
 	const [orchestratorAgent, setOrchestratorAgent] = useState("");
 	const [workerAgentTouched, setWorkerAgentTouched] = useState(false);
 	const [orchestratorAgentTouched, setOrchestratorAgentTouched] = useState(false);
 	useEnsureAgentReadiness({
 		agentIds: [workerAgent, orchestratorAgent],
-		enabled: contentOpen && (workerAgent !== "" || orchestratorAgent !== ""),
+		enabled: contentOpen && connected && (workerAgent !== "" || orchestratorAgent !== ""),
+		hostId,
+		purpose: hostId ? "launch" : "display",
 	});
 	const isBusy = isCreating || isInitializing;
 	const [intake, setIntake] = useState<IntakeForm>(EMPTY_INTAKE);
-	const { settings } = useSettings();
+	const { settings } = useSettings(hostId);
 	const intakeVisible = !!settings?.trackerIntakeEnabled;
 	const intakeIncomplete = intakeVisible && intakeNeedsRule(intake);
 	const canSubmit =
@@ -182,7 +189,9 @@ export function CreateProjectAgentSheet({
 		}) &&
 		!intakeIncomplete &&
 		!isBusy &&
-		!isLoadingAgents;
+		!isLoadingAgents && connected && (!hostId || (
+			agents !== undefined && selectableAgents.some((agent) => agent.id === workerAgent) && selectableAgents.some((agent) => agent.id === orchestratorAgent)
+		));
 	const sheetError = displayedError.current
 		? projectSheetError(displayedError.current, displayedAction.current)
 		: null;
@@ -262,11 +271,12 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.workerAgent")}
 									placeholder={t("createProject.selectWorker")}
 									value={workerAgent}
-									agents={agentOptions}
+									agents={selectableAgents}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
 									contentClassName="agents-sheet-menu"
+									hostId={hostId}
 									onChange={(value) => {
 										setWorkerAgent(value);
 										setWorkerAgentTouched(true);
@@ -279,11 +289,12 @@ export function CreateProjectAgentSheet({
 									label={t("createProject.orchestratorAgent")}
 									placeholder={t("createProject.selectOrchestrator")}
 									value={orchestratorAgent}
-									agents={agentOptions}
+									agents={selectableAgents}
 									disabled={isLoadingAgents}
 									labelClassName="agents-sheet-label"
 									triggerClassName="agents-sheet-control"
 									contentClassName="agents-sheet-menu"
+									hostId={hostId}
 									onChange={(value) => {
 										setOrchestratorAgent(value);
 										setOrchestratorAgentTouched(true);
@@ -395,7 +406,9 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	label,
 	onChange,
 	placeholder,
+	hostId,
 	manageAgents = true,
+	manageView = "local",
 	triggerClassName,
 	labelClassName,
 	contentClassName,
@@ -412,8 +425,11 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	label: string;
 	onChange: (value: string) => void;
 	placeholder: string;
+	hostId?: string;
 	/** Cloud tasks use remote availability, not this computer's Harness settings. */
 	manageAgents?: boolean;
+	/** Which Harness settings view "manage" opens: local logins or cloud connections. */
+	manageView?: "local" | "cloud";
 	triggerClassName?: string;
 	labelClassName?: string;
 	contentClassName?: string;
@@ -432,8 +448,10 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	const hasReadinessSnapshot = agents !== undefined;
 	const needsSetup = manageAgents && hasReadinessSnapshot && Boolean(selectedOption && !isLaunchableAgent(selectedOption));
 	const visibleOptions = manageAgents && hasReadinessSnapshot ? options.filter(isLaunchableAgent) : options;
-	const management = useAgentManagementMenu(needsSetup ? value : undefined);
-	const managementAction = manageAgents ? { label: t("agentSelector.manage"), onSelect: management.requestManagement } : undefined;
+	// Local is Harness settings' default view, so only cloud needs to ask for one.
+	const management = useAgentManagementMenu(needsSetup ? value : undefined, hostId, manageView === "cloud" ? "cloud" : undefined);
+	const manageLabel = manageView === "cloud" ? t("agentSelector.manageCloud") : t("agentSelector.manage");
+	const managementAction = manageAgents ? { label: manageLabel, onSelect: management.requestManagement } : undefined;
 	const setupHint = needsSetup ? <span className="text-xs text-muted-foreground">{t("agentSelector.needsSetup")}</span> : null;
 
 	if (variant === "settings-row" || variant === "settings-control") {
@@ -605,7 +623,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 						</SelectItem>
 					))}
 					{manageAgents && visibleOptions.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
-					{manageAgents && <SelectItem value="__manage_agents__" className="mt-1 border-t border-border">{t("agentSelector.manage")}</SelectItem>}
+					{manageAgents && <SelectItem value="__manage_agents__" className="mt-1 border-t border-border">{manageLabel}</SelectItem>}
 				</SelectContent>
 			</Select>
 		</div>

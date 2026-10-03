@@ -55,22 +55,22 @@ func StartPollLoop(ctx context.Context, tick time.Duration, poll func(context.Co
 // should surface, and (true, nil) when credentials are available.
 type CredentialProbe func(ctx context.Context) (available bool, err error)
 
-// CheckCredentialsOnce runs probe at most once. The caller owns checked/disabled
-// state via pointer so the observer struct keeps a single source of truth.
+// CheckCredentialsOnce caches an available verdict but retries an unavailable
+// verdict on subsequent polls, so signing in later resumes observation. The
+// caller owns checked/disabled state via pointer.
 //
 // State transitions:
 //   - probe == nil           → *checked = true, returns (true, nil). No gate.
 //   - probe returns err      → state unchanged, returns (false, nil). Retried next tick.
-//   - probe returns false    → *checked = true, *disabled = true, returns (false, nil). Observer stays disabled.
-//   - probe returns true     → *checked = true, returns (true, nil). Subsequent calls bypass the probe.
+//   - probe returns false    → *checked = true, *disabled = true, returns (false, nil). Retried next tick.
+//   - probe returns true     → *checked = true, *disabled = false, returns (true, nil). Subsequent calls bypass the probe.
 //
-// Subsequent calls after the probe has run return (!*disabled, nil) so the
-// disabled verdict is honoured on every poll, not just the first one.
+// The unavailable warning is emitted only when entering disabled state.
 //
 // A context-cancellation before the probe returns (false, ctx.Err()).
 func CheckCredentialsOnce(ctx context.Context, probe CredentialProbe, checked, disabled *bool, logger *slog.Logger, name string) (bool, error) {
-	if *checked {
-		return !*disabled, nil
+	if *checked && !*disabled {
+		return true, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -80,19 +80,25 @@ func CheckCredentialsOnce(ctx context.Context, probe CredentialProbe, checked, d
 	}
 	if probe == nil {
 		*checked = true
+		*disabled = false
 		return true, nil
 	}
 	available, err := probe(ctx)
 	if err != nil {
-		logger.Warn(name+" credentials check failed; will retry", "err", err)
+		if !*checked {
+			logger.Warn(name+" credentials check failed; will retry", "err", err)
+		}
 		return false, nil
 	}
 	*checked = true
 	if !available {
+		if !*disabled {
+			logger.Warn(name + " disabled: provider credentials unavailable")
+		}
 		*disabled = true
-		logger.Warn(name + " disabled: provider credentials unavailable")
 		return false, nil
 	}
+	*disabled = false
 	return true, nil
 }
 

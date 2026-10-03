@@ -42,6 +42,8 @@ func (f *concurrencyLAN) Start(port int) (int, error) {
 	return port, nil
 }
 
+func (f *concurrencyLAN) StartLoopback(port int) (int, error) { return f.Start(port) }
+
 func (f *concurrencyLAN) Stop(context.Context) error {
 	if f.stopEntered != nil {
 		f.stopOnce.Do(func() { close(f.stopEntered) })
@@ -82,7 +84,7 @@ func (f *concurrencyLAN) PasswordHash() string {
 // transition replaces it after each failed clear.
 func TestBridgeStatusConcurrentSecurePairing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mobile.json")
-	if err := mobilebridge.Save(path, mobilebridge.State{Enabled: true, Password: "pw", LastPort: 3011}); err != nil {
+	if err := mobilebridge.Save(path, mobilebridge.State{Enabled: true, Password: "pw", LastPort: 3011, ServeCleanupPending: true}); err != nil {
 		t.Fatal(err)
 	}
 	bridge := &BridgeService{
@@ -187,7 +189,7 @@ func TestBridgeSerializesConcurrentEnableAndDisable(t *testing.T) {
 // blocked. Otherwise ordinary UI polling freezes behind a slow Tailscale CLI.
 func TestBridgeStatusResponsiveWhileSecurePairingConnectorIsSlow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mobile.json")
-	if err := mobilebridge.Save(path, mobilebridge.State{Enabled: true, Password: "pw", LastPort: 3011}); err != nil {
+	if err := mobilebridge.Save(path, mobilebridge.State{Enabled: true, Password: "pw", LastPort: 3011, ServeCleanupPending: true}); err != nil {
 		t.Fatal(err)
 	}
 	clearEntered := make(chan struct{})

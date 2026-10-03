@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { appI18n } from "../i18n";
 import type { WorkspaceSummary } from "../types/workspace";
 
-const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, setQueryHealthyMock } = vi.hoisted(
+const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock, listProjectsMock, listSessionsMock, remoteGetMock, setQueryHealthyMock } = vi.hoisted(
 	() => ({
 		captureRendererEventMock: vi.fn().mockResolvedValue(undefined),
 		cloudState: { ready: false, org: undefined as { id: string } | undefined },
@@ -13,6 +13,7 @@ const { captureRendererEventMock, cloudState, getMock, hasTrustedApiBaseUrlMock,
 		hasTrustedApiBaseUrlMock: vi.fn(() => true),
 		listProjectsMock: vi.fn(),
 		listSessionsMock: vi.fn(),
+		remoteGetMock: vi.fn(),
 		setQueryHealthyMock: vi.fn(),
 	}),
 );
@@ -24,6 +25,7 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventMock }));
 vi.mock("../lib/agent-switch-visibility", () => ({ agentSwitchVisibility: { setQueryHealthy: setQueryHealthyMock } }));
+vi.mock("../lib/host-clients", () => ({ clientForHost: () => ({ GET: remoteGetMock }), connectedHosts: () => [], subscribeConnectedHosts: () => () => undefined }));
 
 vi.mock("./useCloudCp", () => ({
 	useCloudCp: () => ({
@@ -37,7 +39,12 @@ vi.mock("./useCloudOrg", () => ({
 	useCloudOrg: () => ({ org: cloudState.org, isLoading: false, error: undefined, ready: cloudState.ready }),
 }));
 
-import { useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey } from "./useWorkspaceQuery";
+import { useWorkspaceQuery, useWorkspaceScope, useWorkspaceSession, useWorkspaceTraySessions, workspaceQueryKey, workspaceQueryKeyForHost } from "./useWorkspaceQuery";
+
+it("preserves the existing local and remote workspace cache keys", () => {
+	expect(workspaceQueryKeyForHost()).toBe(workspaceQueryKey);
+	expect(workspaceQueryKeyForHost("box-a")).toEqual(["remote-workspaces", "box-a"]);
+});
 
 function wrapper({ children }: { children: ReactNode }) {
 	// The hook pins its own retry policy; retryDelay 0 keeps the error tests fast.
@@ -64,6 +71,7 @@ beforeEach(() => {
 	cloudState.org = undefined;
 	listProjectsMock.mockReset();
 	listSessionsMock.mockReset().mockResolvedValue({ items: [] });
+	remoteGetMock.mockReset();
 	setQueryHealthyMock.mockReset();
 });
 
@@ -675,6 +683,35 @@ describe("useWorkspaceQuery", () => {
 });
 
 describe("useWorkspaceScope board presentation", () => {
+	it("reads a hosted session without contacting the laptop or AO Cloud", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		remoteGetMock.mockImplementation(async (path: string) => path.endsWith("/projects")
+			? { data: { projects: [{ id: "p", name: "Hosted", path: "/host/repo" }] } }
+			: { data: { sessions: [{ id: "s", projectId: "p", kind: "worker", status: "working" }] } });
+		const { result } = renderHook(() => useWorkspaceSession("s", "box-a"), { wrapper });
+		await waitFor(() => expect(result.current.data?.id).toBe("s"));
+		expect(result.current.data?.hostId).toBe("box-a");
+		expect(getMock).not.toHaveBeenCalled();
+		expect(listProjectsMock).not.toHaveBeenCalled();
+		expect(listSessionsMock).not.toHaveBeenCalled();
+	});
+
+	it("reads a hosted project from its selected daemon without querying local or cloud", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		remoteGetMock.mockImplementation(async (path: string) => path.endsWith("/projects")
+			? { data: { projects: [{ id: "p", name: "Hosted", path: "/host/repo" }] } }
+			: { data: { sessions: [{ id: "s", projectId: "p", kind: "worker", status: "working" }] } });
+		const { result } = renderHook(() => useWorkspaceScope("p", "s", "box-a"), { wrapper });
+		await waitFor(() => expect(result.current.data?.session?.id).toBe("s"));
+		expect(result.current.data?.project?.name).toBe("Hosted");
+		expect(remoteGetMock).toHaveBeenCalledTimes(2);
+		expect(getMock).not.toHaveBeenCalled();
+		expect(listProjectsMock).not.toHaveBeenCalled();
+		expect(listSessionsMock).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		{ kind: "orchestrator", isTerminated: false, expected: false },
 		{ kind: "orchestrator", isTerminated: true, expected: false },

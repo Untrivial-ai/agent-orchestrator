@@ -16,6 +16,7 @@ import {
 	View,
 } from "react-native";
 import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
+import { machineIdentity } from "../config";
 import { haptics } from "../haptics";
 import { resetHeaderRightForSwap } from "../headerRightSwap";
 import { openGitHub } from "../openGitHub";
@@ -88,7 +89,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		),
 		[navigation],
 	);
-	const { config, connection, unreachable, projects, refresh: refreshBoard, setActiveProject, setWorkerPinned, renameWorker, kill } = useApp();
+	const { config, currentHostId, connection, unreachable, projects, refresh: refreshBoard, setWorkerPinned, renameWorker, kill } = useApp();
 	const conversation = useMobileConversation(config, session.id);
 	// A load that failed while the desktop was unreachable retries as soon as the
 	// board's poll reconnects, which is what the offline state promises.
@@ -201,8 +202,9 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const headerState = conversation.snapshot?.controller.state;
 	const reviewPromptPRCandidate = "projectName" in session ? undefined : sessionPRReadyForReview(session);
 	const reviewPromptKey = reviewPromptPRCandidate ? `${reviewPromptPRCandidate.url}#${reviewPromptPRCandidate.number}` : undefined;
-	const reviewPromptStateStorageKey = reviewPromptKey
-		? `ao.chat.reviewPromptCollapsed:${encodeURIComponent(session.id)}:${encodeURIComponent(reviewPromptKey)}`
+	const reviewPromptHostKey = config ? machineIdentity(config) : currentHostId;
+	const reviewPromptStateStorageKey = reviewPromptKey && reviewPromptHostKey
+		? `ao.chat.reviewPromptCollapsed:${encodeURIComponent(reviewPromptHostKey)}:${encodeURIComponent(session.id)}:${encodeURIComponent(reviewPromptKey)}`
 		: undefined;
 	useEffect(() => {
 		let cancelled = false;
@@ -234,8 +236,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		setCollapsedReviewPRKey(undefined);
 		if (reviewPromptStateStorageKey) void AsyncStorage.removeItem(reviewPromptStateStorageKey).catch(() => {});
 	}, [reviewPromptStateStorageKey]);
-	const reviewSummaries = usePRSummaries(reviewPromptPR ? [session.id] : []);
-	const reviewPromptSummary = reviewPromptPR ? reviewSummaries.summaryFor(session.id, reviewPromptPR.number) : undefined;
+	const reviewSummaries = usePRSummaries(config && reviewPromptPR ? [{ config, sessionId: session.id }] : []);
+	const reviewPromptSummary = config && reviewPromptPR ? reviewSummaries.summaryFor(config, session.id, reviewPromptPR.number) : undefined;
 
 	// The blocking request. It takes the composer's place until it is answered.
 	// Computed here rather than at render because the back-swipe below is a hook
@@ -342,7 +344,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		try {
 			const shell = await openSessionShell(config, session.id, session.projectId);
 			setMenuOpen(false);
-			router.push({ pathname: "/shell/[handleId]", params: { handleId: shell.handleId, projectId: session.projectId, sessionId: session.id, title: shell.title } });
+			router.push({ pathname: "/shell/[handleId]", params: { handleId: shell.handleId, projectId: session.projectId, sessionId: session.id, title: shell.title, hostId: config.hostId } });
 		} catch (cause) {
 			Alert.alert("Couldn't open shell", userFacingError(cause));
 		} finally { setOpeningShell(false); }
@@ -434,16 +436,13 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			pinned: "projectName" in session ? false : Boolean(session.isPinned),
 			onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(actionsEntryRef.current?.snapshot ?? current), onSelect: setJumpToSequence })),
 			onOpenShell: () => void openShell(),
-			onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }),
+			onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined, hostId: currentHostId } }),
 			onPullRequests: () => {
 				const route = !("projectName" in session) && (session.prs?.length ?? (session.pr ? 1 : 0)) <= 1
-					? reviewRouteForSession(session)
+					? reviewRouteForSession(session, currentHostId)
 					: undefined;
 				if (route) openPage(route);
-				else {
-					setActiveProject(session.projectId);
-					router.push("/(tabs)/prs");
-				}
+				else router.push({ pathname: "/(tabs)/prs", params: { hostId: currentHostId, projectId: session.projectId } });
 			},
 			onSettings: () => void openTurnSettings(),
 			onSwitchInterface: requestInterfaceSwitch,
@@ -475,7 +474,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		};
 		actionsEntryRef.current = entry;
 		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => router.push(chatSheetRoute(actionsEntryRef.current ?? entry)));
-	}, [conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openPage, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setActiveProject, setWorkerPinned, title]);
+	}, [currentHostId, conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openPage, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setWorkerPinned, title]);
 
 	// The poll keeps retrying on its own at up to 8s; this is for the user who can
 	// see the network is back and does not want to wait for the tick. Nothing else
@@ -516,8 +515,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
 	// The board's poll is the app's view of the link: when it is down, say so in
 	// the board's words instead of echoing whatever this request failed with.
-	if (!conversation.snapshot && unreachable) return <Centered icon="wifi-off" title="Not connected to your desktop" message="This conversation loads once the app reconnects." action="Retry" onAction={() => void conversation.refresh()} />;
-	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Couldn't load the conversation" message={conversation.error || "Your desktop didn't return this conversation. Try again."} action="Retry" onAction={() => void conversation.refresh()} />;
+	if (!conversation.snapshot && unreachable) return <Centered icon="wifi-off" title="This machine is offline" message="This conversation loads once the app reconnects." action="Retry" onAction={() => void conversation.refresh()} />;
+	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Couldn't load the conversation" message={conversation.error || "The machine didn't return this conversation. Try again."} action="Retry" onAction={() => void conversation.refresh()} />;
 
 	const snapshot = conversation.snapshot;
 	const active = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
@@ -589,7 +588,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			{quota ? <DismissibleBanner copy={quotaBanner(quota)} dismissed={dismissedBanners} onDismiss={dismissBanner} tone={quota.severity === "critical" ? "danger" : "warning"} icon="alert-triangle" action="Details" onPress={() => setMenuOpen(true)} /> : null}
 			{conversation.actionError && conversation.actionError !== conversation.error ? <DismissibleBanner copy={errorBanner("action", conversation.actionError)} dismissed={dismissedBanners} onDismiss={dismissBanner} tone="danger" icon="alert-circle" /> : null}
 			{rolledBack ? <DismissibleBanner copy={rolledBackBanner(rolledBack)} dismissed={dismissedBanners} onDismiss={dismissBanner} tone="muted" icon="rotate-ccw" /> : null}
-			{conversation.pendingSends.map((pendingSend) => pendingSend.state === "failed" ? <InlineBanner key={pendingSend.id} tone="danger" icon="send" title="Message not sent" body={pendingSend.error || "Delivery failed"} action="Retry" secondary="Discard" onPress={() => void conversation.retrySend(pendingSend.id).catch(() => {})} onSecondary={() => conversation.discardSend(pendingSend.id)} /> : null)}
+			{conversation.pendingSends.map((pendingSend) => pendingSend.state === "failed" ? <InlineBanner key={pendingSend.id} tone="danger" icon="send" title="Message delivery uncertain" body={pendingSend.error || "Delivery failed"} action="Retry" secondary="Discard" onPress={() => void conversation.retrySend(pendingSend.id).catch(() => {})} onSecondary={() => void conversation.discardSend(pendingSend.id).catch(() => {})} /> : null)}
 			<ChatLinkProvider onLinkOpen={openLink}>
 				<ChatTimeline
 					snapshot={snapshot}
@@ -606,12 +605,14 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				/>
 			</ChatLinkProvider>
 			<ChatComposer
+				key={config ? JSON.stringify([machineIdentity(config), session.id]) : session.id}
 				reviewPR={reviewPromptPR}
 				reviewPRSummary={reviewPromptSummary}
 				reviewPRCollapsed={reviewPromptCollapsed}
 				onCollapseReviewPR={collapseReviewPrompt}
-				onOpenReview={reviewPromptPR ? () => openPage(reviewRouteForPR(session.id, reviewPromptPR)) : undefined}
+				onOpenReview={reviewPromptPR ? () => openPage(reviewRouteForPR(session.id, reviewPromptPR, currentHostId)) : undefined}
 				sessionId={session.id}
+				config={config}
 				snapshot={snapshot}
 				quotaActive={Boolean(quota)}
 				request={request}
@@ -633,6 +634,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				pending={mobileInterfaceTransitionIsBusy(interfaceSwitch.transition) || conversation.pendingSends.some((item) => item.state === "sending")}
 				interrupting={conversation.pendingActions.includes("interrupt")}
 				onSend={conversation.send}
+				onAcknowledgeSend={conversation.acknowledgeSend}
+				completedRetry={conversation.completedRetry}
 				onSteer={conversation.steer}
 				onPromoteQueuedTurn={conversation.promoteQueuedTurn}
 				onCancelQueuedTurn={conversation.cancelQueuedTurn}

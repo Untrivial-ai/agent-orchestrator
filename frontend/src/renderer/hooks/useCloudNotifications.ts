@@ -29,12 +29,12 @@ export function useCloudNotifications(
 	// A trailing slash otherwise makes the invalidation key miss the query key,
 	// so live updates would only land on mount/focus.
 	const base = baseUrl.replace(/\/+$/, "");
-	const key = cloudNotificationsQueryKey(base, orgId, status);
+	const key = cloudNotificationsQueryKey(base, orgId, userId, status);
 	const queryClient = useQueryClient();
-	const query = useQuery({ queryKey: key, enabled: ready && orgId !== "", queryFn: async () => client.listNotifications(orgId, { status }) });
+	const query = useQuery({ queryKey: key, enabled: ready && orgId !== "" && userId !== "", queryFn: async () => client.listNotifications(orgId, { status }) });
 	useEffect(() => {
-		if (!live || !ready || orgId === "") return;
-		const notificationsKey = cloudNotificationsQueryKey(base, orgId, status);
+		if (!live || !ready || orgId === "" || userId === "") return;
+		const notificationsKey = cloudNotificationsQueryKey(base, orgId, userId, status);
 		const controller = new AbortController();
 		// The control plane owns the authoritative list, unread count, and sequence
 		// (all paginated/server-computed), so a durable event or a pre-durable hint
@@ -51,7 +51,7 @@ export function useCloudNotifications(
 			void queryClient.invalidateQueries({ queryKey: orchestratorChildrenQueryKey });
 		}, onError: refresh });
 		return () => { stopHints(); controller.abort(); };
-	}, [base, live, orgId, queryClient, ready, status]);
+	}, [base, live, orgId, queryClient, ready, status, userId]);
 
 	// Cleared rows are hidden per signed-in user: notifications belong to one
 	// recipient, and an org can be shared by several accounts on this device.
@@ -75,8 +75,8 @@ export function useCloudNotifications(
 	}, [query.data?.items, storageKey]);
 
 	const invalidateAll = useCallback(
-		() => queryClient.invalidateQueries({ queryKey: ["cloud-notifications", base, orgId] }),
-		[base, orgId, queryClient],
+		() => queryClient.invalidateQueries({ queryKey: ["cloud-notifications", base, orgId, userId] }),
+		[base, orgId, queryClient, userId],
 	);
 	const markAllRead = useCallback(async () => {
 		if (!ready || orgId === "") return;
@@ -99,13 +99,19 @@ export function useCloudNotifications(
 	const clearAll = useCallback(async () => {
 		if (!ready || orgId === "") return;
 		const loaded = query.data?.items ?? [];
-		const state = parseClears(readClearsRaw(storageKey));
+		const previous = readClearsRaw(storageKey);
+		const state = parseClears(previous);
 		const newest = loaded.reduce((max, item) => Math.max(max, timestamp(item.createdAt)), state.before);
 		const ids: CloudClears["ids"] = {};
 		for (const [id, marker] of Object.entries(state.ids)) if (marker !== null) ids[id] = marker;
 		for (const item of loaded) ids[item.id] = timestamp(item.updatedAt);
 		writeClears(storageKey, { before: newest, ids });
-		await markAllRead();
+		try {
+			await markAllRead();
+		} catch (error) {
+			restoreClears(storageKey, previous);
+			throw error;
+		}
 	}, [markAllRead, orgId, query.data?.items, ready, storageKey]);
 	const clearOne = useCallback(async (notification: CloudNotificationRow) => {
 		if (!ready || orgId === "") return;

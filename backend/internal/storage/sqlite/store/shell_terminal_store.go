@@ -18,14 +18,15 @@ func (s *Store) InsertShellTerminal(ctx context.Context, rec shelltermsvc.ShellT
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.qw.InsertShellTerminal(ctx, gen.InsertShellTerminalParams{
-		HandleID:   rec.HandleID,
-		ProjectID:  optionalProjectID(rec.ProjectID),
-		SessionID:  optionalSessionID(rec.SessionID),
-		WorkingDir: rec.WorkingDir,
-		Title:      rec.Title,
-		AppRunID:   rec.AppRunID,
-		Transient:  rec.Transient,
-		CreatedAt:  rec.CreatedAt,
+		HandleID:                  rec.HandleID,
+		ProjectID:                 optionalProjectID(rec.ProjectID),
+		SessionID:                 optionalSessionID(rec.SessionID),
+		WorkingDir:                rec.WorkingDir,
+		Title:                     rec.Title,
+		AppRunID:                  rec.AppRunID,
+		Transient:                 rec.Transient,
+		CreatedAt:                 rec.CreatedAt,
+		PreviewCapabilityVerifier: rec.PreviewCapabilityVerifier,
 	})
 	if err != nil {
 		return fmt.Errorf("insert shell terminal %s: %w", rec.HandleID, err)
@@ -148,12 +149,13 @@ func optionalSessionID(id domain.SessionID) sql.NullString {
 
 func shellTerminalFromGen(row gen.ShellTerminal) shelltermsvc.ShellTerminalRecord {
 	rec := shelltermsvc.ShellTerminalRecord{
-		HandleID:   row.HandleID,
-		WorkingDir: row.WorkingDir,
-		Title:      row.Title,
-		AppRunID:   row.AppRunID,
-		Transient:  row.Transient,
-		CreatedAt:  row.CreatedAt,
+		HandleID:                  row.HandleID,
+		WorkingDir:                row.WorkingDir,
+		Title:                     row.Title,
+		AppRunID:                  row.AppRunID,
+		Transient:                 row.Transient,
+		CreatedAt:                 row.CreatedAt,
+		PreviewCapabilityVerifier: row.PreviewCapabilityVerifier,
 	}
 	if row.ProjectID != nil {
 		rec.ProjectID = *row.ProjectID

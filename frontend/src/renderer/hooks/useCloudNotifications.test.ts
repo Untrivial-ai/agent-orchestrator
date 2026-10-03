@@ -83,14 +83,16 @@ describe("useCloudNotifications clearing", () => {
 	const listNotifications = vi.fn();
 	const markNotificationsRead = vi.fn();
 
-	function renderCloudNotifications(userId = "user-1") {
+	function renderCloudNotifications(
+		userId = "user-1",
+		queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+	) {
 		cloudCpMock.mockReturnValue({
 			client: { listNotifications, markNotificationsRead },
 			ready: true,
 			baseUrl: "https://cloud.test",
 			userId,
 		});
-		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children);
 		return renderHook(() => useCloudNotifications("all", { live: false }), { wrapper });
 	}
@@ -129,27 +131,63 @@ describe("useCloudNotifications clearing", () => {
 		expect(result.current.items).toHaveLength(0);
 	});
 
-	it("puts the row back when marking it read fails", async () => {
-		items = [cloudRow({ status: "unread" })];
-		markNotificationsRead.mockRejectedValue(new CloudCpError("Service unavailable.", { status: 503 }));
-		const { result } = renderCloudNotifications();
-		await waitFor(() => expect(result.current.items).toHaveLength(1));
+		it("puts the row back when marking it read fails", async () => {
+			items = [cloudRow({ status: "unread" })];
+			markNotificationsRead.mockRejectedValue(new CloudCpError("Service unavailable.", { status: 503 }));
+			const { result } = renderCloudNotifications();
+			await waitFor(() => expect(result.current.items).toHaveLength(1));
 
 		await act(() => expect(result.current.clearOne(items[0])).rejects.toThrow("Service unavailable."));
 
-		expect(result.current.items).toHaveLength(1);
-	});
+			expect(result.current.items).toHaveLength(1);
+		});
 
-	it("scopes cleared rows to the signed-in cloud user", async () => {
-		const first = renderCloudNotifications("user-1");
+		it("puts all rows back when marking all read fails", async () => {
+			items = [cloudRow({ status: "unread" })];
+			markNotificationsRead.mockRejectedValue(new CloudCpError("Service unavailable.", { status: 503 }));
+			const { result } = renderCloudNotifications();
+			await waitFor(() => expect(result.current.items).toHaveLength(1));
+
+			await act(() => expect(result.current.clearAll()).rejects.toThrow("Service unavailable."));
+
+			expect(markNotificationsRead).toHaveBeenCalledWith("org-1");
+			expect(result.current.items).toHaveLength(1);
+			expect(window.localStorage.getItem("ao.cloudNotifications.cleared:https://cloud.test:org-1:user-1")).toBeNull();
+		});
+
+		it("scopes cleared rows to the signed-in cloud user", async () => {
+			const first = renderCloudNotifications("user-1");
 		await waitFor(() => expect(first.result.current.items).toHaveLength(1));
 		await act(() => first.result.current.clearAll());
 		expect(first.result.current.items).toHaveLength(0);
 		first.unmount();
 
 		const second = renderCloudNotifications("user-2");
-		await waitFor(() => expect(second.result.current.items).toHaveLength(1));
-	});
+			await waitFor(() => expect(second.result.current.items).toHaveLength(1));
+		});
+
+		it("does not show another user's cached rows when accounts share an org", async () => {
+			const firstRow = cloudRow({ id: "cntf_private_a", title: "Private for A" });
+			const secondRow = cloudRow({ id: "cntf_private_b", title: "Private for B" });
+			let finishSecondFetch: () => void = () => undefined;
+			const secondFetchPending = new Promise<void>((resolve) => { finishSecondFetch = resolve; });
+			listNotifications
+				.mockResolvedValueOnce({ items: [firstRow], unreadCount: 0, page: { hasMore: false }, latestSequence: 0 })
+				.mockImplementationOnce(async () => {
+					await secondFetchPending;
+					return { items: [secondRow], unreadCount: 0, page: { hasMore: false }, latestSequence: 0 };
+				});
+			const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+			const first = renderCloudNotifications("user-1", queryClient);
+			await waitFor(() => expect(first.result.current.items).toEqual([firstRow]));
+			first.unmount();
+
+			const second = renderCloudNotifications("user-2", queryClient);
+			expect(second.result.current.items).toEqual([]);
+			expect(second.result.current.data).toBeUndefined();
+			await act(async () => { finishSecondFetch(); });
+			await waitFor(() => expect(second.result.current.items).toEqual([secondRow]));
+		});
 
 	it("keeps a re-raised row visible after it is read again", async () => {
 		const { result } = renderCloudNotifications();

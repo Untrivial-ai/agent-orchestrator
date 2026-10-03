@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useUiStore } from "../stores/ui-store";
 import { FileContentPane } from "./FileContentPane";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
 import { TooltipProvider } from "./ui/tooltip";
@@ -45,6 +46,7 @@ describe("FileContentPane", () => {
 	beforeEach(() => {
 		getMock.mockReset();
 		putMock.mockReset();
+		useUiStore.setState({ inspectorSessions: {} });
 	});
 
 	it("prompts for a selection when no path is chosen", () => {
@@ -538,5 +540,112 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText("boom")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
 		await waitFor(() => expect(screen.getByText("recovered")).toBeInTheDocument());
+	});
+	describe("remembers the display mode per session and file", () => {
+		const markdown = (sessionId: string, path: string) => ({
+			data: {
+				sessionId,
+				path,
+				status: "unmodified",
+				additions: 0,
+				deletions: 0,
+				size: 8,
+				binary: false,
+				deleted: false,
+				content: "# Hello\n",
+				contentTruncated: false,
+				diff: "",
+				diffTruncated: false,
+			},
+		});
+		const pane = (sessionId: string, path: string, requestKey = 1) => (
+			<FileContentPane annotation={noopAnnotation()} initialMode="file" initialRequestKey={requestKey} path={path} rememberDisplayMode sessionId={sessionId} split={false} />
+		);
+		const richPreviewTab = () => screen.findByRole("tab", { name: "Rich preview" });
+
+		beforeEach(() => {
+			getMock.mockImplementation(async (_route: string, init: { params: { path: { sessionId: string }; query: { path: string } } }) =>
+				markdown(init.params.path.sessionId, init.params.query.path));
+		});
+
+		it("keeps Rich preview when the pane unmounts and comes back", async () => {
+			const first = renderWithQuery(pane("sess-1", "README.md"));
+			await userEvent.click(await richPreviewTab());
+			expect(await screen.findByRole("heading", { name: "Hello" })).toBeInTheDocument();
+			first.unmount();
+
+			renderWithQuery(pane("sess-1", "README.md"));
+			expect(await richPreviewTab()).toHaveAttribute("aria-selected", "true");
+			expect(await screen.findByRole("heading", { name: "Hello" })).toBeInTheDocument();
+		});
+
+		it("keeps Rich preview after switching to another session and back", async () => {
+			const view = renderWithQuery(pane("sess-1", "README.md"));
+			await userEvent.click(await richPreviewTab());
+			expect(await richPreviewTab()).toHaveAttribute("aria-selected", "true");
+
+			view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider>{pane("sess-2", "docs/guide.md")}</TooltipProvider></QueryClientProvider>);
+			expect(await screen.findByRole("tab", { name: "File" })).toHaveAttribute("aria-selected", "true");
+
+			view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider>{pane("sess-1", "README.md")}</TooltipProvider></QueryClientProvider>);
+			expect(await richPreviewTab()).toHaveAttribute("aria-selected", "true");
+		});
+
+		it("does not carry the mode over to the same path in another session", async () => {
+			const first = renderWithQuery(pane("sess-1", "README.md"));
+			await userEvent.click(await richPreviewTab());
+			first.unmount();
+
+			renderWithQuery(pane("sess-2", "README.md"));
+			expect(await screen.findByRole("tab", { name: "File" })).toHaveAttribute("aria-selected", "true");
+		});
+
+		it("leaves panes that do not opt in unchanged", async () => {
+			getMock.mockResolvedValue({
+				data: {
+					sessionId: "sess-1", path: "README.md", status: "modified", additions: 1, deletions: 0, size: 8,
+					binary: false, deleted: false, content: "# Hello\n", contentTruncated: false,
+					diff: "@@ -0,0 +1,1 @@\n+# Hello\n", diffTruncated: false,
+				},
+			});
+			// Centre tab, request #1: switched to Rich preview.
+			const centre = renderWithQuery(pane("sess-1", "README.md", 1));
+			await userEvent.click(await richPreviewTab());
+			centre.unmount();
+
+			// The maximized Files panel keeps its own request numbers and does not
+			// opt in, so its explicit diff request #1 still opens as a diff.
+			renderWithQuery(<FileContentPane annotation={noopAnnotation()} initialMode="diff" initialRequestKey={1} path="README.md" sessionId="sess-1" split={false} />);
+			expect(await screen.findByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
+			// Nor does it record its own picks over the centre tab's.
+			await userEvent.click(screen.getByRole("tab", { name: "File" }));
+			expect(useUiStore.getState().inspectorSessions["sess-1"]?.fileDisplayModes?.["README.md"]).toEqual({ mode: "rendered", requestKey: 1 });
+		});
+
+		it("does not carry an unsaved edit into another session's file at the same path", async () => {
+			getMock.mockImplementation(async (_route: string, init: { params: { path: { sessionId: string } } }) => ({
+				data: {
+					sessionId: init.params.path.sessionId, path: "README.md", status: "unmodified", additions: 0, deletions: 0, size: 8,
+					binary: false, deleted: false, editable: true, content: "# Hello\n", contentTruncated: false, diff: "", diffTruncated: false,
+					workspaceVersion: "workspace-1", fileFingerprint: "file-1",
+				},
+			}));
+			const view = renderWithQuery(pane("sess-1", "README.md"));
+			await userEvent.click(await screen.findByRole("button", { name: "Edit file" }));
+			expect(screen.getByRole("textbox", { name: "Edit README.md" })).toBeInTheDocument();
+
+			view.rerender(<QueryClientProvider client={new QueryClient()}><TooltipProvider>{pane("sess-2", "README.md")}</TooltipProvider></QueryClientProvider>);
+			expect(await screen.findByRole("button", { name: "Edit file" })).toBeInTheDocument();
+			expect(screen.queryByRole("textbox", { name: "Edit README.md" })).not.toBeInTheDocument();
+		});
+
+		it("lets a new open request choose its own mode", async () => {
+			const first = renderWithQuery(pane("sess-1", "README.md", 1));
+			await userEvent.click(await richPreviewTab());
+			first.unmount();
+
+			renderWithQuery(pane("sess-1", "README.md", 2));
+			expect(await screen.findByRole("tab", { name: "File" })).toHaveAttribute("aria-selected", "true");
+		});
 	});
 });

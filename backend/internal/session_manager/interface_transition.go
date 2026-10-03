@@ -84,11 +84,10 @@ type InterfaceTransitionStatus struct {
 	Transition *domain.SessionInterfaceTransition
 }
 
-// InterfaceTransitionStatus reports static adapter support plus the latest
-// durable attempt. It runs the same native-conversation readiness check as
-// StartInterfaceTransition so the two never disagree: that check may stat the
-// provider transcript and read the current terminal screen, but never launches
-// a provider process. Target binary/auth checks still happen only on POST.
+// InterfaceTransitionStatus reports target availability plus the latest durable
+// attempt. It checks native-conversation readiness and preflights a Chat target
+// without launching a Chat session, so a missing driver runtime does not leave
+// the switch enabled. Launch-time auth and races can still fail after status.
 func (m *Manager) InterfaceTransitionStatus(
 	ctx context.Context,
 	id domain.SessionID,
@@ -108,20 +107,28 @@ func (m *Manager) InterfaceTransitionStatus(
 	} else if target == domain.SessionModeChat && (m.chat == nil || !m.chat.SupportsChat(rec.Harness)) {
 		status.ReasonCode = "CHAT_UNSUPPORTED"
 		status.Reason = fmt.Sprintf("%s does not support Chat UI.", rec.Harness)
-	} else if _, err := m.handoffNativeConversationID(ctx, rec); err != nil {
-		if errors.Is(err, ErrInterfaceHandoffUnsupported) {
-			status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
-		} else if errors.Is(err, ErrNativeConversationMissing) {
-			status.ReasonCode = "NATIVE_SESSION_MISSING"
-		} else {
-			// Config-load or transcript-inspection blips must not hard-error
-			// the polled status: report unverified so the client keeps
-			// polling with the control disabled. Start still fails hard.
-			status.ReasonCode = "NATIVE_SESSION_UNVERIFIED"
+	} else if target == domain.SessionModeChat {
+		if err := m.preflightInterfaceTarget(ctx, rec, domain.SessionInterfaceTransition{TargetMode: target}); err != nil {
+			status.ReasonCode = interfaceTransitionErrorCode(err)
+			status.Reason = err.Error()
 		}
-		status.Reason = err.Error()
-	} else {
-		status.Supported = true
+	}
+	if status.ReasonCode == "" {
+		if _, err := m.handoffNativeConversationID(ctx, rec); err != nil {
+			if errors.Is(err, ErrInterfaceHandoffUnsupported) {
+				status.ReasonCode = "INTERFACE_HANDOFF_UNSUPPORTED"
+			} else if errors.Is(err, ErrNativeConversationMissing) {
+				status.ReasonCode = "NATIVE_SESSION_MISSING"
+			} else {
+				// Config-load or transcript-inspection blips must not hard-error
+				// the polled status: report unverified so the client keeps
+				// polling with the control disabled. Start still fails hard.
+				status.ReasonCode = "NATIVE_SESSION_UNVERIFIED"
+			}
+			status.Reason = err.Error()
+		} else {
+			status.Supported = true
+		}
 	}
 	if store, ok := m.store.(interfaceTransitionStore); ok {
 		latest, found, err := store.GetLatestSessionInterfaceTransition(ctx, id)

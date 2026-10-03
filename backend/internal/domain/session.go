@@ -164,10 +164,15 @@ type SessionRecord struct {
 	// AutomationLaunchCompleted is set atomically with the final lifecycle
 	// commit. A seed carrying AutomationRunID alone is not proof that its
 	// workspace/controller launch completed.
-	AutomationLaunchCompleted bool         `json:"-"`
-	IssueID                   IssueID      `json:"issueId,omitempty"`
-	Kind                      SessionKind  `json:"kind"`
-	Harness                   AgentHarness `json:"harness,omitempty"`
+	AutomationLaunchCompleted bool `json:"-"`
+	// ClientRequestID binds one manual task creation attempt to its durable row.
+	// A retry may return this row only after ClientRequestCommitted is set.
+	ClientRequestID        string       `json:"-"`
+	ClientRequestHash      string       `json:"-"`
+	ClientRequestCommitted bool         `json:"-"`
+	IssueID                IssueID      `json:"issueId,omitempty"`
+	Kind                   SessionKind  `json:"kind"`
+	Harness                AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
 	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
@@ -301,8 +306,8 @@ type Session struct {
 	// ChatProviderPreserved is a live-controller observation, never stored.
 	// False also covers recovery/unknown ownership; callers must not infer safety.
 	ChatProviderPreserved bool          `json:"chatProviderPreserved"`
-	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
-	SCMStatus             SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,approved,mergeable,merged"`
+	Status                SessionStatus `json:"status" enum:"working,pr_open,draft,ci_failed,review_pending,changes_requested,commented,approved,mergeable,merged,needs_input,exited,idle,terminated,no_signal"`
+	SCMStatus             SessionStatus `json:"scmStatus,omitempty" enum:"pr_open,draft,ci_failed,review_pending,changes_requested,commented,approved,mergeable,merged"`
 	// KanbanColumn is where the session sits in its delivery lifecycle and
 	// which loop is turning it: an AO-driven one (validating) or the
 	// review-feedback loop whose next turn is a person's (needs_review). It is

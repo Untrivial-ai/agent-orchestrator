@@ -5,6 +5,7 @@ import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { useKeyboardState, useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { haptics } from "../../lib/haptics";
+import { hostedProjectKey } from "../../lib/hostedRows";
 import { StaleBanner } from "../../lib/StaleBanner";
 import { useApp } from "../../lib/store";
 import { useBoardFailure } from "../../lib/useBoardFailure";
@@ -34,7 +35,14 @@ export default function FleetScreen() {
 
 	const router = useRouter();
 	const insets = useSafeAreaInsets();
-	const { configured, loading, error, refresh, sessions, projects, notificationsUnread } = useApp();
+	const { config, configured, connection, loading, error, refreshAll, allSessions, allProjects, hostStates, notificationsUnread } = useApp();
+	const fleetLoading = hostStates.length ? hostStates.some((host) => host.loading) : loading;
+	const fleetError = hostStates.length > 1
+		? hostStates.every((host) => host.connection === "closed" && !host.loading)
+		: Boolean(error);
+	const unreadCount = hostStates.length > 1
+		? hostStates.reduce((count, host) => count + host.notificationsUnread, 0)
+		: notificationsUnread;
 	const [refreshing, setRefreshing] = useState(false);
 	const [query, setQuery] = useState("");
 	const [searchRequested, setSearchRequested] = useState(false);
@@ -56,8 +64,10 @@ export default function FleetScreen() {
 	const spawnWorker = useCallback(() => {
 		Keyboard.dismiss();
 		haptics.tap();
-		router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) });
-	}, [router, workerProjectId]);
+		const project = spawnProjectParam(workerProjectId, allProjects);
+		const connectedHostId = connection === "open" ? config?.hostId : hostStates.find((host) => host.connection === "open")?.hostId;
+		router.push({ pathname: "/spawn", params: { hostId: project?.hostId ?? connectedHostId ?? config?.hostId, ...project } });
+	}, [allProjects, config?.hostId, connection, hostStates, router, workerProjectId]);
 	// Two selectors rather than the whole state object, so the board re-renders
 	// only when one of these two values actually changes.
 	//
@@ -74,20 +84,20 @@ export default function FleetScreen() {
 	const listRef = useTabScrollToTop<FlatList<BoardRow>>();
 
 	const projectSessions = useMemo(
-		() => filterWorkersByProject(sessions, workerProjectId),
-		[sessions, workerProjectId],
+		() => filterWorkersByProject(allSessions, workerProjectId, allProjects),
+		[allSessions, allProjects, workerProjectId],
 	);
 	const searchOpen = workerSearchPresentation(searchRequested, query) === "expanded";
-	const selectedProjectLabel = workerProjectLabel(projects, workerProjectId);
+	const selectedProjectLabel = workerProjectLabel(allProjects, workerProjectId);
 
 	useEffect(() => {
 		if (
 			workerProjectId !== ALL_WORKER_PROJECTS &&
-			!projects.some((project) => project.id === workerProjectId)
+			!allProjects.some((project) => hostedProjectKey(project) === workerProjectId)
 		) {
 			setWorkerProjectId(ALL_WORKER_PROJECTS);
 		}
-	}, [projects, workerProjectId]);
+	}, [allProjects, workerProjectId]);
 
 	// The poll's failure as the same human copy the pairing screens use.
 	const failure = useBoardFailure();
@@ -95,9 +105,9 @@ export default function FleetScreen() {
 	const onRefresh = useCallback(async () => {
 		haptics.tap();
 		setRefreshing(true);
-		await refresh();
-		setRefreshing(false);
-	}, [refresh]);
+		try { await refreshAll(); }
+		finally { setRefreshing(false); }
+	}, [refreshAll]);
 
 	const keyboardLayout = workerDockKeyboardLayout(keyboardHeight, insets.bottom, keyboardVisible);
 	// `progress`, not the animated `height`: that value is the keyboard's frame
@@ -108,7 +118,7 @@ export default function FleetScreen() {
 		transform: [{ translateY: -keyboardAnimation.progress.value * workerDockLift(keyboardHeight, insets.bottom) }],
 	}));
 
-	if (!configured) {
+	if (!configured && hostStates.length === 0) {
 		return (
 			<View style={styles.screen}>
 				<View style={{ height: insets.top }} />
@@ -127,16 +137,16 @@ export default function FleetScreen() {
 					<HeaderIconButton
 						icon="bell"
 						label="Notifications"
-						badge={notificationsUnread}
+						badge={unreadCount}
 						onPress={() => router.navigate("/notifications")}
 					/>
 				}
 			/>
 			{/* Above the list rather than inside ListEmptyComponent: the case this
 			    exists for is a populated board whose poll has died. */}
-			<StaleBanner error={!!error} onRetry={onRefresh} />
+			{hostStates.length <= 1 ? <StaleBanner error={!!error} onRetry={onRefresh} /> : null}
 
-			{loading && sessions.length === 0 ? (
+			{fleetLoading && allSessions.length === 0 ? (
 				<View style={styles.center}>
 					<ActivityIndicator color={t.accent} />
 				</View>
@@ -152,11 +162,11 @@ export default function FleetScreen() {
 					ListEmptyComponent={
 						query.trim() ? (
 							<EmptyState icon="search" title="No workers found" message={`No workers match “${query.trim()}”.`} />
-						) : error ? (
+						) : fleetError ? (
 							<EmptyState
-								icon={failure.icon}
-								title={failure.title}
-								message={failure.hint}
+								icon={hostStates.length > 1 ? "unplug" : failure.icon}
+								title={hostStates.length > 1 ? "No machines connected" : failure.title}
+								message={hostStates.length > 1 ? undefined : failure.hint}
 								action={
 									<View style={styles.errorActions}>
 										<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={onRefresh} />
@@ -178,7 +188,7 @@ export default function FleetScreen() {
 								icon="moon"
 								title="No active workers"
 								message="Spawn a worker to get started."
-								action={<Button title="New agent" icon="plus" onPress={() => router.push({ pathname: "/spawn", params: spawnProjectParam(workerProjectId) })} />}
+								action={<Button title="New agent" icon="plus" onPress={spawnWorker} />}
 							/>
 						)
 					}
@@ -196,7 +206,7 @@ export default function FleetScreen() {
 					onSearchClose={closeSearch}
 					onOpenControls={openControls}
 					projectFiltered={workerProjectId !== ALL_WORKER_PROJECTS}
-					projects={projects}
+					projects={allProjects}
 					selectedProjectId={workerProjectId}
 					onSelectProject={setWorkerProjectId}
 					onSpawn={spawnWorker}
@@ -207,7 +217,7 @@ export default function FleetScreen() {
 				open={controlsOpen}
 				onDismiss={() => setControlsOpen(false)}
 				onSearch={() => setSearchRequested(true)}
-				projects={projects}
+				projects={allProjects}
 				selectedProjectId={workerProjectId}
 				onSelectProject={setWorkerProjectId}
 			/>

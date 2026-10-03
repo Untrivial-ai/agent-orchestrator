@@ -17,8 +17,8 @@ export interface CloudGate {
 	client: string;
 }
 
-export function useCloudGate(): CloudGate {
-	const { settings } = useSettings();
+export function useCloudGate(enabled = true): CloudGate {
+	const { settings } = useSettings(undefined, enabled);
 	return {
 		cloudEnabled: settings?.cloudEnabled ?? false,
 		localEnabled: settings?.localEnabled ?? true,

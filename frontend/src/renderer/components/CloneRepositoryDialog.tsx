@@ -28,7 +28,9 @@ export default function CloneRepositoryDialog({
 	onClose,
 	onContinue,
 	onError,
+	onChooseRemoteDestination,
 	open,
+	remote = false,
 	shake: externalShake = false,
 	existingProjectPaths = [],
 	value,
@@ -40,7 +42,9 @@ export default function CloneRepositoryDialog({
 	onClose: () => void;
 	onContinue: (selection: CloneRepositorySelection) => void;
 	onError?: (message: string) => void;
+	onChooseRemoteDestination?: () => void;
 	open: boolean;
+	remote?: boolean;
 	shake?: boolean;
 	existingProjectPaths?: readonly string[];
 	existingProjectNames?: readonly string[];
@@ -48,7 +52,7 @@ export default function CloneRepositoryDialog({
 }) {
 	const { t } = useTranslation();
 	const [submitted, setSubmitted] = useState(false);
-	const [repositoryCheck, setRepositoryCheck] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
+	const [repositoryCheck, setRepositoryCheck] = useState<"idle" | "checking" | "valid" | "invalid" | "unchecked">("idle");
 	const repositoryCheckRequest = useRef(0);
 	const destinationPickerRequest = useRef(0);
 	const shakeFrame = useRef<number | null>(null);
@@ -83,7 +87,7 @@ export default function CloneRepositoryDialog({
 	const destinationError = submitted && !hasDestination ? t("createProject.cloneDestinationRequired") : null;
 	const canContinue = Boolean(
 		repositoryName &&
-		repositoryCheck === "valid" &&
+		(repositoryCheck === "valid" || (remote && repositoryCheck === "unchecked")) &&
 		hasDestination &&
 		!projectExists &&
 		!disabled &&
@@ -148,6 +152,11 @@ export default function CloneRepositoryDialog({
 			setRepositoryCheck("idle");
 			return;
 		}
+		// Host access is not checked until clone/prepare; do not label it validated.
+		if (remote) {
+			setRepositoryCheck("unchecked");
+			return;
+		}
 		setRepositoryCheck("checking");
 		const timer = window.setTimeout(() => {
 			void aoBridge.app.checkGitRepository(value.remoteUrl.trim()).then((exists) => {
@@ -159,9 +168,13 @@ export default function CloneRepositoryDialog({
 			});
 		}, 300);
 		return () => window.clearTimeout(timer);
-	}, [open, repositoryName, value.remoteUrl]);
+	}, [open, remote, repositoryName, value.remoteUrl]);
 
 	const chooseDestination = async () => {
+		if (remote) {
+			onChooseRemoteDestination?.();
+			return;
+		}
 		const requestId = ++destinationPickerRequest.current;
 		setDestinationPickerError(null);
 		setChoosingDestination(true);
@@ -201,10 +214,12 @@ export default function CloneRepositoryDialog({
 			}
 			return;
 		}
-		try {
-			window.localStorage.setItem(LAST_CLONE_DESTINATION_KEY, value.destinationParent.trim());
-		} catch {
-			// Remembering the folder is optional.
+		if (!remote) {
+			try {
+				window.localStorage.setItem(LAST_CLONE_DESTINATION_KEY, value.destinationParent.trim());
+			} catch {
+				// Remembering the folder is optional.
+			}
 		}
 		onContinue({
 			...value,
@@ -234,7 +249,7 @@ export default function CloneRepositoryDialog({
 								{t("createProject.cloneTitle")}
 							</Dialog.Title>
 							<Dialog.Description className="sr-only">
-								{t("createProject.cloneDescription")}
+								{t(remote ? "remote.cloneDescription" : "createProject.cloneDescription")}
 							</Dialog.Description>
 						</div>
 						<button

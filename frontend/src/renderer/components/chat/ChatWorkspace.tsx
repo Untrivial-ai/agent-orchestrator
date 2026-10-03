@@ -66,11 +66,8 @@ import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
 import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
-import {
-	TERMINAL_FONT_SIZE_DEFAULT,
-	TERMINAL_FONT_SIZE_MAX,
-	TERMINAL_FONT_SIZE_MIN,
-} from "../../lib/design-tokens";
+import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../../lib/terminal-font-size";
+import { createTerminalMux, muxUrlFromApiBase } from "../../lib/terminal-mux";
 import { isLinuxPlatform, isMacPlatform } from "../../lib/platform";
 import { handleTerminalTabListKeyDown } from "../../lib/terminal-tabs";
 import { agentLabel } from "../../lib/agent-options";
@@ -172,9 +169,6 @@ function latestPendingInteraction(
 
 const CHAT_FONT_SIZE_DEFAULT = 14;
 
-// Reviewer panes share the terminal font-size preference with CenterPane, so a
-// reviewer opened inside the Chat surface matches a reviewer opened in TUI mode.
-const terminalFontSizeStorageKey = "ao.terminal.fontSize";
 const WHEEL_ZOOM_THRESHOLD = 80;
 const WHEEL_ZOOM_RESET_MS = 250;
 
@@ -183,18 +177,6 @@ export interface ChatRetryControl {
 	pending?: boolean;
 	error?: string;
 	turnId?: string;
-}
-
-function clampTerminalFontSize(size: number): number {
-	return Math.min(TERMINAL_FONT_SIZE_MAX, Math.max(TERMINAL_FONT_SIZE_MIN, size));
-}
-
-function initialTerminalFontSize(): number {
-	if (typeof window === "undefined") return TERMINAL_FONT_SIZE_DEFAULT;
-	const raw = window.localStorage?.getItem(terminalFontSizeStorageKey);
-	const parsed = raw === null ? Number.NaN : Number(raw);
-	if (!Number.isFinite(parsed)) return TERMINAL_FONT_SIZE_DEFAULT;
-	return clampTerminalFontSize(parsed);
 }
 
 type ReviewerTerminalTarget = Extract<TerminalTarget, { kind: "reviewer" }>;
@@ -279,10 +261,16 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 
 export interface ChatWorkspaceProps {
 	snapshot: ConversationSnapshot;
+	/** Renderer-owned state identity; the snapshot's sessionId remains the daemon wire ID. */
+	uiSessionId?: string;
 	/** The session title from the sidebar (matches what users see in the left sidebar) */
 	sessionTitle?: string;
 	/** The AO role using this shared conversation surface. */
 	sessionRole?: SessionKind;
+	/** Host-specific proxy origin for images and staged attachments. */
+	assetBaseUrl?: string;
+	/** Selected remote host, even while its connection has no proxy origin. */
+	remoteHostId?: string;
 	/** Session-level actions owned above the conversation surface. */
 	headerActions?: ReactNode;
 	/** Agent-session actions on the primary chat tab (interface switch, handoff). */
@@ -465,6 +453,11 @@ type ChatWorkspaceActivation =
 	| { key: string; state: "active" }
 	| { key: string; state: "failed"; reason: "obsolete" | "storage" };
 
+function OfflineRemoteTerminal() {
+	const { t } = useTranslation();
+	return <div className="flex h-full items-center justify-center text-sm text-muted-foreground" role="status">{t("remote.hostOffline")}</div>;
+}
+
 /**
  * Do not mount any renderer draft owner until the daemon incarnation has
  * authoritatively claimed its storage scope. The activation transition itself
@@ -473,15 +466,15 @@ type ChatWorkspaceActivation =
  */
 export function ChatWorkspace(props: ChatWorkspaceProps) {
 	const translateDraft = useChatDraftTranslation();
-	const { snapshot, session } = props;
+	const { snapshot, session, uiSessionId = snapshot.sessionId } = props;
 	const draftScope = useMemo<ChatDraftScope>(
 		() => ({
-			sessionId: snapshot.sessionId,
+			sessionId: uiSessionId,
 			// Live surfaces carry the daemon-created session timestamp. Snapshot-only
 			// fixtures retain the legacy logical scope for deterministic previews.
-			incarnation: session?.createdAt ?? snapshot.sessionId,
+			incarnation: session?.createdAt ?? uiSessionId,
 		}),
-		[session?.createdAt, snapshot.sessionId],
+		[session?.createdAt, uiSessionId],
 	);
 	const scopeKey = chatDraftScopeKey(draftScope);
 	const [activation, setActivation] = useState<ChatWorkspaceActivation>();
@@ -544,6 +537,8 @@ function ChatWorkspaceContent({
 	snapshot,
 	sessionTitle,
 	sessionRole = "worker",
+	assetBaseUrl,
+	remoteHostId,
 	headerActions,
 	sessionTabAction,
 	sessionTabActionWide = false,
@@ -644,6 +639,12 @@ function ChatWorkspaceContent({
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
+	const uiSessionId = draftScope.sessionId;
+	const activeRemoteHostId = remoteHostId ?? session?.hostId;
+	const remoteCreateMux = useMemo(
+		() => assetBaseUrl ? () => createTerminalMux(muxUrlFromApiBase(assetBaseUrl)) : undefined,
+		[assetBaseUrl],
+	);
 	const turn = activeTurn(snapshot);
 	// The primary Chat view wakes a sleeping provider in the background. Its
 	// marker clears before the new controller is ready, so an intermediate
@@ -719,7 +720,7 @@ function ChatWorkspaceContent({
 	const availableTabKeys = useMemo(() => auxiliaryTabs.map((tab) => tab.key), [auxiliaryTabs]);
 	const [tabOrderBySession, setTabOrderBySession] = useState<Record<string, string[]>>({});
 	const orderedAuxiliaryTabs = useMemo(() => {
-		const preferred = auxiliaryTabOrder ?? tabOrderBySession[snapshot.sessionId] ?? [];
+		const preferred = auxiliaryTabOrder ?? tabOrderBySession[uiSessionId] ?? [];
 		const byKey = new Map(auxiliaryTabs.map((tab) => [tab.key, tab]));
 		const ordered = preferred.flatMap((key) => {
 			const tab = byKey.get(key);
@@ -728,7 +729,7 @@ function ChatWorkspaceContent({
 			return [tab];
 		});
 		return [...ordered, ...byKey.values()];
-	}, [auxiliaryTabOrder, auxiliaryTabs, snapshot.sessionId, tabOrderBySession]);
+	}, [auxiliaryTabOrder, auxiliaryTabs, uiSessionId, tabOrderBySession]);
 	const activeWorkspaceTab = workspaceActiveTabKey
 		? workspaceTabs?.find((tab) => tab.key === workspaceActiveTabKey)
 		: undefined;
@@ -740,9 +741,9 @@ function ChatWorkspaceContent({
 				if (!next.includes(key)) next.push(key);
 			}
 			if (onAuxiliaryTabOrderChange) onAuxiliaryTabOrderChange(next);
-			else setTabOrderBySession((current) => ({ ...current, [snapshot.sessionId]: next }));
+			else setTabOrderBySession((current) => ({ ...current, [uiSessionId]: next }));
 		},
-		[availableTabKeys, onAuxiliaryTabOrderChange, snapshot.sessionId],
+		[availableTabKeys, onAuxiliaryTabOrderChange, uiSessionId],
 	);
 	useEffect(() => {
 		if (auxiliaryTabOrder) {
@@ -757,7 +758,7 @@ function ChatWorkspaceContent({
 			return;
 		}
 		setTabOrderBySession((current) => {
-			const currentOrder = current[snapshot.sessionId] ?? [];
+			const currentOrder = current[uiSessionId] ?? [];
 			const available = new Set(availableTabKeys);
 			const next = currentOrder.filter((key) => available.has(key));
 			for (const key of availableTabKeys) {
@@ -765,12 +766,12 @@ function ChatWorkspaceContent({
 			}
 			if (next.length === currentOrder.length && next.every((key, index) => key === currentOrder[index])) return current;
 			if (next.length === 0) {
-				const { [snapshot.sessionId]: _removed, ...rest } = current;
+				const { [uiSessionId]: _removed, ...rest } = current;
 				return rest;
 			}
-			return { ...current, [snapshot.sessionId]: next };
+			return { ...current, [uiSessionId]: next };
 		});
-	}, [auxiliaryTabOrder, availableTabKeys, onAuxiliaryTabOrderChange, snapshot.sessionId]);
+	}, [auxiliaryTabOrder, availableTabKeys, onAuxiliaryTabOrderChange, uiSessionId]);
 	const queuedMessages = useQueuedMessages(snapshot);
 	const stablePromoteQueuedTurn = useStableCallback(onPromoteQueuedTurn);
 	const stableCancelQueuedTurn = useStableCallback(onCancelQueuedTurn);
@@ -800,9 +801,9 @@ function ChatWorkspaceContent({
 		return result;
 	}, [draftScope]);
 	useEffect(() => {
-		setChatDraftBoundary(snapshot.sessionId, "queued-edit", queueDraftError ? "persistence-failed" : undefined);
-		return () => setChatDraftBoundary(snapshot.sessionId, "queued-edit", undefined);
-	}, [queueDraftError, snapshot.sessionId]);
+		setChatDraftBoundary(uiSessionId, "queued-edit", queueDraftError ? "persistence-failed" : undefined);
+		return () => setChatDraftBoundary(uiSessionId, "queued-edit", undefined);
+	}, [queueDraftError, uiSessionId]);
 	// Text equality cannot prove an attachment-only edit was accepted. Keep an
 	// uncertain edit and its original daemon revision until a save is acknowledged.
 	const changeQueuedDraft = useCallback((text: string) => {
@@ -1278,15 +1279,15 @@ function ChatWorkspaceContent({
 	const composerDockRef = useRef<HTMLDivElement>(null);
 	const composerCenteredTopRef = useRef<number | null>(null);
 	const composerFlipDyRef = useRef<number | null>(null);
-	const composerSessionRef = useRef(snapshot.sessionId);
+	const composerSessionRef = useRef(uiSessionId);
 
 	useLayoutEffect(() => {
 		const dock = composerDockRef.current;
 		if (!dock) return;
 
-		const sessionChanged = composerSessionRef.current !== snapshot.sessionId;
+		const sessionChanged = composerSessionRef.current !== uiSessionId;
 		if (sessionChanged) {
-			composerSessionRef.current = snapshot.sessionId;
+			composerSessionRef.current = uiSessionId;
 			composerCenteredTopRef.current = null;
 			composerFlipDyRef.current = null;
 			dock.style.transition = "";
@@ -1332,7 +1333,7 @@ function ChatWorkspaceContent({
 		return () => {
 			dock.removeEventListener("transitionend", onEnd);
 		};
-	}, [conversationEmpty, snapshot.sessionId]);
+	}, [conversationEmpty, uiSessionId]);
 
 	const controllerBanner = (
 		<ControllerBanner
@@ -1402,8 +1403,10 @@ function ChatWorkspaceContent({
 						role="tabpanel"
 					>
 						<div className="h-full min-h-0" data-testid="chat-reviewer-terminal">
-							<TerminalPane
-								daemonReady={Boolean(daemonReady)}
+							{activeRemoteHostId && !assetBaseUrl ? <OfflineRemoteTerminal /> : <TerminalPane
+								key={activeRemoteHostId ? `${activeRemoteHostId}:${assetBaseUrl}` : undefined}
+								createMux={activeRemoteHostId ? remoteCreateMux : undefined}
+								daemonReady={activeRemoteHostId ? Boolean(assetBaseUrl) : Boolean(daemonReady)}
 								fontSize={terminalFontSize}
 								isFullscreen={isFullscreen}
 								onChangeFontSize={updateTerminalFontSize}
@@ -1411,7 +1414,7 @@ function ChatWorkspaceContent({
 								session={session}
 								terminalTarget={reviewerTarget}
 								theme={theme ?? "dark"}
-							/>
+							/>}
 						</div>
 					</div>
 				) : null}
@@ -1424,8 +1427,10 @@ function ChatWorkspaceContent({
 						role="tabpanel"
 					>
 						<div className="h-full min-h-0" data-testid="chat-shell-terminal">
-							<TerminalPane
-								daemonReady={Boolean(daemonReady)}
+							{activeRemoteHostId && !assetBaseUrl ? <OfflineRemoteTerminal /> : <TerminalPane
+								key={activeRemoteHostId ? `${activeRemoteHostId}:${assetBaseUrl}` : undefined}
+								createMux={activeRemoteHostId ? remoteCreateMux : undefined}
+								daemonReady={activeRemoteHostId ? Boolean(assetBaseUrl) : Boolean(daemonReady)}
 								fontSize={terminalFontSize}
 								focusRequested
 								isFullscreen={isFullscreen}
@@ -1434,7 +1439,7 @@ function ChatWorkspaceContent({
 								session={session}
 								terminalTarget={shellTarget}
 								theme={theme ?? "dark"}
-							/>
+							/>}
 						</div>
 					</div>
 				) : null}
@@ -1458,7 +1463,7 @@ function ChatWorkspaceContent({
 					{controllerBanner}
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
 					<McpServerBanner
-						sessionId={snapshot.sessionId}
+						sessionId={uiSessionId}
 						servers={brokenServers}
 						onReload={newWorkDisabled ? undefined : onReloadMcpServers}
 						reloading={reloadingMcpServers}
@@ -1469,11 +1474,13 @@ function ChatWorkspaceContent({
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
-						<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onOpenFile} onSessionLinkOpen={onSessionLinkOpen} workspacePaths={filePaths}>
-							<ChatImageSourceProvider sessionId={snapshot.sessionId}>
+						<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onOpenFile} onSessionLinkOpen={onSessionLinkOpen} remoteHost={Boolean(activeRemoteHostId)} workspacePaths={filePaths}>
+							<ChatImageSourceProvider sessionId={snapshot.sessionId} assetBaseUrl={assetBaseUrl} remoteHost={Boolean(activeRemoteHostId)}>
 								<Timeline
 									key={draftScopeKey}
 									snapshot={snapshot}
+									assetBaseUrl={assetBaseUrl}
+									remoteHost={Boolean(activeRemoteHostId)}
 									draftScope={draftScope}
 									hasOlder={hasOlder}
 									loadingOlder={loadingOlder}
@@ -1541,7 +1548,7 @@ function ChatWorkspaceContent({
 									onStageAttachments={newWorkDisabled ? undefined : onStageAttachments}
 									nativeImages={queueEdit?.clientMessageId ? queueEdit.nativeImages ?? nativeImages : nativeImages}
 									autoFocus={!reviewerActive}
-									autoFocusKey={snapshot.sessionId}
+									autoFocusKey={uiSessionId}
 									// Steering is only meaningful into a turn that is running. A queued turn
 									// has not reached the provider, so there is nothing to steer.
 									onSteer={newWorkDisabled ? undefined : steer}
@@ -1554,8 +1561,11 @@ function ChatWorkspaceContent({
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
-									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
+									draftSessionId={queueEdit ? undefined : uiSessionId}
 									draftSessionIncarnation={draftScope.incarnation}
+									assetBaseUrl={assetBaseUrl}
+									assetSessionId={snapshot.sessionId}
+									remoteHost={Boolean(activeRemoteHostId)}
 									acceptedClientMessageIds={acceptedClientMessageIds}
 								/>
 							</div>
@@ -2081,6 +2091,8 @@ function ControllerBanner({
  */
 function Timeline({
 	snapshot,
+	assetBaseUrl,
+	remoteHost,
 	draftScope,
 	hasOlder,
 	loadingOlder,
@@ -2102,6 +2114,8 @@ function Timeline({
 	localEchos = [],
 }: {
 	snapshot: ConversationSnapshot;
+	assetBaseUrl?: string;
+	remoteHost?: boolean;
 	draftScope: ChatDraftScope;
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
@@ -2123,6 +2137,7 @@ function Timeline({
 	localEchos?: ConversationLocalEcho[];
 }) {
 	const translateDraft = useChatDraftTranslation();
+	const uiSessionId = draftScope.sessionId;
 	const scroller = useRef<HTMLDivElement>(null);
 	const scrollContent = useRef<HTMLDivElement>(null);
 	const promptSpacer = useRef<HTMLDivElement>(null);
@@ -2185,23 +2200,23 @@ function Timeline({
 	);
 	useEffect(() => {
 		setChatDraftBoundary(
-			snapshot.sessionId,
+			uiSessionId,
 			"inline-edit",
 			[
 				...(draftPersistenceError ? (["persistence-failed"] as const) : []),
 			],
 		);
-	}, [draftPersistenceError, snapshot.sessionId]);
+	}, [draftPersistenceError, uiSessionId]);
 	useEffect(
-		() => () => setChatDraftBoundary(snapshot.sessionId, "inline-edit", undefined),
-		[snapshot.sessionId],
+		() => () => setChatDraftBoundary(uiSessionId, "inline-edit", undefined),
+		[uiSessionId],
 	);
 	// The inspector changes the minimap's visibility, but it must not cause this
 	// entire timeline to rerender. A live conversation can contain hundreds of
 	// DOM nodes, and inspector toggles are otherwise a broad synchronous commit.
 	// Keep that small accessibility/interaction boundary imperative instead.
 	const inspectorOpenRef = useRef(
-		inspectorIsOpen(useUiStore.getState().inspectorSessions, snapshot.sessionId),
+		inspectorIsOpen(useUiStore.getState().inspectorSessions, uiSessionId),
 	);
 	const turn = activeTurn(snapshot);
 	const [scrollbar, setScrollbar] = useState({
@@ -2226,7 +2241,8 @@ function Timeline({
 	const openFiles = useStableCallback(onOpenFiles);
 	const openFile = useStableCallback(onOpenFile);
 	const retryTurn = useStableCallback(retryControl?.retry);
-	const apiBaseUrl = useSyncExternalStore(subscribeApiBaseUrl, getApiBaseUrl, getApiBaseUrl);
+	const localBaseUrl = useSyncExternalStore(subscribeApiBaseUrl, getApiBaseUrl, getApiBaseUrl);
+	const apiBaseUrl = remoteHost ? assetBaseUrl ?? null : assetBaseUrl ?? localBaseUrl;
 	const editHumanMessage = useStableCallback(onEditHumanMessage);
 	const activateBranch = useStableCallback(onActivateBranch);
 	const canEditHumanMessage = Boolean(onEditHumanMessage) && !newWorkDisabled;
@@ -2330,13 +2346,13 @@ function Timeline({
 				if (hoveredMarkerRef.current !== null) setHoveredMarker(null);
 			}
 		};
-		setInspectorOpen(inspectorIsOpen(useUiStore.getState().inspectorSessions, snapshot.sessionId));
+		setInspectorOpen(inspectorIsOpen(useUiStore.getState().inspectorSessions, uiSessionId));
 		return useUiStore.subscribe((state, previous) => {
-			const currentOpen = inspectorIsOpen(state.inspectorSessions, snapshot.sessionId);
-			const previousOpen = inspectorIsOpen(previous.inspectorSessions, snapshot.sessionId);
+			const currentOpen = inspectorIsOpen(state.inspectorSessions, uiSessionId);
+			const previousOpen = inspectorIsOpen(previous.inspectorSessions, uiSessionId);
 			if (currentOpen !== previousOpen) setInspectorOpen(currentOpen);
 		});
-	}, [minimapEnabled, snapshot.sessionId]);
+	}, [minimapEnabled, uiSessionId]);
 	const consumedRetrySources = useMemo(() => retrySourceTurnIds(snapshot), [snapshot]);
 	const retryableTurns = useMemo(
 		() =>
@@ -3237,7 +3253,7 @@ const TurnGroup = memo(function TurnGroup({
 }: {
 	group: TimelineGroup;
 	sessionId: string;
-	apiBaseUrl: string;
+	apiBaseUrl: string | null;
 	onDecide: (requestId: string, decisionId: string) => void;
 	onRollback: (turnId: string) => void;
 	onOpenFiles?: () => void;
@@ -3500,7 +3516,7 @@ function TimelineItem({
 }: {
 	item: ConversationItem;
 	sessionId: string;
-	apiBaseUrl: string;
+	apiBaseUrl: string | null;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onEditHumanMessage?: ChatWorkspaceProps["onEditMessage"];
 	messageEdit?: MessageEditDraft;

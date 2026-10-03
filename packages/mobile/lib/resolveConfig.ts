@@ -3,6 +3,7 @@ import { loadConfig, saveConfig, type ServerConfig } from "./config";
 import type { Host } from "./hosts";
 import { activeHost, migrateLegacyConfig } from "./hosts";
 import { connectToHost, type ConnectOptions } from "./connectRuntime";
+import { IncompatibleHostVersionError } from "./race";
 
 export type ResolveDeps = {
 	migrate: () => Promise<void>;
@@ -22,20 +23,24 @@ export type ResolveDeps = {
  * without the user choosing. "Active" is an explicit selection where one has
  * been made, and the most recently used machine otherwise.
  *
- * Always returns something. The rest of the app is built around having a
- * config, so every failure path degrades to the last stored one rather than
- * returning nothing, which would look like being unpaired. A machine that
- * cannot be reached is a connection problem for the UI to report, not a reason
- * to forget it.
+ * An unreachable selected machine remains paired, but has no usable config:
+ * reusing a cached address would send its credential without a fresh identity
+ * check, possibly to a different machine now holding that address.
  */
 export async function resolveActiveConfig(deps: ResolveDeps): Promise<ServerConfig | null> {
+	let host: Host | null;
 	try {
 		// Before looking for machines, bring any pre-existing single-server
 		// pairing into the list — otherwise an upgrading user looks unpaired.
 		await deps.migrate();
-
-		const host = await deps.activeHost();
-		if (host) {
+		host = await deps.activeHost();
+	} catch {
+		// We cannot know which machine was selected; do not guess from a
+		// credential cached for some other machine.
+		return null;
+	}
+	if (host) {
+		try {
 			const result = await deps.connect(host.id);
 			if (result.ok) {
 				// Persist the winner. Long-lived surfaces — the terminal mux above
@@ -46,12 +51,13 @@ export async function resolveActiveConfig(deps: ResolveDeps): Promise<ServerConf
 				await deps.persist(result.config);
 				return result.config;
 			}
+			if (result.reason === "incompatible") throw new IncompatibleHostVersionError(host.id);
+		} catch (error) {
+			if (error instanceof IncompatibleHostVersionError) throw error;
+			// An unavailable selected host must not silently become another host.
 		}
-	} catch {
-		// Falling through to the stored config: a resolution failure must not
-		// leave the app with no connection at all.
 	}
-	return await deps.loadLegacyConfig();
+	return host ? null : await deps.loadLegacyConfig();
 }
 
 /** The production dependency set. */

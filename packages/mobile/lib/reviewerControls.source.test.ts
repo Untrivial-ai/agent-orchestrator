@@ -113,7 +113,8 @@ describe("reviewer control integration", () => {
 	// terminal: closing it as one answered 404 "No such shell terminal".
 	it("stops the reviewer, not a shell, when its terminal is closed", () => {
 		expect(terminal).toContain('const reviewerPane = params.kind === "reviewer" && Boolean(params.sessionId);');
-		expect(terminal).toContain("if (reviewerPane) await killSessionReviewer(config, String(params.sessionId));");
+		expect(terminal).toContain("if (reviewerPane) await killSessionReviewer(activeConfig, String(params.sessionId));");
+		expect(terminal).not.toContain("await loadConfig()");
 	});
 
 	// A native menu nested in the row's Pressable lost its tap to the row, which

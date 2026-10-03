@@ -27,6 +27,7 @@ const maxDisplayNameLen = 100
 // Store is the read-only persistence surface needed to assemble controller-facing session read models.
 type Store interface {
 	GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error)
+	GetSessionByClientRequestID(ctx context.Context, id string) (domain.SessionRecord, bool, error)
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
 	ListAllSessions(ctx context.Context) ([]domain.SessionRecord, error)
 	GetActiveAgentSwitch(ctx context.Context, sessionID domain.SessionID) (domain.AgentSwitch, bool, error)
@@ -272,6 +273,15 @@ func NewWithDeps(d Deps) *Service {
 // Spawn creates a session and returns the API-facing read model plus
 // ephemeral prompt size measurements.
 func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
+	if rec, found, err := s.replayClientRequest(ctx, cfg.ClientRequestID, cfg.ClientRequestHash); err != nil {
+		return domain.Session{}, 0, 0, err
+	} else if found {
+		sess, err := s.toSession(ctx, rec)
+		return sess, 0, 0, err
+	}
+	if cfg.ClientRequestID != "" && cfg.Kind != domain.KindWorker {
+		return domain.Session{}, 0, 0, apierr.Invalid("CLIENT_REQUEST_WORKER_REQUIRED", "clientRequestId is supported for worker sessions only", nil)
+	}
 	if cfg.ProjectID == "" && cfg.Kind != domain.KindWorker {
 		return domain.Session{}, 0, 0, apierr.Invalid("STANDALONE_WORKER_REQUIRED", "Standalone sessions must be workers", nil)
 	}
@@ -1343,6 +1353,10 @@ func toSpawnAPIError(err error) error {
 		return mapped
 	}
 	switch {
+	case errors.Is(err, sessionmanager.ErrClientRequestConflict):
+		return apierr.Conflict("CLIENT_REQUEST_CONFLICT", "clientRequestId belongs to a different task", nil)
+	case errors.Is(err, sessionmanager.ErrClientRequestIncomplete):
+		return apierr.Conflict("CLIENT_REQUEST_INCOMPLETE", "This task is still starting or its prior launch did not finish; check the session before trying again", nil)
 	case errors.Is(err, context.DeadlineExceeded):
 		return apierr.Conflict("SPAWN_TIMEOUT", "Session spawn timed out before the agent could start", nil)
 	case errors.Is(err, context.Canceled):
@@ -1382,6 +1396,23 @@ func toSpawnAPIError(err error) error {
 	default:
 		return apierr.Internal("SPAWN_INTERNAL", err.Error())
 	}
+}
+
+func (s *Service) replayClientRequest(ctx context.Context, id, hash string) (domain.SessionRecord, bool, error) {
+	if id == "" || s.store == nil {
+		return domain.SessionRecord{}, false, nil
+	}
+	rec, found, err := s.store.GetSessionByClientRequestID(ctx, id)
+	if err != nil || !found {
+		return rec, found, err
+	}
+	if rec.ClientRequestHash != hash {
+		return domain.SessionRecord{}, false, toSpawnAPIError(sessionmanager.ErrClientRequestConflict)
+	}
+	if !rec.ClientRequestCommitted {
+		return domain.SessionRecord{}, false, toSpawnAPIError(sessionmanager.ErrClientRequestIncomplete)
+	}
+	return rec, true, nil
 }
 
 func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (domain.Session, error) {

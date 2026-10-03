@@ -342,6 +342,7 @@ func opencodeDBAuthStatus(ctx context.Context, path string) (ports.AgentAuthStat
 
 func opencodeDBHasAuthorizedAccount(ctx context.Context, db *sql.DB) (authorized, known bool, err error) {
 	for _, query := range []string{
+		`SELECT COUNT(*) FROM credential WHERE active = 1 AND trim(value) != ''`,
 		`SELECT COUNT(*) FROM account_state WHERE active_account_id IS NOT NULL AND trim(active_account_id) != ''`,
 		`SELECT COUNT(*) FROM account WHERE trim(access_token) != ''`,
 		`SELECT COUNT(*) FROM control_account WHERE active = 1 AND trim(access_token) != ''`,

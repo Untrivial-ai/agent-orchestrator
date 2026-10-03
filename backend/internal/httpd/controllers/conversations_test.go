@@ -40,6 +40,7 @@ type fakeConversationService struct {
 	viewSessionID     domain.SessionID
 	viewCalls         int
 	snapshot          chatsvc.Snapshot
+	sendErr           error
 	skills            []ports.ChatSkill
 	skillErr          error
 	configOptions     []ports.ChatConfigOption
@@ -124,7 +125,7 @@ func (f *fakeConversationService) Snapshot(context.Context, domain.SessionID) (c
 
 func (f *fakeConversationService) Send(_ context.Context, _ domain.SessionID, message ports.ChatUserMessage) (domain.ConversationTurn, error) {
 	f.sent = message
-	return domain.ConversationTurn{ID: "turn-1", State: domain.TurnStateRunning}, nil
+	return domain.ConversationTurn{ID: "turn-1", State: domain.TurnStateRunning}, f.sendErr
 }
 
 func (f *fakeConversationService) Resolve(_ context.Context, _ domain.SessionID, requestID string, decision ports.ChatDecision) error {
@@ -388,6 +389,21 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	}
 	if service.sent.Content[0].Type != "image" || service.sent.Content[1].Type != "resource_link" || service.sent.Content[2].Type != "resource" {
 		t.Fatalf("content = %#v", service.sent.Content)
+	}
+}
+
+func TestSendConversationMapsChangedClientMessageToConflict(t *testing.T) {
+	service := &fakeConversationService{sendErr: domain.ErrClientMessageConflict}
+	server := conversationTestServer(t, service)
+	body, status, _ := doRequest(t, server, http.MethodPost,
+		"/api/v1/sessions/p1-1/conversation/messages",
+		`{"text":"changed work","clientMessageId":"same-id"}`)
+	var response struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, body, &response)
+	if status != http.StatusConflict || response.Code != "CHAT_MESSAGE_IDEMPOTENCY_CONFLICT" {
+		t.Fatalf("status=%d code=%q, want 409/CHAT_MESSAGE_IDEMPOTENCY_CONFLICT", status, response.Code)
 	}
 }
 

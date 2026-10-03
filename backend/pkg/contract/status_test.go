@@ -95,7 +95,10 @@ func TestDeriveSCMStatusPipelineAndWorstWins(t *testing.T) {
 		{"merge blocked", []contract.PRFacts{{Mergeability: contract.MergeBlocked}}, contract.StatusPROpen},
 		{"merge blocked with approved review", []contract.PRFacts{{Mergeability: contract.MergeBlocked, Review: contract.ReviewApproved}}, contract.StatusPROpen},
 		{"changes requested", []contract.PRFacts{{Review: contract.ReviewChangesRequest}}, contract.StatusChangesRequested},
-		{"review comments", []contract.PRFacts{{ReviewComments: true}}, contract.StatusChangesRequested},
+		// A COMMENTED review's unresolved thread is not a formal changes-requested
+		// decision, so it must not be reported as one -- see issue #5765.
+		{"review required with unresolved comments", []contract.PRFacts{{Review: contract.ReviewRequired, ReviewComments: true}}, contract.StatusCommented},
+		{"unresolved comments alone", []contract.PRFacts{{ReviewComments: true}}, contract.StatusCommented},
 		{"draft", []contract.PRFacts{{Draft: true}}, contract.StatusDraft},
 		{"CI failed", []contract.PRFacts{{CI: contract.CIFailing}}, contract.StatusCIFailed},
 		{

@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
@@ -20,11 +20,13 @@ const MAX_IMAGE_BYTES_TOTAL = 25 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp"]);
 
 /** Reviewer-only composer: send/attachments/interrupt, deliberately no session actions. */
-export function ReviewerComposer({ busy, stopped, attachmentsEnabled = true, onSend, onInterrupt }: {
+export function ReviewerComposer({ busy, stopped, attachmentsEnabled = true, onSend, onAcknowledgeSend, completedRetry, onInterrupt }: {
 	busy: boolean;
 	stopped: boolean;
 	attachmentsEnabled?: boolean;
-	onSend(text: string, images?: ChatImage[], resources?: ChatResource[]): Promise<void>;
+	onSend(text: string, images?: ChatImage[], resources?: ChatResource[]): Promise<string>;
+	onAcknowledgeSend(id: string): Promise<void>;
+	completedRetry?: { id: string; draftText: string };
 	onInterrupt(): Promise<void>;
 }) {
 	const t = useTheme();
@@ -33,6 +35,11 @@ export function ReviewerComposer({ busy, stopped, attachmentsEnabled = true, onS
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState("");
+	useEffect(() => {
+		if (!completedRetry) return;
+		if (text.trim() === completedRetry.draftText) { setText(""); setAttachments([]); }
+		void onAcknowledgeSend(completedRetry.id).catch((cause) => setError(cause instanceof Error ? cause.message : "Could not clear the sent reply."));
+	}, [completedRetry, onAcknowledgeSend, text]);
 
 	const addPhoto = async () => {
 		setError("");
@@ -82,8 +89,10 @@ export function ReviewerComposer({ busy, stopped, attachmentsEnabled = true, onS
 		if (submitting || stopped || (!text.trim() && !attachments.length)) return;
 		setSubmitting(true); setError("");
 		try {
-			await onSend(text.trim(), attachments.flatMap((item) => item.kind === "image" ? [item.image] : []), attachments.flatMap((item) => item.kind === "resource" ? [item.resource] : []));
-			setText(""); setAttachments([]); haptics.success();
+			const id = await onSend(text.trim(), attachments.flatMap((item) => item.kind === "image" ? [item.image] : []), attachments.flatMap((item) => item.kind === "resource" ? [item.resource] : []));
+			setText(""); setAttachments([]);
+			await onAcknowledgeSend(id);
+			haptics.success();
 		} catch (cause) { setError(cause instanceof Error ? cause.message : "Could not send this reply."); }
 		finally { setSubmitting(false); }
 	};

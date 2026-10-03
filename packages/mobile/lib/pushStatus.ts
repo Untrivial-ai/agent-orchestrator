@@ -65,7 +65,7 @@ export function describePushToggle(status: PushStatus | null, server: ServerTarg
 		return {
 			value: false,
 			disabled: true,
-			footer: "Pair a desktop first — notifications turn on once connected.",
+			footer: "Pair a machine first — notifications turn on once connected.",
 			blocked: false,
 		};
 	}
@@ -89,7 +89,7 @@ export function describePushToggle(status: PushStatus | null, server: ServerTarg
 		return {
 			value: false,
 			disabled: false,
-			footer: "This phone isn't registered with your desktop yet.",
+			footer: "This phone isn't registered with the selected machine yet.",
 			blocked: false,
 		};
 	}
@@ -149,36 +149,36 @@ export function describeRegisterFailure(
 	switch (reason) {
 		case "server-unreachable":
 			return {
-				title: "Couldn't reach your desktop",
+				title: "Couldn't reach your machine",
 				message:
-					"Notifications are set up on this phone, but we couldn't reach your desktop to register it. " +
+					"Notifications are set up on this phone, but we couldn't reach your machine to register it. " +
 					"Check that AO is running and this phone is on the same network, then try again.",
 			};
 		case "server-auth":
 			return {
-				title: "Your desktop rejected the request",
+				title: "Your machine rejected the request",
 				message:
-					"We reached your desktop, but it wouldn't take the connection password. " +
-					"Re-pair under Settings → Desktop, then try again.",
+					"We reached your machine, but it wouldn't take the connection password. " +
+					"Re-pair under Settings → Machines, then try again.",
 			};
 		case "server-rate-limited":
 			return {
 				title: "Too many attempts",
-				message: "Your desktop is refusing new attempts for now. Wait a minute, then try again.",
+				message: "Your machine is refusing new attempts for now. Wait a minute, then try again.",
 			};
 		case "server-error":
 			return {
-				title: "Your desktop couldn't register this phone",
+				title: "Your machine couldn't register this phone",
 				message:
-					`We reached your desktop, but it returned an error${status ? ` (HTTP ${status})` : ""}. ` +
-					"Check the AO logs on your desktop, then try again.",
+					`We reached your machine, but it returned an error${status ? ` (HTTP ${status})` : ""}. ` +
+					"Check the AO logs on that machine, then try again.",
 			};
 		case "not-configured":
 			return {
-				title: "Pair a desktop first",
+				title: "Pair a machine first",
 				message:
 					"This phone isn't paired yet, so there's nothing to register. " +
-					"Pair under Settings → Desktop, and notifications turn on once you're connected.",
+					"Pair under Settings → Machines, and notifications turn on once you're connected.",
 			};
 		case "token-failed":
 			return {

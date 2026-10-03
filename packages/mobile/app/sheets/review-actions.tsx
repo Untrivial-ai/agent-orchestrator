@@ -25,6 +25,7 @@ import {
 } from "../../lib/api";
 import { AgentLogo } from "../../lib/AgentLogo";
 import { haptics } from "../../lib/haptics";
+import { hostRouteMatches } from "../../lib/hostRoute";
 import { openGitHub } from "../../lib/openGitHub";
 import { formatExternalReviewMessage, formatInlineReviewCommentMessage } from "../../lib/reviewFeedback";
 import { ItemActionsMenu } from "../../lib/item-actions-menu";
@@ -32,7 +33,7 @@ import type { ItemAction } from "../../lib/item-actions-menu.types";
 import { ReviewerPicker } from "../../lib/reviewer-picker";
 import { defaultReviewerHarness, reviewerChoices, reviewerSelectionChanged, reviewerSwitchSelection, reviewerSwitchWarning } from "../../lib/reviewerControls";
 import { pullRequestSummaryForURL } from "../../lib/reviewView";
-import { useApp } from "../../lib/store";
+import { HostScope, useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { SHEET_SCROLL_CONTENT, SheetHeader } from "../../lib/ui";
@@ -44,9 +45,15 @@ type ReviewPolicies = Record<PolicyKey, boolean>;
 type BusyAction = { kind: "reviewer" | "rerequest" | "resolve" | "send"; id: string } | { kind: "policy"; id: PolicyKey };
 
 export default function ReviewActionsSheet() {
+	const { hostId } = useLocalSearchParams<{ hostId?: string }>();
+	return hostId ? <HostScope key={hostId} hostId={hostId}><ReviewActionsContent /></HostScope> : <ReviewActionsContent />;
+}
+
+function ReviewActionsContent() {
 	const styles = useThemedStyles(makeStyles);
-	const { config } = useApp();
-	const { sessionId = "", prUrl = "" } = useLocalSearchParams<{ sessionId?: string; prUrl?: string; reviewer?: string }>();
+	const { config, currentHostId } = useApp();
+	const { sessionId = "", prUrl = "", hostId: routeHostId } = useLocalSearchParams<{ sessionId?: string; prUrl?: string; reviewer?: string; hostId?: string }>();
+	const hostMatches = hostRouteMatches(routeHostId, currentHostId);
 	const [agents, setAgents] = useState<ReturnType<typeof reviewerChoices>>([]);
 	const [models, setModels] = useState<AgentModelCatalog>();
 	const [reviewerConfig, setReviewerConfig] = useState<ReviewerAgentConfig>({});
@@ -65,7 +72,7 @@ export default function ReviewActionsSheet() {
 	const [sent, setSent] = useState<ReadonlySet<string>>(new Set());
 
 	const load = useCallback(async () => {
-		if (!config || !sessionId) return;
+		if (!hostMatches || !config || !sessionId) return;
 		setError("");
 		try {
 			const [catalog, prs, session, reviewState] = await Promise.all([getAgents(config), getSessionPR(config, sessionId), getSession(config, sessionId), getSessionReviews(config, sessionId)]);
@@ -86,17 +93,17 @@ export default function ReviewActionsSheet() {
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : "Could not load review actions.");
 		}
-	}, [config, prUrl, sessionId]);
+	}, [config, hostMatches, prUrl, sessionId]);
 
 	useEffect(() => { void load(); }, [load]);
 	useEffect(() => {
 		const request = ++modelRequest.current;
 		setModels(undefined);
-		if (!config || !effectiveReviewer) return;
+		if (!hostMatches || !config || !effectiveReviewer) return;
 		void getAgentModels(config, effectiveReviewer)
 			.then((result) => { if (request === modelRequest.current) setModels(result); })
 			.catch(() => { if (request === modelRequest.current) setModels(undefined); });
-	}, [config, effectiveReviewer]);
+	}, [config, effectiveReviewer, hostMatches]);
 	const aoReviewIds = useMemo(() => new Set((reviews?.runs ?? []).filter((run) => run.prUrl === pr?.url).map((run) => run.githubReviewId).filter(Boolean)), [pr?.url, reviews?.runs]);
 	const externalReviewers = useMemo(() => uniqueReviewers(pr, aoReviewIds), [aoReviewIds, pr]);
 	// Like the spawn sheet, only offer reviewers that can run now. A saved
@@ -230,6 +237,7 @@ export default function ReviewActionsSheet() {
 		}
 	}
 
+	if (!hostMatches) return <View style={styles.screen}><SheetHeader title="Review actions" subtitle="Review belongs to another machine" /></View>;
 	return <ScrollView style={styles.screen} contentContainerStyle={SHEET_SCROLL_CONTENT} nestedScrollEnabled keyboardShouldPersistTaps="handled">
 		<SheetHeader title="Review actions" subtitle={pr ? `PR #${pr.number} · ${pr.title}` : "Reviewer and GitHub feedback"} />
 		{error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}

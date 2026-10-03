@@ -235,7 +235,7 @@ type Observer struct {
 	logger *slog.Logger
 	// credentialsChecked records whether an optional provider credential gate ran.
 	credentialsChecked bool
-	// disabled is set after the credential gate reports unavailable credentials.
+	// disabled is set while the credential gate reports unavailable credentials.
 	disabled bool
 	// scopedIdentityResolver resolves the authenticated identity per provider key.
 	scopedIdentityResolver ports.ScopedIdentityResolver
@@ -274,9 +274,9 @@ func New(provider Provider, store Store, lifecycle Lifecycle, cfg Config) *Obser
 // up front. That way the "scm observer disabled: provider credentials
 // unavailable" warning is emitted on a fresh daemon even if discoverSubjects
 // has no subjects yet (which would otherwise short-circuit Poll before
-// checkCredentials). checkCredentials is guarded by credentialsChecked, so the
-// wrap stays once-per-process; a transient error there simply defers the check
-// to the next tick.
+// checkCredentials). The wrapper runs once per process; a failed credential
+// verdict is retried by Poll when subjects become available, while a successful
+// verdict is cached.
 func (o *Observer) Start(ctx context.Context) <-chan struct{} {
 	var credentialGate sync.Once
 	poll := func(ctx context.Context) error {
@@ -342,9 +342,6 @@ func (o *Observer) Poll(ctx context.Context) error {
 	now := o.clock().UTC()
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	if o.disabled {
-		return nil
 	}
 	subjects, sessionRepos, err := o.discoverSubjects(ctx)
 	if err != nil {

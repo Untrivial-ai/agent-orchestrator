@@ -2,11 +2,10 @@ import { Feather } from "./icons";
 import BottomSheet, { BottomSheetScrollView, BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ProjectInfo } from "./api";
 import { haptics } from "./haptics";
 import type { Theme } from "./theme";
 import { useTheme } from "./ThemeProvider";
-import { ALL_WORKER_PROJECTS } from "./worker-controls";
+import { ALL_WORKER_PROJECTS, workerProjectOptions } from "./worker-controls";
 import { iconSize, space, type } from "./tokens";
 
 export function WorkerControlsSheet({
@@ -20,14 +19,14 @@ export function WorkerControlsSheet({
 	open: boolean;
 	onDismiss: () => void;
 	onSearch: () => void;
-	projects: ProjectInfo[];
+	projects: { id: string; name: string; hostId?: string; hostName?: string }[];
 	selectedProjectId: string;
 	onSelectProject: (projectId: string) => void;
 }) {
 	const t = useTheme();
 	const styles = makeStyles(t);
 	const insets = useSafeAreaInsets();
-	const options = [{ id: ALL_WORKER_PROJECTS, name: "All projects" }, ...projects];
+	const options = workerProjectOptions(projects);
 
 	return (
 		<BottomSheet
@@ -86,7 +85,7 @@ export function WorkerControlsSheet({
 								style={[styles.projectRow, index > 0 && styles.separator, selected && styles.selectedRow]}
 							>
 								<Feather name={project.id === ALL_WORKER_PROJECTS ? "layers" : "folder"} size={iconSize.md} color={selected ? t.accent : t.textSecondary} />
-								<Text numberOfLines={1} style={[styles.projectLabel, selected && styles.selectedLabel]}>{project.name}</Text>
+								<Text numberOfLines={1} style={[styles.projectLabel, selected && styles.selectedLabel]}>{project.label}</Text>
 								{selected ? <Feather name="check" size={iconSize.lg} color={t.accent} /> : null}
 							</Pressable>
 						);

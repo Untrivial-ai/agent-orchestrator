@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileAnnotationMessage } from "../../shared/file-annotations";
-import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { apiErrorMessage } from "../lib/api-client";
+import { clientForSessionHost } from "../lib/host-clients";
 import type { ActiveFileAnnotationTarget, FileAnnotationModel, FileAnnotationStatus } from "../components/WorkspaceDiffView";
 
 function isSameAnnotationTarget(current: ActiveFileAnnotationTarget | null, next: ActiveFileAnnotationTarget): boolean {
@@ -13,12 +14,13 @@ function isSameAnnotationTarget(current: ActiveFileAnnotationTarget | null, next
 }
 
 type UseFileAnnotationOptions = {
+	hostId?: string;
 	source?: string;
 	sendMessage?: (message: string) => Promise<void>;
 };
 
 export function useFileAnnotation(sessionId: string, options: UseFileAnnotationOptions = {}): FileAnnotationModel {
-	const { source, sendMessage } = options;
+	const { hostId, source, sendMessage } = options;
 	const { t } = useTranslation();
 	const [target, setTarget] = useState<ActiveFileAnnotationTarget | null>(null);
 	const [draft, setDraft] = useState("");
@@ -37,7 +39,7 @@ export function useFileAnnotation(sessionId: string, options: UseFileAnnotationO
 
 	useEffect(() => {
 		cancel();
-	}, [sessionId, source]);
+	}, [hostId, sessionId, source]);
 	useEffect(
 		() => () => {
 			if (sentTimerRef.current !== null) window.clearTimeout(sentTimerRef.current);
@@ -69,7 +71,7 @@ export function useFileAnnotation(sessionId: string, options: UseFileAnnotationO
 			if (sendMessage) {
 				await sendMessage(message);
 			} else {
-				const { error: responseError } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
+				const { error: responseError } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId } },
 					body: { message, userAuthored: true },
 				});

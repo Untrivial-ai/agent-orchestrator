@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestDispatcherSendsToAllDevicesWithDataBlob(t *testing.T) {
 		{Token: "ExponentPushToken[b]"},
 	}}
 	sender := newFakeSender([]Ticket{{Status: "ok"}, {Status: "ok"}})
-	d := NewDispatcher(sub, store, sender, nil)
+	d := NewDispatcher(sub, store, sender, "h_machine_a", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -132,16 +133,40 @@ func TestDispatcherSendsToAllDevicesWithDataBlob(t *testing.T) {
 		t.Fatalf("messages = %d, want 2", len(sender.gotMsgs))
 	}
 	m := sender.gotMsgs[0]
-	if m.Title != "sess needs input" || m.Body == "" {
+	if m.Title != "h_machine_ · sess needs input" || m.Body == "" {
 		t.Fatalf("message copy = %+v", m)
 	}
 	if m.Priority != "high" || m.Sound != "default" || m.ChannelID != "default" {
 		t.Fatalf("channel/priority/sound = %+v", m)
 	}
-	if m.Data["type"] != "needs_input" || m.Data["sessionId"] != "sess_9" ||
+	if m.Data["type"] != "needs_input" || m.Data["hostId"] != "h_machine_a" || m.Data["sessionId"] != "sess_9" ||
 		m.Data["projectId"] != "proj_7" || m.Data["prUrl"] != "https://example.com/pr/3" ||
 		m.Data["notificationId"] != "ntf_1" {
 		t.Fatalf("data blob = %+v", m.Data)
+	}
+}
+
+func TestMessageForLabelsEachHost(t *testing.T) {
+	rec := domain.NotificationRecord{Title: "Todo needs input"}
+	a := messageFor(rec, "ExponentPushToken[phone]", "h_a", "Host A")
+	b := messageFor(rec, "ExponentPushToken[phone]", "h_b", "Host B")
+	if a.Title != "Host A · Todo needs input" || b.Title != "Host B · Todo needs input" {
+		t.Fatalf("titles = %q, %q", a.Title, b.Title)
+	}
+	if a.Data["hostId"] != "h_a" || b.Data["hostId"] != "h_b" {
+		t.Fatalf("host data = %v, %v", a.Data, b.Data)
+	}
+	old := messageFor(rec, "ExponentPushToken[phone]", "h_1234567890", "")
+	if old.Title != "h_12345678 · Todo needs input" {
+		t.Fatalf("old registration title = %q", old.Title)
+	}
+	unsafe := messageFor(rec, "ExponentPushToken[phone]", "h_a", "Host\nA\x1b[0m\u202e")
+	if unsafe.Title != "Host A [0m · Todo needs input" {
+		t.Fatalf("unsafe host name in title = %q", unsafe.Title)
+	}
+	long := messageFor(rec, "ExponentPushToken[phone]", "h_a", strings.Repeat("a", 41))
+	if long.Title != strings.Repeat("a", 40)+"… · Todo needs input" {
+		t.Fatalf("unbounded host name in title = %q", long.Title)
 	}
 }
 
@@ -155,7 +180,7 @@ func TestDispatcherPrunesDeadTokens(t *testing.T) {
 	dead := Ticket{Status: "error"}
 	dead.Details.Error = "DeviceNotRegistered"
 	sender := newFakeSender([]Ticket{{Status: "ok"}, dead})
-	d := NewDispatcher(sub, store, sender, nil)
+	d := NewDispatcher(sub, store, sender, "h_machine_a", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -186,7 +211,7 @@ func TestDispatcherNoDevicesIsNoop(t *testing.T) {
 	sub := &fakeSubscriber{ch: make(chan domain.NotificationEvent, 1)}
 	store := &fakeDeviceStore{}
 	sender := newFakeSender(nil)
-	d := NewDispatcher(sub, store, sender, nil)
+	d := NewDispatcher(sub, store, sender, "h_machine_a", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -202,13 +227,37 @@ func TestDispatcherNoDevicesIsNoop(t *testing.T) {
 	}
 }
 
+func TestDispatcherWithoutHostIdentityDoesNotSend(t *testing.T) {
+	sub := &fakeSubscriber{ch: make(chan domain.NotificationEvent, 1)}
+	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{{Token: "ExponentPushToken[a]"}}}
+	sender := newFakeSender(nil)
+	d := NewDispatcher(sub, store, sender, "", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		d.Run(ctx)
+		close(done)
+	}()
+
+	sub.ch <- created(domain.NotificationRecord{ID: "ntf_1", Type: domain.NotificationNeedsInput, Title: "t", Body: "b"})
+	close(sub.ch)
+	<-done
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	if sender.sent {
+		t.Fatal("sent a push with no host identity")
+	}
+}
+
 // Resolution events exist so open dashboards can drop a row. Nothing new
 // happened for the user, so a phone must not buzz for one.
 func TestDispatcherIgnoresResolvedEvents(t *testing.T) {
 	sub := &fakeSubscriber{ch: make(chan domain.NotificationEvent, 1)}
 	store := &fakeDeviceStore{devices: []mobilebridge.PushDevice{{Token: "ExponentPushToken[a]"}}}
 	sender := newFakeSender([]Ticket{{Status: "ok"}})
-	d := NewDispatcher(sub, store, sender, nil)
+	d := NewDispatcher(sub, store, sender, "h_machine_a", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -232,7 +281,7 @@ func TestDispatcherSweepPrunesOnReceipt(t *testing.T) {
 	dead := Receipt{Status: "error"}
 	dead.Details.Error = "DeviceNotRegistered"
 	sender.receipts = map[string]Receipt{"tk1": dead}
-	d := NewDispatcher(&fakeSubscriber{ch: make(chan domain.NotificationEvent)}, store, sender, nil)
+	d := NewDispatcher(&fakeSubscriber{ch: make(chan domain.NotificationEvent)}, store, sender, "h_machine_a", nil)
 
 	base := time.Now()
 	d.clock = func() time.Time { return base }
@@ -260,7 +309,7 @@ func TestDispatchSkipsMutedDevices(t *testing.T) {
 		{InstallID: "i2", Token: "ExponentPushToken[muted]", Muted: true, CreatedAt: now, LastSeenAt: now},
 	}}
 	sender := newFakeSender([]Ticket{{Status: "ok"}})
-	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDispatcher(nil, store, sender, "h_machine_a", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
 
@@ -287,7 +336,7 @@ func TestDispatchAllMutedNeverCallsSend(t *testing.T) {
 		{InstallID: "i2", Token: "ExponentPushToken[muted2]", Muted: true, CreatedAt: now, LastSeenAt: now},
 	}}
 	sender := newFakeSender(nil)
-	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDispatcher(nil, store, sender, "h_machine_a", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
 
@@ -310,7 +359,7 @@ func TestDispatchSkipsDevicesWithoutToken(t *testing.T) {
 		{InstallID: "i2", Token: "ExponentPushToken[live]", CreatedAt: now, LastSeenAt: now},
 	}}
 	sender := newFakeSender([]Ticket{{Status: "ok"}})
-	d := NewDispatcher(nil, store, sender, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := NewDispatcher(nil, store, sender, "h_machine_a", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	d.dispatch(context.Background(), domain.NotificationRecord{ID: "n1", Title: "hi"})
 
@@ -327,7 +376,7 @@ func TestDispatchSkipsDevicesWithoutToken(t *testing.T) {
 func TestDispatcherSweepSkipsFreshAndDropsExpired(t *testing.T) {
 	store := &fakeDeviceStore{}
 	sender := newFakeSender(nil)
-	d := NewDispatcher(&fakeSubscriber{ch: make(chan domain.NotificationEvent)}, store, sender, nil)
+	d := NewDispatcher(&fakeSubscriber{ch: make(chan domain.NotificationEvent)}, store, sender, "h_machine_a", nil)
 
 	base := time.Now()
 	d.clock = func() time.Time { return base }
@@ -364,7 +413,7 @@ func TestDispatcherPartialSendTracksAcceptedPrefix(t *testing.T) {
 	dead.Details.Error = "DeviceNotRegistered"
 	sender := newFakeSender([]Ticket{{Status: "ok", ID: "accepted-ticket"}, dead})
 	sender.sendErr = errors.New("later batch failed")
-	d := NewDispatcher(nil, store, sender, nil)
+	d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 	d.clock = func() time.Time { return now }
 
 	d.dispatch(t.Context(), domain.NotificationRecord{ID: "notification"})
@@ -413,7 +462,7 @@ func TestDispatcherReceiptRetryPreservesPartialResults(t *testing.T) {
 			store := &fakeDeviceStore{}
 			sender := newFakeSender(nil)
 			sender.receipts, sender.receiptErr = tt.receipts, tt.err
-			d := NewDispatcher(nil, store, sender, nil)
+			d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 			d.clock = func() time.Time { return now }
 			first := sentTicket{id: "first", token: "first-token", sentAt: now.Add(-20 * time.Minute)}
 			retry := sentTicket{id: "retry", token: "retry-token", sentAt: now.Add(-16 * time.Minute)}
@@ -465,7 +514,7 @@ func TestDispatcherReceiptRetryPreservesPartialResults(t *testing.T) {
 func TestDispatcherReceiptExpiryUsesOriginalSendTime(t *testing.T) {
 	now := time.Unix(10000, 0)
 	sender := newFakeSender(nil)
-	d := NewDispatcher(nil, &fakeDeviceStore{}, sender, nil)
+	d := NewDispatcher(nil, &fakeDeviceStore{}, sender, "h_machine_a", nil)
 	d.clock = func() time.Time { return now }
 	original := sentTicket{id: "retry", token: "token", sentAt: now.Add(-receiptDelay)}
 	d.trackAccepted([]sentTicket{original})
@@ -487,7 +536,7 @@ func TestDispatcherReceiptExpiresDuringFetch(t *testing.T) {
 			now := time.Unix(10000, 0)
 			store := &fakeDeviceStore{}
 			sender := newFakeSender(nil)
-			d := NewDispatcher(nil, store, sender, nil)
+			d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 			d.clock = func() time.Time { return now }
 			d.trackAccepted([]sentTicket{{id: "expires", token: "token", sentAt: now.Add(-receiptMaxAge + time.Minute)}})
 			sender.receiptHook = func() { now = now.Add(time.Minute) }
@@ -512,7 +561,7 @@ func TestDispatcherReceiptRetriesPreserveCapacityOrder(t *testing.T) {
 		t.Run(fmt.Sprintf("new ticket during fetch %t", duringFetch), func(t *testing.T) {
 			now := time.Unix(10000, 0)
 			sender := newFakeSender(nil)
-			d := NewDispatcher(nil, &fakeDeviceStore{}, sender, nil)
+			d := NewDispatcher(nil, &fakeDeviceStore{}, sender, "h_machine_a", nil)
 			d.clock = func() time.Time { return now }
 			tickets := []sentTicket{{id: "old-retry", token: "old-token", sentAt: now.Add(-receiptDelay)}}
 			for i := 1; i < maxPendingReceipts; i++ {
@@ -558,7 +607,7 @@ func TestDispatcherReceiptDuplicatesDoNotMisattributeTokens(t *testing.T) {
 			dead := Receipt{Status: "error"}
 			dead.Details.Error = "DeviceNotRegistered"
 			sender.receipts = map[string]Receipt{"duplicate": dead, "unsolicited": dead, "": dead}
-			d := NewDispatcher(nil, store, sender, nil)
+			d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 			d.clock = func() time.Time { return now }
 			second := sentTicket{id: "duplicate", token: tt.token, sentAt: now.Add(-receiptDelay)}
 			if tt.fresh {
@@ -590,7 +639,7 @@ func TestDispatcherReceiptAmbiguitySurvivesConflictingTicketExpiry(t *testing.T)
 	now := time.Unix(10000, 0)
 	store := &fakeDeviceStore{}
 	sender := newFakeSender(nil)
-	d := NewDispatcher(nil, store, sender, nil)
+	d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 	d.clock = func() time.Time { return now }
 	d.trackAccepted([]sentTicket{
 		{id: "duplicate", token: "old-token", sentAt: now.Add(-receiptMaxAge + time.Minute)},
@@ -617,7 +666,7 @@ func TestDispatcherReceiptIgnoresUnqueriedPendingTickets(t *testing.T) {
 			now := time.Unix(10000, 0)
 			store := &fakeDeviceStore{}
 			sender := newFakeSender(nil)
-			d := NewDispatcher(nil, store, sender, nil)
+			d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 			d.clock = func() time.Time { return now }
 			d.trackAccepted([]sentTicket{{id: "queried", token: "queried-token", sentAt: now.Add(-receiptDelay)}})
 			fresh := sentTicket{id: "unqueried", token: "fresh-token", sentAt: now}
@@ -641,7 +690,7 @@ func TestDispatcherReceiptAmbiguitySurvivesCapacityEviction(t *testing.T) {
 	now := time.Unix(10000, 0)
 	store := &fakeDeviceStore{}
 	sender := newFakeSender(nil)
-	d := NewDispatcher(nil, store, sender, nil)
+	d := NewDispatcher(nil, store, sender, "h_machine_a", nil)
 	d.clock = func() time.Time { return now }
 	tickets := []sentTicket{{id: "duplicate", token: "old-token", sentAt: now.Add(-receiptDelay)}}
 	for i := 1; i < maxPendingReceipts; i++ {

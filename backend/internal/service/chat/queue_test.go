@@ -99,10 +99,11 @@ func TestQueuedEditAttachmentChanges(t *testing.T) {
 func TestQueuedEditRetryAfterCommittedResponseIsLost(t *testing.T) {
 	h, provider := steerHarness(t)
 	ctx := context.Background()
-	turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+	originalMessage := ports.ChatUserMessage{
 		Text: "original", ClientMessageID: "queue-original", Origin: domain.MessageOriginHuman,
 		Content: []ports.ChatContent{{Type: "image", MIMEType: "image/png", Data: "b2xk"}},
-	})
+	}
+	turn, err := h.svc.Send(ctx, testSession, originalMessage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +127,14 @@ func TestQueuedEditRetryAfterCommittedResponseIsLost(t *testing.T) {
 	}
 	if committed.Revision != 1 {
 		t.Fatalf("committed revision = %d, want 1", committed.Revision)
+	}
+	if duplicate, err := h.svc.Send(ctx, testSession, originalMessage); err != nil || duplicate.ID != "" {
+		t.Fatalf("retry original send after queue edit = %+v, err = %v", duplicate, err)
+	}
+	changedMessage := originalMessage
+	changedMessage.Text = "another request"
+	if _, err := h.svc.Send(ctx, testSession, changedMessage); !errors.Is(err, domain.ErrClientMessageConflict) {
+		t.Fatalf("changed original send after queue edit = %v, want conflict", err)
 	}
 	// The renderer retries the identical request with its original revision.
 	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, edit); err != nil {

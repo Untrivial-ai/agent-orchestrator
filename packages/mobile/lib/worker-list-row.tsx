@@ -5,6 +5,7 @@ import { Keyboard, Pressable, StyleSheet, Text, TextInput, View } from "react-na
 import type { DashboardSession } from "./api";
 import { AgentLogo } from "./AgentLogo";
 import { haptics } from "./haptics";
+import { sessionHostId } from "./hostedRows";
 import { prLine, workerRowPresentation, workerStatusGlyph } from "./agentsView";
 import { toneColor } from "./prView";
 import { statusVisual, type Theme } from "./theme";
@@ -16,6 +17,7 @@ import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
 import { Spinning } from "./ui";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
+import { useApp } from "./store";
 import { useOpenPage } from "./pageNavigation";
 import { iconSize, press, space, type } from "./tokens";
 import { userFacingError } from "./connectionError";
@@ -24,6 +26,7 @@ import { reviewRouteForSession } from "./reviewView";
 export const WorkerListRow = memo(
 	function WorkerListRow({
 	session,
+	rowKey,
 	projectName,
 	isRenaming,
 	activeSwipeId,
@@ -39,6 +42,7 @@ export const WorkerListRow = memo(
 	onRestore,
 }: {
 	session: DashboardSession;
+	rowKey?: string;
 	projectName?: string;
 	isRenaming: boolean;
 	activeSwipeId?: string;
@@ -63,6 +67,7 @@ export const WorkerListRow = memo(
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
+	const { currentHostId } = useApp();
 	const openPage = useOpenPage();
 	const closeActionRailRef = useRef<() => void>(() => {});
 	const [renameTitle, setRenameTitle] = useState("");
@@ -128,11 +133,11 @@ export const WorkerListRow = memo(
 		haptics.tap();
 		router.push({
 			pathname: "/session/[id]",
-			params: { id: session.id, projectId: session.projectId },
+			params: { id: session.id, projectId: session.projectId, hostId: sessionHostId(session) ?? currentHostId },
 		});
 	};
 
-	const reviewRoute = reviewRouteForSession(session);
+	const reviewRoute = reviewRouteForSession(session, sessionHostId(session) ?? currentHostId);
 	const terminated = session.isTerminated === true || session.status === "terminated";
 	const contextActions = workerContextActions({
 		pinned: Boolean(session.isPinned),
@@ -171,7 +176,7 @@ export const WorkerListRow = memo(
 
 	return (
 		<WorkerRowInteraction
-			sessionId={session.id}
+			sessionId={rowKey ?? session.id}
 			enabled={!isRenaming}
 			activeSwipeId={activeSwipeId}
 			rightActions={renderRightActions()}
@@ -230,6 +235,7 @@ export const WorkerListRow = memo(
 	 */
 	(prev, next) =>
 		prev.nowBucket === next.nowBucket &&
+		prev.rowKey === next.rowKey &&
 		prev.projectName === next.projectName &&
 		prev.isRenaming === next.isRenaming &&
 		prev.activeSwipeId === next.activeSwipeId &&

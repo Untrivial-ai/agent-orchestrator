@@ -159,22 +159,24 @@ var (
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
 	// errors.Is can tell the service which stage failed. More specific wrapped
 	// sentinels (branch, agent binary, chat preflight) still match first.
-	ErrSpawnPrompt         = errors.New("prompt")
-	ErrSpawnCreate         = errors.New("create")
-	ErrSpawnSystemPrompt   = errors.New("system prompt file")
-	ErrWorkspaceCreate     = errors.New("workspace")
-	ErrWorkspaceProvision  = errors.New("provision")
-	ErrSpawnAttachments    = errors.New("attachments")
-	ErrSpawnBrowser        = errors.New("browser capability")
-	ErrSpawnPrepare        = errors.New("prepare")
-	ErrSpawnPromptDelivery = errors.New("prompt delivery")
-	ErrSpawnLaunchCommand  = errors.New("launch command")
-	ErrSpawnSupervisor     = errors.New("supervisor")
-	ErrSpawnPrepareLaunch  = errors.New("prepare launch")
-	ErrRuntimeCreate       = errors.New("runtime")
-	ErrSpawnCommit         = errors.New("completed")
-	ErrSpawnDeliverPrompt  = errors.New("deliver prompt")
-	ErrChatController      = errors.New("chat controller")
+	ErrSpawnPrompt             = errors.New("prompt")
+	ErrSpawnCreate             = errors.New("create")
+	ErrSpawnSystemPrompt       = errors.New("system prompt file")
+	ErrWorkspaceCreate         = errors.New("workspace")
+	ErrWorkspaceProvision      = errors.New("provision")
+	ErrSpawnAttachments        = errors.New("attachments")
+	ErrSpawnBrowser            = errors.New("browser capability")
+	ErrSpawnPrepare            = errors.New("prepare")
+	ErrSpawnPromptDelivery     = errors.New("prompt delivery")
+	ErrSpawnLaunchCommand      = errors.New("launch command")
+	ErrSpawnSupervisor         = errors.New("supervisor")
+	ErrSpawnPrepareLaunch      = errors.New("prepare launch")
+	ErrRuntimeCreate           = errors.New("runtime")
+	ErrSpawnCommit             = errors.New("completed")
+	ErrSpawnDeliverPrompt      = errors.New("deliver prompt")
+	ErrClientRequestConflict   = errors.New("client request id belongs to a different task")
+	ErrClientRequestIncomplete = errors.New("client request has an incomplete prior spawn")
+	ErrChatController          = errors.New("chat controller")
 )
 
 // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
@@ -336,6 +338,9 @@ type Store interface {
 	ListWorkspaceRepos(ctx context.Context, projectID string) ([]domain.WorkspaceRepoRecord, error)
 	CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error)
 	CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
+	CreateClientRequestSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error)
+	GetSessionByClientRequestID(ctx context.Context, id string) (domain.SessionRecord, bool, error)
+	CommitClientRequestSession(ctx context.Context, id domain.SessionID) error
 	UpdateSession(ctx context.Context, rec domain.SessionRecord) error
 	UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error)
 	UpdateBrowserCapabilityVerifier(ctx context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error)
@@ -893,6 +898,16 @@ func New(d Deps) *Manager {
 // materialization fails the still-seed row is deleted outright; a later failure
 // parks the row as terminated and rolls back what was built.
 func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, int, int, error) {
+	if cfg.ClientRequestID != "" {
+		existing, found, err := m.store.GetSessionByClientRequestID(ctx, cfg.ClientRequestID)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, err
+		}
+		if found {
+			rec, err := replayClientRequest(existing, cfg.ClientRequestHash)
+			return rec, 0, 0, err
+		}
+	}
 	project, err := m.loadProject(ctx, cfg.ProjectID)
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
@@ -1039,7 +1054,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			seed.Metadata.Model = cfg.AgentConfig.Model
 			seed.Metadata.Effort = cfg.AgentConfig.Effort
 		}
-		if cfg.AutomationRunID != nil {
+		if cfg.ClientRequestID != "" {
+			var fresh bool
+			rec, fresh, err = m.store.CreateClientRequestSession(ctx, seed)
+			if err == nil && !fresh {
+				replay, replayErr := replayClientRequest(rec, cfg.ClientRequestHash)
+				return replay, promptBytes, systemPromptBytes, replayErr
+			}
+		} else if cfg.AutomationRunID != nil {
 			var fresh bool
 			rec, fresh, err = m.store.CreateAutomationSession(ctx, seed)
 			if err == nil && !fresh {
@@ -1093,6 +1115,13 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cleanupCtx, cancel := spawnRollbackContext(ctx)
 			m.discardClaimedTaskPreparation(cleanupCtx, prep)
 			cancel()
+			if cfg.ClientRequestID != "" {
+				existing, found, lookupErr := m.store.GetSessionByClientRequestID(ctx, cfg.ClientRequestID)
+				if lookupErr == nil && found {
+					replay, replayErr := replayClientRequest(existing, cfg.ClientRequestHash)
+					return replay, promptBytes, systemPromptBytes, replayErr
+				}
+			}
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 		}
 	}
@@ -1134,6 +1163,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		})
 		if err == nil {
 			releaseHarness = nil // background start now owns the installer guard
+			if cfg.ClientRequestID != "" {
+				if commitErr := m.store.CommitClientRequestSession(ctx, started.ID); commitErr != nil {
+					return domain.SessionRecord{}, 0, 0, wrapSpawnStage(started.ID, ErrSpawnCommit, commitErr)
+				}
+			}
 		}
 		return started, promptBytes, systemPromptBytes, err
 	}
@@ -1211,6 +1245,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			rec, err = m.getRecord(ctx, id)
 			if err != nil {
 				return domain.SessionRecord{}, 0, 0, err
+			}
+		}
+		if cfg.ClientRequestID != "" {
+			if err := m.store.CommitClientRequestSession(ctx, id); err != nil {
+				return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 			}
 		}
 		return rec, promptBytes, systemPromptBytes, nil
@@ -1361,6 +1400,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
 		}
 	}
+	if cfg.ClientRequestID != "" {
+		if err := m.store.CommitClientRequestSession(ctx, id); err != nil {
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
+		}
+	}
 	rec, err = m.getRecord(ctx, id)
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, err
@@ -1382,6 +1426,16 @@ func (m *Manager) markAutomationLaunchCompleted(ctx context.Context, id domain.S
 	rec.AutomationLaunchCompleted = true
 	rec.UpdatedAt = m.clock()
 	return m.store.UpdateSession(ctx, rec)
+}
+
+func replayClientRequest(rec domain.SessionRecord, hash string) (domain.SessionRecord, error) {
+	if rec.ClientRequestHash != hash {
+		return domain.SessionRecord{}, ErrClientRequestConflict
+	}
+	if !rec.ClientRequestCommitted {
+		return domain.SessionRecord{}, ErrClientRequestIncomplete
+	}
+	return rec, nil
 }
 
 func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
@@ -4838,15 +4892,17 @@ func normalizeWorkspacePath(p string) string {
 
 func seedRecord(cfg ports.SpawnConfig, projectConfig domain.ProjectConfig, now time.Time) domain.SessionRecord {
 	return domain.SessionRecord{
-		ProjectID:       cfg.ProjectID,
-		IssueID:         cfg.IssueID,
-		AutomationRunID: cfg.AutomationRunID,
-		Kind:            cfg.Kind,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		Harness:         cfg.Harness,
-		DisplayName:     cfg.DisplayName,
-		Activity:        domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
+		ProjectID:         cfg.ProjectID,
+		IssueID:           cfg.IssueID,
+		AutomationRunID:   cfg.AutomationRunID,
+		ClientRequestID:   cfg.ClientRequestID,
+		ClientRequestHash: cfg.ClientRequestHash,
+		Kind:              cfg.Kind,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		Harness:           cfg.Harness,
+		DisplayName:       cfg.DisplayName,
+		Activity:          domain.Activity{State: domain.ActivityIdle, LastActivityAt: now},
 		// Resolved before this point and persisted here. There is no UPDATE
 		// statement that can change it afterwards.
 		Mode:              domain.NormalizeSessionMode(cfg.RequestedMode),

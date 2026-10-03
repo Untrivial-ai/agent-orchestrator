@@ -14,6 +14,14 @@ export type Endpoint = {
 	secure: boolean;
 };
 
+/** Keep a pasted URL from becoming the endpoint's DNS hostname. */
+export function normalizeServerHost(host: string): string {
+	return host
+		.trim()
+		.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+		.replace(/\/+$/, "");
+}
+
 /**
  * Preference when several endpoints answer together, cheapest first.
  *

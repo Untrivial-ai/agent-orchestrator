@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { DashboardSession } from "./api";
+import { hostedSessionKey, type HostedSession } from "./hostedRows";
 import {
 	activeSidebarDestination,
 	sidebarDestinationBadge,
@@ -74,6 +75,15 @@ describe("sidebar navigation", () => {
 			"pinned-older",
 			"newest",
 			"older",
+		]);
+	});
+
+	it("keeps same-ID sessions from different hosts distinct in the recent list", () => {
+		const first = { ...session({ id: "worker" }), hostId: "host-a", hostName: "Desk" } satisfies HostedSession;
+		const second = { ...session({ id: "worker" }), hostId: "host-b", hostName: "Laptop" } satisfies HostedSession;
+		expect(sidebarSessions([first, second]).map(hostedSessionKey)).toEqual([
+		'["host-a","worker"]',
+		'["host-b","worker"]',
 		]);
 	});
 

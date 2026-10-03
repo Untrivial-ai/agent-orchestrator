@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Disc3, Loader2, MessageSquare, Pencil, Plus, TerminalSquare, Trash2 } from "lucide-react";
+import { Loader2, MessageSquare, Pencil, Plus, TerminalSquare, Trash2 } from "lucide-react";
 import { apiErrorMessage } from "../lib/api-client";
 import { useUiStore } from "../stores/ui-store";
 import {
@@ -12,10 +12,8 @@ import {
 import { CUE_LIMITS } from "../lib/cues";
 import type { CueDTO, CueInput } from "../lib/cues";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 
 type CuesSettingsProps = {
 	projectId: string;
@@ -49,9 +47,6 @@ function draftFromDTO(cue: CueDTO): CueDraft {
 		prompt: cue.prompt ?? "",
 	};
 }
-
-const composerTextareaClass =
-	"block w-full min-h-[3.5rem] resize-y rounded-md border border-transparent bg-input/50 px-3 py-2 text-sm text-foreground transition-[color,box-shadow,background-color] outline-none placeholder:text-muted-foreground focus-visible:outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50";
 
 function CueTypeIcon({ type, className }: { type: CueType; className?: string }) {
 	if (type === "agent") {
@@ -198,59 +193,66 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 		const cues = cuesQuery.data ?? [];
 		if (cues.length === 0) {
 			return (
-				<div className="flex flex-col items-center gap-3 py-10 text-center">
-					<Disc3 className="size-8 text-passive" aria-hidden="true" />
-					<p className="max-w-sm text-sm leading-5 text-muted-foreground">{t("cues.empty")}</p>
+				<div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+					<p className="text-sm leading-5 text-settings-muted">{t("cues.empty")}</p>
+					<Button type="button" disabled={busy} onClick={openNew}>
+						<Plus aria-hidden="true" />
+						{t("cues.newCue")}
+					</Button>
 				</div>
 			);
 		}
 		return (
-			<div className="flex flex-col gap-1.5">
-				{cues.map((cue) => {
-					const cueKind = cueType(cue);
-					return (
-						<div key={cue.id} className="flex items-center gap-2.5 rounded-md border border-border bg-surface px-3 py-2">
-							<CueTypeIcon type={cueKind} className="size-4 shrink-0 text-muted-foreground" />
-							<div className="min-w-0 flex-1">
-								<div className="flex items-center gap-2 text-sm leading-5 font-medium text-foreground">
-									<span className="truncate">{cue.name}</span>
-									<span className="shrink-0 rounded-sm border border-border bg-background px-1.5 py-px text-[10px] leading-3 tracking-wide text-passive uppercase">
-										{cueKind === "agent" ? t("cues.typeName.agent") : t("cues.typeName.command")}
-									</span>
+			<div className="project-settings-form">
+				<section>
+					<div className="settings-grouped-rows flex w-full flex-col">
+						{cues.map((cue) => {
+							const cueKind = cueType(cue);
+							return (
+								<div key={cue.id} className="settings-row-bar">
+									<CueTypeIcon type={cueKind} className="size-4 shrink-0 text-settings-muted" />
+									<div className="min-w-0 flex-1">
+										<div className="flex items-baseline gap-2 text-sm leading-5 text-foreground">
+											<span className="truncate font-medium">{cue.name}</span>
+											<span className="shrink-0 text-xs text-settings-muted">
+												{cueKind === "agent" ? t("cues.typeName.agent") : t("cues.typeName.command")}
+											</span>
+										</div>
+										{cue.description ? (
+											<p className="truncate text-xs leading-4 text-settings-muted">{cue.description}</p>
+										) : null}
+									</div>
+									<div className="flex shrink-0 items-center gap-0.5">
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon-sm"
+											disabled={busy}
+											onClick={() => openEdit(cue)}
+											aria-label={t("cues.edit")}
+											title={t("cues.edit")}
+											className="size-7 shrink-0 p-0 text-settings-muted hover:text-foreground"
+										>
+											<Pencil className="size-3.5" aria-hidden="true" />
+										</Button>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon-sm"
+											disabled={busy}
+											onClick={() => { if (!pending.current) { deleteMutation.reset(); setDeletingCue(cue); } }}
+											aria-label={t("cues.delete")}
+											title={t("cues.delete")}
+											className="size-7 shrink-0 p-0 text-settings-muted hover:text-destructive"
+										>
+											<Trash2 className="size-3.5" aria-hidden="true" />
+										</Button>
+									</div>
 								</div>
-								{cue.description ? (
-									<p className="truncate text-xs leading-4 text-muted-foreground">{cue.description}</p>
-								) : null}
-							</div>
-							<div className="flex shrink-0 items-center gap-0.5">
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon-sm"
-									disabled={busy}
-									onClick={() => openEdit(cue)}
-									aria-label={t("cues.edit")}
-									title={t("cues.edit")}
-									className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
-								>
-									<Pencil className="size-3.5" aria-hidden="true" />
-								</Button>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon-sm"
-									disabled={busy}
-									onClick={() => { if (!pending.current) { deleteMutation.reset(); setDeletingCue(cue); } }}
-									aria-label={t("cues.delete")}
-									title={t("cues.delete")}
-									className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-destructive"
-								>
-									<Trash2 className="size-3.5" aria-hidden="true" />
-								</Button>
-							</div>
-						</div>
-					);
-				})}
+							);
+						})}
+					</div>
+				</section>
 			</div>
 		);
 	};
@@ -258,58 +260,54 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 	const renderForm = () => {
 		const command = draft.type === "command";
 		const contentId = command ? "cue-command" : "cue-prompt";
-		return <div className="flex flex-col gap-3">
+		return <div className="flex flex-col gap-(--size-settings-section-inner-gap)">
 			<div className="flex flex-col gap-1.5">
-				<Label htmlFor="cue-name" className="text-xs font-medium text-muted-foreground">
+				<label htmlFor="cue-name" className="settings-field-label">
 					{t("cues.nameLabel")}
-				</Label>
-				<Input
+				</label>
+				<input
 					id="cue-name"
 					value={draft.name}
 					onChange={(event) => setDraft((d) => ({ ...d, name: event.target.value }))}
 					placeholder={t("cues.namePlaceholder")}
+					className="settings-field-control h-(--size-settings-action-height) rounded-md!"
 					autoFocus
 				/>
 			</div>
 
 			<div className="flex flex-col gap-1.5">
-				<Label htmlFor="cue-description" className="text-xs font-medium text-muted-foreground">
+				<label htmlFor="cue-description" className="settings-field-label">
 					{t("cues.descriptionLabel")}
-				</Label>
-				<Input
+				</label>
+				<input
 					id="cue-description"
 					value={draft.description}
 					onChange={(event) => setDraft((d) => ({ ...d, description: event.target.value }))}
 					placeholder={t("cues.descriptionPlaceholder")}
+					className="settings-field-control h-(--size-settings-action-height) rounded-md!"
 				/>
 			</div>
 
 			<div className="flex flex-col gap-1.5">
-				<Label className="text-xs font-medium text-muted-foreground">{t("cues.typeLabel")}</Label>
-				<Select
+				<label className="settings-field-label">{t("cues.typeLabel")}</label>
+				<SettingsOptionMenu
+					aria-label={t("cues.typeLabel")}
 					value={draft.type}
-					onValueChange={(value) => setDraft((d) => ({ ...d, type: value === "agent" ? "agent" : "command" }))}
-				>
-					<SelectTrigger className="w-full">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="command">
-							<TerminalSquare className="size-3.5 text-muted-foreground" aria-hidden="true" />
-							{t("cues.typeName.command")}
-						</SelectItem>
-						<SelectItem value="agent">
-							<MessageSquare className="size-3.5 text-muted-foreground" aria-hidden="true" />
-							{t("cues.typeName.agent")}
-						</SelectItem>
-					</SelectContent>
-				</Select>
+					options={[
+						{ value: "command", label: t("cues.typeName.command"), icon: <CueTypeIcon type="command" className="size-3! shrink-0 text-settings-muted" /> },
+						{ value: "agent", label: t("cues.typeName.agent"), icon: <CueTypeIcon type="agent" className="size-3! shrink-0 text-settings-muted" /> },
+					]}
+					triggerClassName="w-fit self-start"
+					menuAlign="start"
+					menuClassName="border-0! shadow-md!"
+					onChange={(type) => setDraft((current) => ({ ...current, type }))}
+				/>
 			</div>
 
 			<div className="flex flex-col gap-1.5">
-				<Label htmlFor={contentId} className="text-xs font-medium text-muted-foreground">
+				<label htmlFor={contentId} className="settings-field-label">
 					{t(command ? "cues.commandLabel" : "cues.agentLabel")}
-				</Label>
+				</label>
 				<textarea
 					id={contentId}
 					value={command ? draft.command : draft.prompt}
@@ -318,10 +316,8 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 						setDraft((d) => command ? { ...d, command: value } : { ...d, prompt: value });
 					}}
 					placeholder={t(command ? "cues.commandPlaceholder" : "cues.promptPlaceholder")}
-					className={composerTextareaClass}
-					rows={command ? 2 : 4}
+					className="settings-field-control min-h-(--size-textarea-min) resize-none overflow-y-auto py-2.5 rounded-md! disabled:cursor-not-allowed disabled:opacity-50"
 				/>
-				<p className="text-xs leading-4 text-passive">{t(command ? "cues.commandHelp" : "cues.promptHelp")}</p>
 			</div>
 
 			{formError ? (
@@ -332,27 +328,30 @@ function ProjectCuesSettings({ projectId, onBusyChange }: CuesSettingsProps) {
 		</div>;
 	};
 
+	const empty = !formOpen && cuesQuery.isFetchedAfterMount && !cuesQuery.isFetching && !cuesQuery.isError && (cuesQuery.data ?? []).length === 0;
 	return (
-		<div className="flex min-h-full flex-col gap-4 pb-5">
-			<fieldset disabled={busy}>{formOpen ? renderForm() : renderList()}</fieldset>
-			<div className="mt-auto flex justify-end gap-2 border-t border-border pt-4">
+		<div className={empty ? "flex h-full min-h-0 flex-1 flex-col" : "flex flex-col gap-(--size-settings-section-inner-gap)"}>
+			<fieldset className={empty ? "flex min-h-0 min-w-0 flex-1 flex-col" : "min-w-0"} disabled={busy}>{formOpen ? renderForm() : renderList()}</fieldset>
+			{empty ? null : (
+			<div className="flex items-center justify-end gap-2">
 				{formOpen ? (
 					<>
-						<Button type="button" variant="footer" disabled={saving} onClick={() => setFormOpen(null)}>
+						<Button type="button" variant="outline" disabled={saving} onClick={() => setFormOpen(null)}>
 							{t("cues.cancel")}
 						</Button>
-						<Button type="button" variant="footer-primary" disabled={saving} onClick={() => void handleSave()}>
-							{saving ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+						<Button type="button" disabled={saving} onClick={() => void handleSave()}>
+							{saving ? <Loader2 className="animate-spin" aria-hidden="true" /> : null}
 							{formOpen === "new" ? t("cues.create") : t("cues.save")}
 						</Button>
 					</>
 				) : (
-					<Button type="button" variant="footer-primary" disabled={busy} onClick={openNew}>
-						<Plus className="size-4" aria-hidden="true" />
+					<Button type="button" disabled={busy} onClick={openNew}>
+						<Plus aria-hidden="true" />
 						{t("cues.newCue")}
 					</Button>
 				)}
 			</div>
+			)}
 
 			<ConfirmDialog
 				open={deletingCue !== null}

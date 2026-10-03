@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1813,6 +1814,70 @@ func TestImportedGlobalCredentialDoesNotBlockNormalAuthentication(t *testing.T) 
 	}
 }
 
+func TestProbeRecognizesFirstCodexLoginWithoutDaemonRestart(t *testing.T) {
+	root := t.TempDir()
+	globalHome := filepath.Join(root, "global-codex")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		if runtime.GOOS == "windows" && strings.Contains(err.Error(), "codex private directory owner is unsafe") {
+			t.Skipf("Windows test temp directory is not owned by the current user: %v", err)
+		}
+		t.Fatal(err)
+	}
+	email := "signed-in@example.com"
+	factory := &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+			return &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+				Authentication: domain.AgentAuthenticationAuthorized,
+				Method:         domain.CodexAuthMethodChatGPT,
+				Email:          &email,
+			}}, nil
+		},
+	}
+	svc := NewWithDeps(Deps{
+		CodexAccountRoot:       filepath.Join(root, "accounts"),
+		CodexPendingRoot:       filepath.Join(root, "pending"),
+		CodexSwitchStagingRoot: filepath.Join(root, "staging"),
+		CodexGlobalHome:        globalHome,
+		CodexAccounts:          factory,
+	})
+	svc.agents = []agentregistry.HarnessAgent{readinessHarness("codex", "Codex", &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "codex", nil },
+		// Native Codex sees the new auth.json immediately; the managed account
+		// projection must not override that with its stale signed-out snapshot.
+		auth: func(context.Context) (ports.AgentAuthStatus, error) { return ports.AgentAuthStatusAuthorized, nil },
+	})}
+	svc.readiness = newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: svc.agents, AuthenticationCheck: svc.structuredCodexAuthentication,
+	})
+	svc.codexAccounts.catalog.newID = func() string { return testAccountID }
+	ctx := context.Background()
+	if err := svc.WaitCodexAccountStoreReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.codexAccounts.reconcileGlobal(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, err := svc.Probe(ctx, "codex")
+	if err != nil || before.Agent.AuthStatus != ports.AgentAuthStatusUnauthorized {
+		t.Fatalf("pre-login probe = %#v, %v", before, err)
+	}
+	if err := writeGlobalCredentialAtomic(filepath.Join(globalHome, codexCredentialFilename), testOAuthCredential("provider-account", "access")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := svc.Probe(ctx, "codex")
+	if err != nil || after.Agent.AuthStatus != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("post-login probe = %#v, %v; want authorized without restart", after, err)
+	}
+	if id := svc.codexAccounts.activeAccountID(); id == "" {
+		t.Fatal("post-login probe did not import the newly signed-in account")
+	}
+	readiness, err := svc.EnsureAgentReadiness(ctx, "codex", domain.AgentReadinessPurposeDisplay)
+	if err != nil || readiness.Authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("post-login Harness readiness = %#v, %v; want authorized", readiness.Authentication, err)
+	}
+}
+
 func TestGlobalSwitchCapabilityAllowsMissingCredentialButRejectsUnsafeCredential(t *testing.T) {
 	root := t.TempDir()
 	globalHome := filepath.Join(root, "global-codex")
@@ -2337,5 +2402,112 @@ func TestSwitchAdmissionIgnoresCachedUnauthorizedState(t *testing.T) {
 
 	if _, err := svc.PrepareCodexAccountForSwitch(context.Background(), "6f8dfc76-8db4-4621-8974-c480093e0d55", record.Snapshot.ID); err != nil {
 		t.Fatalf("cached provider rejection blocked a locally valid credential: %v", err)
+	}
+}
+
+// A login in the Harness settings terminal runs plain `codex login`, replacing
+// ~/.codex/auth.json outside AO's account login flow. The follow-up recheck
+// (agent Probe) must reconcile that credential so an earlier "sign in again"
+// result does not keep reporting Codex as signed out until the app restarts.
+func TestRecheckAfterExternalLoginClearsStaleReauthentication(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		loginAgain bool
+		want       domain.AgentAuthenticationState
+	}{
+		{name: "credential replaced by a new login", loginAgain: true, want: domain.AgentAuthenticationAuthorized},
+		{name: "credential unchanged", loginAgain: false, want: domain.AgentAuthenticationUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			globalHome := filepath.Join(root, "global-codex")
+			if err := ensurePrivateDirectory(globalHome); err != nil {
+				t.Fatal(err)
+			}
+			oldCredential := testOAuthCredential("provider-account-a", "rejected-access")
+			if err := writePrivateFileAtomic(filepath.Join(globalHome, codexCredentialFilename), oldCredential); err != nil {
+				t.Fatal(err)
+			}
+			email := "known@example.com"
+			manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, nil, nil)
+			manager.catalog.newID = func() string { return testAccountID }
+			record := commitTestAccountWithCredential(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", oldCredential, ports.CodexAccountObservation{
+				Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email,
+			})
+			setTestDeviceAccount(manager, testCodexDeviceAccount{AccountID: testAccountID, Revision: 1})
+			manager.accountStoreReady = true
+			manager.factory = &fakeCodexAccountFactory{capabilities: supportedCodexAccountCapabilities(), open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+				return &fakeCodexAccountClient{
+					read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email},
+					// The provider accepts the new login's tokens.
+					capacityFn: func(context.Context) (ports.CodexCapacityObservation, error) {
+						return ports.CodexCapacityObservation{}, nil
+					},
+				}, nil
+			}}
+			service := &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}
+			if err := manager.reconcileGlobal(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			// Codex rejected the stored credential earlier.
+			manager.requireReauthentication(record.Snapshot.ID)
+
+			if test.loginAgain {
+				if err := writePrivateFileAtomic(filepath.Join(globalHome, codexCredentialFilename), testOAuthCredential("provider-account-a", "new-access")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service.reconcileCodexDeviceCredentialForRecheck(context.Background())
+			if _, reauthenticationRequired := manager.authenticationVerification(record.Snapshot.ID); reauthenticationRequired == test.loginAgain {
+				t.Fatalf("reauthenticationRequired = %t after recheck (new login = %t)", reauthenticationRequired, test.loginAgain)
+			}
+			service.InvalidateAgentAuthentication(string(domain.HarnessCodex))
+			authentication, ok := service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeDisplay)
+			if !ok || authentication.State != test.want {
+				t.Fatalf("authentication after recheck = %#v (structured=%t), want %s", authentication, ok, test.want)
+			}
+		})
+	}
+}
+
+// Signing out removes ~/.codex/auth.json, and the device reconciliation records
+// that no credential is present. A later Harness terminal login writes a new
+// auth.json; the follow-up recheck must see it instead of repeating "Sign in to
+// Codex" from the stale reconciliation.
+func TestRecheckAfterExternalLoginFindsTheNewDeviceCredential(t *testing.T) {
+	root := t.TempDir()
+	globalHome := filepath.Join(root, "global-codex")
+	if err := ensurePrivateDirectory(globalHome); err != nil {
+		t.Fatal(err)
+	}
+	credential := testOAuthCredential("provider-account-a", "access")
+	email := "known@example.com"
+	manager := newCodexAccountManager(context.Background(), filepath.Join(root, "accounts"), filepath.Join(root, "pending"), filepath.Join(root, "staging"), globalHome, nil, nil)
+	manager.catalog.newID = func() string { return testAccountID }
+	commitTestAccountWithCredential(t, manager.catalog, manager.pendingRoot, "b60a377d-da68-4a61-86f2-f31f04c571f2", credential, ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email,
+	})
+	manager.accountStoreReady = true
+	manager.factory = &fakeCodexAccountFactory{capabilities: supportedCodexAccountCapabilities(), open: func(ports.CodexAccountContext) (ports.CodexAccountClient, error) {
+		return &fakeCodexAccountClient{read: ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email}}, nil
+	}}
+	service := &Service{codexAccounts: manager, readiness: newReadinessCoordinator(readinessCoordinatorConfig{})}
+	// Signed out: no device credential.
+	if err := manager.reconcileGlobal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if authentication, ok := service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeDisplay); !ok || authentication.State != domain.AgentAuthenticationUnauthorized {
+		t.Fatalf("signed-out authentication = %#v (structured=%t)", authentication, ok)
+	}
+
+	// The Harness terminal login writes the credential, then the UI rechecks.
+	if err := writePrivateFileAtomic(filepath.Join(globalHome, codexCredentialFilename), credential); err != nil {
+		t.Fatal(err)
+	}
+	service.reconcileCodexDeviceCredentialForRecheck(context.Background())
+	service.InvalidateAgentAuthentication(string(domain.HarnessCodex))
+	authentication, ok := service.structuredCodexAuthentication(context.Background(), string(domain.HarnessCodex), domain.AgentReadinessPurposeDisplay)
+	if !ok || authentication.State != domain.AgentAuthenticationAuthorized {
+		t.Fatalf("authentication after login recheck = %#v (structured=%t)", authentication, ok)
 	}
 }

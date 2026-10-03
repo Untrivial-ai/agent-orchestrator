@@ -9,7 +9,7 @@ export type PairResult =
 	| { ok: true; config: ServerConfig; host: Host }
 	| {
 			ok: false;
-			reason: "not-ao-qr" | "outdated-desktop" | "no-candidates" | "none-reachable" | "verify-failed";
+			reason: "not-ao-qr" | "outdated-desktop" | "no-candidates" | "none-reachable" | "incompatible" | "verify-failed";
 		};
 
 export type PairDeps = {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { raceEndpoints } from "./race";
+import { IncompatibleHostVersionError, raceEndpoints } from "./race";
 import type { Endpoint } from "./endpoints";
 
 const lan: Endpoint = { kind: "lan", host: "192.168.1.42", port: 3011, secure: false };
@@ -29,6 +29,16 @@ describe("raceEndpoints", () => {
 		const got = await raceEndpoints([lan, tunnel], "h_paired", probeWith({}));
 
 		expect(got.ok).toBe(false);
+	});
+
+	it("reports matching-host API incompatibility, but still prefers a compatible endpoint", async () => {
+		const incompatible = vi.fn(async (e: Endpoint) => {
+			if (e.kind === "lan") throw new IncompatibleHostVersionError("h_paired");
+			return { hostId: "h_paired" };
+		});
+		await expect(raceEndpoints([lan], "h_paired", incompatible)).resolves.toEqual({ ok: false, reason: "incompatible" });
+		await expect(raceEndpoints([lan, tunnel], "h_paired", incompatible)).resolves.toEqual({ ok: true, endpoint: tunnel, hostId: "h_paired" });
+		await expect(raceEndpoints([lan], "h_elsewhere", incompatible)).resolves.toEqual({ ok: false, reason: "none-reachable" });
 	});
 
 	it("reports failure for an empty candidate list", async () => {

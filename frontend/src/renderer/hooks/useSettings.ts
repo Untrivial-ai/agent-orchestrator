@@ -8,6 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { clientForHost } from "../lib/host-clients";
 import type { SessionMode } from "../types/workspace";
 
 export const settingsQueryKey = ["settings"] as const;
@@ -31,9 +32,10 @@ export interface Settings {
 	trackerIntakeEnabled: boolean;
 }
 
-export function useSettings() {
+export function useSettings(hostId?: string, enabled = true) {
 	const query = useQuery({
-		queryKey: settingsQueryKey,
+		queryKey: hostId ? ["settings", hostId] : settingsQueryKey,
+		enabled,
 		// Settings gate the cloud sign-in UI, so this query must recover from a
 		// transient startup failure. The daemon can still be booting on first
 		// fetch ("AO daemon is starting"); without a refetch the whole cloud
@@ -42,7 +44,7 @@ export function useSettings() {
 		refetchInterval: 15_000,
 		retry: 5,
 		queryFn: async (): Promise<Settings> => {
-			const { data, error } = await apiClient.GET("/api/v1/settings");
+			const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).GET("/api/v1/settings");
 			if (error) throw error;
 			return {
 				defaultSessionMode: (data?.defaultSessionMode ?? "tui") as SessionMode,

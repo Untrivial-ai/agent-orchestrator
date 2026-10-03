@@ -30,7 +30,7 @@ import {
 	OptionMenuTrigger,
 } from "../ui/option-menu";
 import { cn } from "../../lib/utils";
-import { isDefaultPlaceholderLabel } from "../../lib/agent-model-choices";
+import { agentModelDisplayLabel, isDefaultPlaceholderLabel } from "../../lib/agent-model-choices";
 import { Switch } from "../ui/switch";
 import { ModelMenuChoices } from "./ModelMenuChoices";
 import type {
@@ -129,14 +129,34 @@ export function TurnSettingsBar({
 	/** Inline controls on the right model row, before the mode/approval picker — queue vs steer. */
 	children?: ReactNode;
 }) {
-	const selected = models.find((model) => model.id === settings.model);
-	const fallback = settings.model ? undefined : models.find((model) => model.default);
+	const displayModels = useMemo(
+		() => models.map((model) => ({
+			...model,
+			displayName: agentModelDisplayLabel(harness, model.displayName),
+		})),
+		[harness, models],
+	);
+	const displayConfigOptions = useMemo(
+		() => (configOptions ?? []).map((option) => isModelOption(option) ? {
+			...option,
+			choices: option.choices.map((choice) => ({
+				...choice,
+				name: agentModelDisplayLabel(harness, choice.name),
+				description: choice.description
+					? agentModelDisplayLabel(harness, choice.description)
+					: choice.description,
+			})),
+		} : option),
+		[configOptions, harness],
+	);
+	const selected = displayModels.find((model) => model.id === settings.model);
+	const fallback = settings.model ? undefined : displayModels.find((model) => model.default);
 	// A catalog miss must not relabel an explicit choice or borrow another model's
 	// effort settings. Custom or newly available models may not be listed yet.
 	const chosenLabel =
 		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Choose a model";
 	const rerouted = reroute
-		? models.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
+		? displayModels.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
 	const modelLabel = rerouted ?? chosenLabel;
 	const efforts = (selected ?? fallback)?.efforts ?? [];
@@ -148,7 +168,7 @@ export function TurnSettingsBar({
 	const modelGroupLabel = effortLabel
 		? `${modelLabel} ${capitalize(effortLabel)}`
 		: modelLabel;
-	const grouped = partitionConfigOptions(configOptions ?? []);
+	const grouped = partitionConfigOptions(displayConfigOptions);
 	const optionDisabled = Boolean(disabled || configPending || rememberPermissionsPending);
 	const applyOption = (optionId: string, value: ChatConfigOptionValue) => {
 		if (!onChangeConfigOption) return;
@@ -166,7 +186,7 @@ export function TurnSettingsBar({
 	const planReturn = modeOption?.choices.find(
 		(choice) => choice.permissionMode === (settings.approvalMode ?? "default"),
 	)?.value;
-	const nativeModelMenu = Boolean(onChange && models.length > 0 && grouped.model.length === 0);
+	const nativeModelMenu = Boolean(onChange && displayModels.length > 0 && grouped.model.length === 0);
 	const clubbedLeft =
 		grouped.model.length > 0 ||
 		grouped.effort.length > 0 ||
@@ -195,7 +215,7 @@ export function TurnSettingsBar({
 				<div className="flex h-7 min-w-0 flex-wrap items-center gap-0.5">
 					{nativeModelMenu && onChange ? (
 						<ModelEffortPicker
-							models={models}
+							models={displayModels}
 							settings={settings}
 							onChange={onChange}
 							disabled={optionDisabled}

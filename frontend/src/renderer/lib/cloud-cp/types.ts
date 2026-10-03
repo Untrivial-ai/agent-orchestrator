@@ -272,6 +272,51 @@ export interface CloudCpCoderTemplatesResponse {
 	templates: CloudCpCoderTemplate[];
 }
 
+/**
+ * GET /orgs/{orgId}/coder-config — an org's bring-your-own-Coder connection.
+ * Non-secret fields only: the stored API token is never echoed back, surfaced
+ * here solely as `tokenSet`.
+ */
+export interface CloudCpOrgCoderConfig {
+	/** Coder deployment base URL or IP (http or https). */
+	baseUrl: string;
+	/** Coder owner/username new workspaces are created under. */
+	owner: string;
+	/** Default Coder template id (a UUID) new workspaces use. */
+	defaultTemplateId: string;
+	/** Optional agent name the sandbox connects through. */
+	agentName?: string;
+	/**
+	 * Optional PrivateLink VPC endpoint service name (the
+	 * `coder_endpoint_service_name` Terraform output), set only when the Coder lives
+	 * in a private VPC. AO ops provisions the VPC endpoint from it.
+	 */
+	endpointServiceName?: string;
+	/** Optional AWS region for the PrivateLink endpoint (e.g. eu-north-1). */
+	region?: string;
+	/** True when an API token is stored. The token itself is never returned. */
+	tokenSet: boolean;
+}
+
+export interface CloudCpOrgCoderConfigResponse {
+	/** The stored config, or null when the org has none configured yet. */
+	coderConfig: CloudCpOrgCoderConfig | null;
+}
+
+/** PUT /orgs/{orgId}/coder-config */
+export interface CloudCpPutOrgCoderConfigRequest {
+	baseUrl: string;
+	/** Raw Coder API token; stored encrypted and never echoed back. Omit to keep the existing token. */
+	token?: string;
+	owner: string;
+	defaultTemplateId: string;
+	agentName?: string;
+	/** Optional PrivateLink VPC endpoint service name; omit for a directly reachable Coder. */
+	endpointServiceName?: string;
+	/** Optional AWS region for the PrivateLink endpoint. */
+	region?: string;
+}
+
 export interface CloudCpSession {
 	id: string;
 	orgId: string;
@@ -797,7 +842,7 @@ export interface CloudCpPutAgentConnectionRequest {
 	secret: string;
 }
 
-/** PUT /orgs/{orgId}/provider-connections/github-pat */
+/** PUT /me/github-pat */
 export interface CloudCpPutGitHubPATRequest {
 	/** Raw GitHub personal access token; stored encrypted and never echoed. */
 	secret: string;
@@ -823,12 +868,12 @@ export interface CloudCpProviderConnection {
 	updatedAt: string;
 }
 
-/** GET /orgs/{orgId}/provider-connections */
+/** GET /me/providers */
 export interface CloudCpProviderConnectionsResponse {
 	providerConnections: CloudCpProviderConnection[];
 }
 
-/** PUT /orgs/{orgId}/provider-connections/agents/{agent} */
+/** PUT /me/providers/{agent}, PUT /me/github-pat */
 export interface CloudCpProviderConnectionResponse {
 	providerConnection: CloudCpProviderConnection;
 }

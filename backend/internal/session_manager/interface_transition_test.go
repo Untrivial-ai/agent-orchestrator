@@ -902,6 +902,22 @@ func TestInterfaceTransitionStatusHidesSwitchWhenChatUnsupported(t *testing.T) {
 	}
 }
 
+func TestInterfaceTransitionStatusHidesChatWhenDriverUnavailable(t *testing.T) {
+	manager, _, _, chat, _ := newTransitionManager(t, domain.SessionModeTUI)
+	chat.preflightErr = ports.ErrChatDriverUnavailable
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("InterfaceTransitionStatus: %v", err)
+	}
+	if status.Supported {
+		t.Fatal("status offered Chat when its driver cannot launch")
+	}
+	if status.ReasonCode != "TARGET_UNAVAILABLE" {
+		t.Fatalf("reasonCode = %q, want TARGET_UNAVAILABLE", status.ReasonCode)
+	}
+}
+
 func TestInterfaceTransitionStatusAllowsSwitchToTUIWhenChatUnsupported(t *testing.T) {
 	manager, _, _, chat, _ := newTransitionManager(t, domain.SessionModeChat)
 	chat.supportsChat = false

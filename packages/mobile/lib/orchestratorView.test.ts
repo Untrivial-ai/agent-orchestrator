@@ -123,6 +123,21 @@ describe("projectBlockerLine", () => {
 		const rows = orchestratorProjectSections([project("proj")], [session({ id: "a", status: "running" })], [link()]);
 		expect(projectBlockerLine(rowByProject(rows, "proj"), now)).toBeNull();
 	});
+
+	// An unresolved comment must still surface as a project blocker, same as a
+	// formal changes-requested decision -- see agent-orchestrator#5765.
+	it("surfaces an unresolved comment as a blocker", () => {
+		const rows = orchestratorProjectSections(
+			[project("proj")],
+			[session({ id: "auth-refactor", displayName: "auth-refactor", status: "commented", lastActivityAt: ago(5) })],
+			[link()],
+		);
+		expect(projectBlockerLine(rowByProject(rows, "proj"), now)).toEqual({
+			worker: "auth-refactor",
+			reason: "checks failing",
+			age: "5m",
+		});
+	});
 });
 
 describe("projectRailTone", () => {

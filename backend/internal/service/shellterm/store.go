@@ -19,6 +19,9 @@ type ShellTerminalRecord struct {
 	AppRunID   string
 	CreatedAt  time.Time
 	Transient  bool // Trusted auth terminal, owned by its app launch.
+	// PreviewCapabilityVerifier authorizes only managed preview lifecycle calls
+	// from this session-scoped shell; the bearer stays in its process environment.
+	PreviewCapabilityVerifier string
 }
 
 // Store is the shell terminal service's persistence surface. The SQLite store

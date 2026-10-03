@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
-import type { EndpointKind } from "./endpoints";
+import { normalizeServerHost, type EndpointKind } from "./endpoints";
 import { useCallback, useEffect, useState } from "react";
 
 // The user points the app at their AO daemon (over Tailscale/LAN). We store the
@@ -41,17 +41,13 @@ export const DEFAULT_CONFIG: ServerConfig = {
 };
 
 export function authHeaders(cfg: ServerConfig): Record<string, string> {
-	return cfg.password ? { Authorization: `Bearer ${cfg.password}` } : {};
+	return {
+		...(cfg.password ? { Authorization: `Bearer ${cfg.password}` } : {}),
+		...(cfg.hostId ? { "X-AO-Expected-Host-ID": cfg.hostId } : {}),
+	};
 }
 
-// Strip a pasted scheme (http://, ws://, …) and trailing slashes so we never
-// build a double-scheme URL like "http://https://host".
-export function normalizeServerHost(host: string): string {
-	return host
-		.trim()
-		.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
-		.replace(/\/+$/, "");
-}
+export { normalizeServerHost } from "./endpoints";
 
 // Non-secret host/port/TLS config lives in AsyncStorage (plaintext app sandbox).
 const KEY = "ao.serverConfig";

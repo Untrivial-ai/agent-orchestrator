@@ -1,9 +1,10 @@
-import { Bot, Disc3, Loader2, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Loader2, MonitorCog, Play, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudSession } from "../lib/cloud-session";
 import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
 import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
@@ -12,7 +13,17 @@ import { CuesSettings } from "./CuesDialog";
 import { DialogHeader, settingsDialogBodyClass, settingsDialogHeaderClass, settingsDialogSurfaceClass } from "./ui/dialog";
 import { type GlobalSettingsSection, type ProjectSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
+import { labelForHost } from "../lib/host-clients";
+import { LOCAL_HOST, refKey } from "../lib/hosts";
 import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCatalog";
+
+// Internal testers who see the Coder (bring-your-own) settings page in addition
+// to @11x.ai users, so the flow can be exercised on non-11x accounts.
+const CODER_PAGE_TEST_EMAILS = new Set([
+	"prateekkarnal77@gmail.com",
+	"pritommazumdar1995@gmail.com",
+	"c.mohak2004@gmail.com",
+]);
 
 function initialProjectSaveState(): ProjectSettingsSaveState {
 	return { phase: "idle" };
@@ -23,7 +34,7 @@ export function SettingsDialog() {
 	const projectSettings = settingsModal?.scope === "project" ? settingsModal : settingsModal?.returnTo;
 	return (
 		<>
-			{projectSettings && <SettingsDialogLayer key={projectSettings.projectId} settingsModal={projectSettings} />}
+			{projectSettings && <SettingsDialogLayer key={refKey({ host: projectSettings.hostId ?? LOCAL_HOST, id: projectSettings.projectId })} settingsModal={projectSettings} />}
 			{settingsModal?.scope === "global" && <SettingsDialogLayer key="global" settingsModal={settingsModal} />}
 		</>
 	);
@@ -35,6 +46,11 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
+	const developerMode = useUiStore((state) => state.developerMode);
+	// The bring-your-own-Coder page is for @11x.ai users, plus a small allowlist
+	// of internal testers so the flow can be exercised on non-11x accounts.
+	const email = (useCloudSession().session?.user.email ?? "").toLowerCase();
+	const is11x = email.endsWith("@11x.ai") || CODER_PAGE_TEST_EMAILS.has(email);
 
 	const displaySettings = settingsModal;
 	// The selected page includes several store/query subscribers. Mount it one
@@ -55,7 +71,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	}, [deferSettingsBody, settingsModal]);
 	const isBodyReady = bodySettings === displaySettings;
 
-	const globalSections = visibleGlobalSettings({ cloudEnabled });
+	const globalSections = visibleGlobalSettings({ cloudEnabled, developerMode, is11x });
+	const remoteHostId = displaySettings?.scope === "project" ? displaySettings.hostId : undefined;
 
 	const projectSections: Array<{
 		id: ProjectSettingsSection;
@@ -64,12 +81,13 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	}> = [
 		{ id: "general", label: t("settings.project.general"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
-		{ id: "cues", label: t("cues.title"), icon: Disc3 },
 	];
+	if (!remoteHostId) projectSections.push({ id: "cues", label: t("cues.title"), icon: Play });
 
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [focusAgentId, setFocusAgentId] = useState<string>();
+	const [harnessView, setHarnessView] = useState<"local" | "cloud">();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 	const [cueBusy, setCueBusy] = useState(false);
@@ -78,7 +96,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.general"))
-		: globalSettingsItem(activeSection, { cloudEnabled }).label(t);
+		: globalSettingsItem(activeSection, { cloudEnabled, developerMode, is11x }).label(t);
 
 	const closeSettingsDialog = () => {
 		if (cueBusy) return;
@@ -105,7 +123,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	};
 	useEffect(() => {
 		if (!closeWhenSavedRef.current) return;
-		if (projectSaveState.phase === "failed") {
+		if (projectSaveState.phase === "failed" || projectSaveState.replacementError) {
 			closeWhenSavedRef.current = false;
 		} else if (!projectSaveState.dirty && !projectSaveState.requestPending &&
 			(projectSaveState.phase === "saved" || projectSaveState.phase === "idle")) {
@@ -134,17 +152,18 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	useEffect(() => {
 		if (settingsModal?.scope === "global") {
-			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled }).id);
+			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled, developerMode, is11x }).id);
 		}
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection(settingsModal.section ?? "general");
 			setProjectSaveState(initialProjectSaveState());
 			setCueBusy(false);
 		}
-	}, [cloudEnabled, settingsModal]);
+	}, [cloudEnabled, developerMode, is11x, settingsModal]);
 
 	useEffect(() => {
 		setFocusAgentId(settingsModal?.scope === "global" ? settingsModal.focusAgentId : undefined);
+		setHarnessView(settingsModal?.scope === "global" ? settingsModal.harnessView : undefined);
 	}, [settingsModal]);
 
 	useEffect(() => {
@@ -189,8 +208,14 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 					)}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onEscapeKeyDown={(event) => {
-						if (contentRef.current?.contains(event.target as Node)) return;
 						const target = event.target instanceof Element ? event.target : null;
+						// An in-place edit (a profile rename) takes Escape to cancel itself,
+						// not to close Settings around it.
+						if (target?.closest("[data-settings-inline-edit]")) {
+							event.preventDefault();
+							return;
+						}
+						if (contentRef.current?.contains(event.target as Node)) return;
 						const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
 						const nestedPopup = [target, activeElement].some((element) => element?.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]'));
 						if (nestedPopup) event.preventDefault();
@@ -228,11 +253,12 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							{isProjectSettings && activeProjectSection !== "cues" &&
 								(projectSaveState.phase === "failed" ||
 									projectSaveState.phase === "pending" ||
-									projectSaveState.phase === "saving") && (
+									projectSaveState.phase === "saving" ||
+									(remoteHostId && projectSaveState.replacementError)) && (
 								<div className="mt-auto border-t border-(--color-border-settings-dialog-header) px-4 py-3 text-xs" role="status" aria-live="polite">
-									{projectSaveState.phase === "failed" ? (
+									{projectSaveState.phase === "failed" || (remoteHostId && projectSaveState.replacementError) ? (
 										<div className="space-y-2 text-error">
-											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? t("settings.project.saveFailed")}</p>
+											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? projectSaveState.replacementError ?? t("settings.project.saveFailed")}</p>
 											<button className="text-settings-label underline underline-offset-2" onClick={() => (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit()} type="button">{t("settings.models.retry")}</button>
 										</div>
 									) : (
@@ -248,7 +274,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 						{/* Main area — same bg as the app page */}
 						<div className="flex min-w-0 flex-1 flex-col bg-card">
 							<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 pb-3")}>
-								<Dialog.Title className="text-2xl font-bold text-foreground">{activeLabel}</Dialog.Title>
+								<Dialog.Title className="text-2xl font-bold text-foreground">{activeLabel}{remoteHostId && <span className="ml-2 text-sm font-normal text-muted-foreground">· {labelForHost(remoteHostId) ?? remoteHostId}</span>}</Dialog.Title>
 								<Dialog.Description className="sr-only">
 									{isProjectSettings
 										? t("settings.project.dialogDescription")
@@ -269,12 +295,12 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							</DialogHeader>
 							<div aria-busy={!isBodyReady} className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
 								{isBodyReady ? (
-									displaySettings?.scope === "project" && activeProjectSection === "cues" ? (
+									displaySettings?.scope === "project" && !remoteHostId && activeProjectSection === "cues" ? (
 										<CuesSettings projectId={displaySettings.projectId} onBusyChange={setCueBusy} />
 									) : displaySettings?.scope === "project" ? (
-										<ProjectSettingsForm projectId={displaySettings.projectId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
+										<ProjectSettingsForm projectId={displaySettings.projectId} hostId={remoteHostId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
 									) : (
-										<GlobalSettingsForm cloudEnabled={cloudEnabled} focusAgentId={focusAgentId} section={activeSection} />
+										<GlobalSettingsForm cloudEnabled={cloudEnabled} is11x={is11x} focusAgentId={focusAgentId} hostId={displaySettings?.scope === "global" ? displaySettings.hostId : undefined} harnessView={harnessView} section={activeSection} />
 									)
 								) : (
 									<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />

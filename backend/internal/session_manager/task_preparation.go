@@ -270,6 +270,12 @@ func (m *Manager) discardClaimedTaskPreparation(ctx context.Context, prep *taskP
 	defer m.cleanupSystemPromptDir(prep.record.ID)
 	if err := m.cleanupTaskPreparation(ctx, prep); err != nil {
 		m.logger.Warn("claimed task preparation cleanup failed", "sessionID", prep.record.ID, "error", err)
+		m.taskPreparationsMu.Lock()
+		prep.cancelled = true
+		token := domain.TaskPreparationToken(prep.record.ID)
+		m.taskPreparations[token] = prep
+		m.scheduleTaskPreparationCleanup(token, prep)
+		m.taskPreparationsMu.Unlock()
 	}
 }
 

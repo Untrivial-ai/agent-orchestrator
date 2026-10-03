@@ -49,6 +49,13 @@ describe("readRemotes", () => {
 });
 
 describe("addRemote", () => {
+	it("creates an isolated AO_DATA_DIR before saving the first host", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "ao-remotes-isolated-"));
+		const path = join(dir, "data", "remotes.json");
+		await addRemote(path, { hostId: "h_workbox", label: "workbox", url: "http://192.0.2.1:3011", password: "pw" });
+		expect((await readRemotes(path))[0]?.hostId).toBe("h_workbox");
+	});
+
 	it("creates the file 0600 when absent", async () => {
 		const path = await tempFile();
 		await addRemote(path, { label: "workbox", url: "http://192.0.2.1:3011", password: "pw" });
@@ -78,6 +85,12 @@ describe("addRemote", () => {
 		await addRemote(path, { label: "new", url: "http://192.0.2.1:1", password: "z" });
 		const remotes = JSON.parse(await readFile(path, "utf8")).remotes;
 		expect(remotes).toEqual([{ label: "new", url: "http://192.0.2.1:1", password: "z" }]);
+	});
+
+	it("moves one host from its LAN address to its Tailscale address", async () => {
+		const path = await tempFile('{"remotes":[{"hostId":"h_workbox","label":"workbox","url":"http://192.0.2.1:1","password":"x"}]}');
+		await addRemote(path, { hostId: "h_workbox", label: "workbox", url: "https://workbox.tailnet", password: "x" });
+		expect((await readRemotes(path)).map(({ url }) => url)).toEqual(["https://workbox.tailnet"]);
 	});
 });
 

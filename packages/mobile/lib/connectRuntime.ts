@@ -9,10 +9,17 @@
  * until it has been run. See docs for the local end-to-end check.
  */
 import { type ConnectDeps, connectHost, type ConnectResult } from "./connect";
+import type { ServerConfig } from "./config";
 import { type Endpoint, endpointBaseUrl } from "./endpoints";
 import { shouldRetryProbe, TUNNEL_PROBE_RETRY_DELAY_MS } from "./probeRetry";
 import { adoptHostIdentity, findHost, touchHost, updateHostEndpoints } from "./hosts";
-import { type ProbeAnswer, raceEndpoints } from "./race";
+import { IncompatibleHostVersionError, type ProbeAnswer, raceEndpoints } from "./race";
+
+function identityHost(body: { hostId?: unknown; apiVersion?: unknown }): string {
+	const hostId = typeof body.hostId === "string" ? body.hostId : "";
+	if (hostId && body.apiVersion !== 1) throw new IncompatibleHostVersionError(hostId);
+	return hostId;
+}
 
 /** How long a single endpoint gets to identify itself.
  *
@@ -36,6 +43,7 @@ export async function probeEndpoint(endpoint: Endpoint, signal: AbortSignal): Pr
 			return await probeOnce(endpoint, signal);
 		} catch (e) {
 			if (signal.aborted) throw e; // The race already has a winner.
+			if (e instanceof IncompatibleHostVersionError) throw e;
 			if (!shouldRetryProbe(endpoint.kind, Date.now() - startedAt)) throw e;
 			await waitOrAbort(TUNNEL_PROBE_RETRY_DELAY_MS, signal);
 		}
@@ -69,11 +77,11 @@ async function probeOnce(endpoint: Endpoint, signal: AbortSignal): Promise<Probe
 			signal: controller.signal,
 		});
 		if (!res.ok) throw new Error(`identity probe returned ${res.status}`);
-		const body = (await res.json()) as { hostId?: unknown };
-		if (typeof body.hostId !== "string" || body.hostId === "") {
+		const hostId = identityHost((await res.json()) as { hostId?: unknown; apiVersion?: unknown });
+		if (!hostId) {
 			throw new Error("identity probe returned no host id");
 		}
-		return { hostId: body.hostId };
+		return { hostId };
 	} finally {
 		clearTimeout(timeout);
 		signal.removeEventListener("abort", onOuterAbort);
@@ -92,8 +100,27 @@ export async function probeIdentity(cfg: {
 	const base = `${cfg.secure ? "https" : "http"}://${cfg.host}:${cfg.httpPort}`;
 	const res = await fetch(`${base}/api/v1/identity`, { method: "GET" });
 	if (!res.ok) throw new Error(`identity probe returned ${res.status}`);
-	const body = (await res.json()) as { hostId?: unknown };
-	return typeof body.hostId === "string" ? body.hostId : "";
+	return identityHost((await res.json()) as { hostId?: unknown; apiVersion?: unknown });
+}
+
+/** On a host mismatch (or ambiguous auth rejection), re-race verified endpoints. */
+export async function rejectedEndpointNeedsRace(cfg: ServerConfig, status: number | undefined): Promise<boolean> {
+	// A 429 is a lockout, and an unidentified legacy config cannot be checked.
+	if (!cfg.hostId) return false;
+	if (status === 421) return true;
+	if (status !== 401 && status !== 403) return false;
+	try {
+		// The rejected URL just answered, so one bounded probe is enough here.
+		const answer = await probeOnce({
+			kind: cfg.endpointKind ?? "lan",
+			host: cfg.host,
+			port: Number(cfg.httpPort),
+			secure: !!cfg.secure,
+		}, new AbortController().signal);
+		return answer.hostId !== cfg.hostId;
+	} catch {
+		return true;
+	}
 }
 
 /**
@@ -113,12 +140,16 @@ export const ENDPOINT_REFRESH_TIMEOUT_MS = 5_000;
  * control routes are 404'd on the LAN listener, which is the only listener a
  * phone can reach.
  */
-async function fetchAdvertisedEndpoints(base: string, token: string): Promise<Endpoint[]> {
+async function fetchAdvertisedEndpoints(config: ServerConfig): Promise<Endpoint[]> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), ENDPOINT_REFRESH_TIMEOUT_MS);
 	try {
+		const base = `${config.secure ? "https" : "http"}://${config.host}:${config.httpPort}`;
 		const res = await fetch(`${base}/api/v1/endpoints`, {
-			headers: token ? { Authorization: `Bearer ${token}` } : {},
+			headers: {
+				...(config.password ? { Authorization: `Bearer ${config.password}` } : {}),
+				...(config.hostId ? { "X-AO-Expected-Host-ID": config.hostId } : {}),
+			},
 			signal: controller.signal,
 		});
 		if (!res.ok) throw new Error(`endpoint refresh returned ${res.status}`);
@@ -149,10 +180,7 @@ export function runtimeConnectDeps(options: ConnectOptions = {}): ConnectDeps {
 		refreshEndpoints: (config) =>
 			options.refreshEndpoints === false
 				? Promise.resolve([])
-				: fetchAdvertisedEndpoints(
-						`${config.secure ? "https" : "http"}://${config.host}:${config.httpPort}`,
-						config.password,
-					),
+				: fetchAdvertisedEndpoints(config),
 		saveEndpoints: updateHostEndpoints,
 		adoptIdentity: adoptHostIdentity,
 		touch: touchHost,

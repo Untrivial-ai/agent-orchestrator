@@ -14,12 +14,17 @@ import { Info, Pencil } from "lucide-react";
 import type { components } from "../../api/schema";
 import { agentModelsQueryKey, agentModelsQueryOptions, refreshAgentModels, revalidateAgentModels, type AgentModelCatalog } from "../hooks/useAgentModelsQuery";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
-import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useRemoteProjectQuery, workspaceQueryKeyForHost, workspaceQueryOptions } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { clientForHost } from "../lib/host-clients";
+import { useConnectedHosts } from "../hooks/useHostConnection";
+import { LOCAL_HOST, refKey } from "../lib/hosts";
+import { agentModelDisplayLabel, isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { isLaunchableAgent } from "../lib/agent-select-options";
 import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
 import { useSettings } from "../hooks/useSettings";
 import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
@@ -40,7 +45,7 @@ type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 const PERMISSION_MODE_VALUES = ["auto", "accept-edits", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
 
-const projectQueryKey = (id: string) => ["project", id] as const;
+const projectQueryKey = (id: string, hostId?: string) => hostId ? ["project", hostId, id] as const : ["project", id] as const;
 
 type SettingsSaveResult = {
 	savedKey: string;
@@ -61,20 +66,28 @@ export type ProjectSettingsSaveState = {
 
 export function ProjectSettingsForm({
 	projectId,
+	hostId,
 	section = "general",
 	onSaveState,
 }: {
 	projectId: string;
+	hostId?: string;
 	section?: ProjectSettingsSection;
 	onSaveState?: (state: ProjectSettingsSaveState) => void;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const connected = useConnectedHosts();
+	const hostConnected = !hostId || connected.includes(hostId);
+	useEffect(() => {
+		if (!hostConnected) onSaveState?.({ phase: "idle" });
+	}, [hostConnected, onSaveState]);
 
 	const query = useQuery({
-		queryKey: projectQueryKey(projectId),
+		queryKey: projectQueryKey(projectId, hostId),
+		enabled: hostConnected,
 		queryFn: async () => {
-			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+			const { data, error } = await (hostId ? clientForHost(hostId) : apiClient).GET("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
@@ -85,24 +98,29 @@ export function ProjectSettingsForm({
 
 	return (
 		<>
-			{query.isLoading ? (
+			{!hostConnected ? <p role="alert" className="text-pretty text-sm text-error">{t("remote.hostOffline")}</p> : null}
+			{!query.data && hostConnected && query.isLoading ? (
 				<p className="text-sm text-settings-muted">{t("settings.project.loading")}</p>
-			) : query.isError || !query.data ? (
+			) : !query.data && hostConnected ? (
 				<p className="text-sm text-error">{query.error instanceof Error ? query.error.message : t("settings.project.loadFailed")}</p>
-			) : (
+			) : query.data ? (
+				<div hidden={!hostConnected}>
 				<SettingsBody
-					key={projectId}
+					key={refKey({ host: hostId ?? LOCAL_HOST, id: projectId })}
 					project={query.data}
 					onSaved={() =>
-						queryClient.invalidateQueries({ queryKey: workspaceQueryKey }).catch(() => {
+						queryClient.invalidateQueries({ queryKey: workspaceQueryKeyForHost(hostId) }).catch(() => {
 							// Saving succeeds even if the cache refresh fails.
 						})
 					}
 					projectId={projectId}
+					hostId={hostId}
+					hostConnected={hostConnected}
 					section={section}
 					onSaveState={onSaveState}
 				/>
-			)}
+				</div>
+			) : null}
 		</>
 	);
 }
@@ -110,12 +128,16 @@ export function ProjectSettingsForm({
 function SettingsBody({
 	project,
 	projectId,
+	hostId,
+	hostConnected,
 	onSaved,
 	section = "general",
 	onSaveState,
 }: {
 	project: Project;
 	projectId: string;
+	hostId?: string;
+	hostConnected: boolean;
 	onSaved: () => Promise<void>;
 	section?: ProjectSettingsSection;
 	onSaveState?: (state: ProjectSettingsSaveState) => void;
@@ -123,12 +145,13 @@ function SettingsBody({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
-	const workspaceQuery = useWorkspaceQuery();
+	const workspaceQuery = useQuery({ ...workspaceQueryOptions, enabled: !hostId });
+	const remoteProjectQuery = useRemoteProjectQuery(hostId ?? "", projectId);
 	const config = project.config ?? {};
 	const isScratchProject = project.kind === "scratch";
-	const { settings } = useSettings();
+	const { settings } = useSettings(hostId);
 	const intakeVisible = !isScratchProject && !!settings?.trackerIntakeEnabled;
-	const workspace = workspaceQuery.data?.find((item) => item.id === projectId);
+	const workspace = hostId ? remoteProjectQuery.data : workspaceQuery.data?.find((item) => item.id === projectId);
 	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
 	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
 	const [form, setForm] = useState({
@@ -159,6 +182,7 @@ function SettingsBody({
 	const failedKeyRef = useRef<string | null>(null);
 	const lastOrchestratorRef = useRef(config.orchestrator?.agent ?? "");
 	const replacementAttemptedRef = useRef(false);
+	const replacementFailedRef = useRef(false);
 	const [savedAt, setSavedAt] = useState<number | null>(null);
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
@@ -169,13 +193,16 @@ function SettingsBody({
 		reviewer: true,
 	});
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
-	const agentsQuery = useAgentReadinessQuery();
-	useEnsureAgentReadiness();
+	const agentsQuery = useAgentReadinessQuery(true, hostId);
+	useEnsureAgentReadiness({ hostId });
 	useEnsureAgentReadiness({
 		agentIds: [form.workerAgent, form.orchestratorAgent, form.reviewerHarness],
 		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || form.reviewerHarness !== "",
+		hostId,
+		purpose: hostId ? "launch" : "display",
 	});
 	const agentCatalog = agentsQuery.data;
+	const selectableAgents = hostId ? agentCatalog?.agents.filter(isLaunchableAgent) : agentCatalog?.agents;
 
 	const intakeForm: IntakeForm = {
 		enabled: form.intakeEnabled,
@@ -275,18 +302,21 @@ function SettingsBody({
 						),
 						autoReview: values.autoReview,
 					};
-			const { error } = await apiClient.PUT("/api/v1/projects/{id}", {
+			const { error } = await (hostId ? clientForHost(hostId) : apiClient).PUT("/api/v1/projects/{id}", {
 				params: { path: { id: projectId } },
 				body: { displayName, config: next },
 			});
 			if (error) throw new Error(apiErrorMessage(error));
-			const replaceOrchestrator = values.orchestratorAgent !== lastOrchestratorRef.current ||
+			const replaceOrchestrator = replacementFailedRef.current || values.orchestratorAgent !== lastOrchestratorRef.current ||
 				(Boolean(activeOrchestrator && activeOrchestrator.provider !== values.orchestratorAgent) && !replacementAttemptedRef.current);
 			lastOrchestratorRef.current = values.orchestratorAgent;
 			if (replaceOrchestrator) {
 				replacementAttemptedRef.current = true;
 				try {
-					const sessionId = await spawnOrchestrator(projectId, "settings", true);
+					const sessionId = hostId
+						? await openRemoteOrchestrator(hostId, projectId, undefined, undefined, true, "settings")
+						: await spawnOrchestrator(projectId, "settings", true);
+					replacementFailedRef.current = false;
 					return {
 						replacementError: null,
 						replacementSessionId: sessionId,
@@ -295,6 +325,7 @@ function SettingsBody({
 						savedKey,
 					} satisfies SettingsSaveResult;
 				} catch (error) {
+					replacementFailedRef.current = true;
 					const replacementFailure: OrchestratorReplacementFailure = {
 						message: error instanceof Error ? error.message : t("settings.project.replaceOrchestratorFailed"),
 						...(error instanceof OrchestratorSpawnError
@@ -331,11 +362,12 @@ function SettingsBody({
 			setSavedAt(Date.now());
 			setReplacementError(result.replacementError);
 			setValidationError(null);
-			void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+			void queryClient.invalidateQueries({ queryKey: projectQueryKey(projectId, hostId) });
+			void queryClient.invalidateQueries({ queryKey: hostId ? ["project-config", hostId, projectId] : ["project-config", projectId] });
 			void onSaved();
 			if (result.replacementFailure) {
-				setOrchestratorReplacementError(projectId, result.replacementFailure);
-				if (result.spawnError) captureOrchestratorReplacementFailure(result.spawnError, projectId);
+				if (!hostId) setOrchestratorReplacementError(projectId, result.replacementFailure);
+				if (result.spawnError) captureOrchestratorReplacementFailure(result.spawnError, hostId ? refKey({ host: hostId, id: projectId }) : projectId);
 			}
 		},
 		onError: (_error, values) => {
@@ -356,6 +388,7 @@ function SettingsBody({
 	}, [mutation.isPending]);
 
 	useEffect(() => {
+		if (!hostConnected) return;
 		const key = JSON.stringify(form);
 		if (key === lastSavedRef.current || key === failedKeyRef.current || mutation.isPending) return;
 		const timeout = window.setTimeout(() => {
@@ -386,7 +419,7 @@ function SettingsBody({
 			mutation.mutate(form);
 		}, 650);
 		return () => window.clearTimeout(timeout);
-	}, [form, isScratchProject, mutation.isPending, project.name, t, tuningValidity]);
+	}, [form, hostConnected, isScratchProject, mutation.isPending, project.name, t, tuningValidity]);
 
 	useEffect(() => {
 		const mutationError = mutation.isError ? (mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed")) : undefined;
@@ -434,6 +467,7 @@ function SettingsBody({
 			id="project-settings-form"
 			className="project-settings-form gap-5"
 			onSubmit={() => {
+				if (!hostConnected) return;
 				setSavedAt(null);
 				setReplacementError(null);
 				const validation = validateProjectSettings(form, {
@@ -492,7 +526,7 @@ function SettingsBody({
 							id: project.id,
 							kindLabel: projectKindLabel(project.kind, t),
 							path: project.path,
-							pathHref: `file://${encodeURI(project.path)}`,
+							pathHref: hostId ? undefined : `file://${encodeURI(project.path)}`,
 							repo: project.repo,
 							repoHref: project.repo ? repositoryHref(project.repo) : undefined,
 							workspaceRepos: project.kind === "workspace" ? (project.workspaceRepos ?? []) : undefined,
@@ -585,7 +619,8 @@ function SettingsBody({
 								value={form.workerAgent}
 								placeholder={t("settings.project.selectWorker")}
 								label={t("settings.project.defaultWorker")}
-								agents={agentCatalog?.agents}
+								agents={selectableAgents}
+								hostId={hostId}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.workerAgent === ""}
 								onChange={(workerAgent) =>
@@ -604,6 +639,7 @@ function SettingsBody({
 								role="worker"
 								agentId={form.workerAgent}
 								projectId={projectId}
+								hostId={hostId}
 								model={form.workerModel}
 								mode={form.workerMode}
 								effort={form.workerEffort}
@@ -623,7 +659,8 @@ function SettingsBody({
 								value={form.orchestratorAgent}
 								placeholder={t("settings.project.selectOrchestrator")}
 								label={t("settings.project.defaultOrchestrator")}
-								agents={agentCatalog?.agents}
+								agents={selectableAgents}
+								hostId={hostId}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								invalid={validationError !== null && form.orchestratorAgent === ""}
 								onChange={(orchestratorAgent) =>
@@ -642,6 +679,7 @@ function SettingsBody({
 								role="orchestrator"
 								agentId={form.orchestratorAgent}
 								projectId={projectId}
+								hostId={hostId}
 								model={form.orchestratorModel}
 								mode={form.orchestratorMode}
 								effort={form.orchestratorEffort}
@@ -666,6 +704,7 @@ function SettingsBody({
 									model={form.reviewerModel}
 									mode={form.reviewerMode}
 									projectId={projectId}
+									hostId={hostId}
 									harnessOnly
 									defaultHarness={defaultReviewerHarness}
 									triggerClassName="w-full"
@@ -684,7 +723,7 @@ function SettingsBody({
 										}))
 									}
 									ariaLabel={t("settings.project.defaultReviewer")}
-									agents={agentCatalog?.agents}
+									agents={selectableAgents}
 									disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								/>
 							}
@@ -693,6 +732,7 @@ function SettingsBody({
 									role="reviewer"
 									agentId={form.reviewerHarness || defaultReviewerHarness}
 									projectId={projectId}
+									hostId={hostId}
 									model={form.reviewerModel}
 									mode={form.reviewerMode}
 									effort={form.reviewerEffort}
@@ -745,6 +785,7 @@ function AgentModelField({
 	role,
 	agentId,
 	projectId,
+	hostId,
 	model,
 	mode,
 	effort,
@@ -756,6 +797,7 @@ function AgentModelField({
 	role: "worker" | "orchestrator" | "reviewer";
 	agentId: string;
 	projectId: string;
+	hostId?: string;
 	model: string;
 	mode: string;
 	effort: string;
@@ -766,20 +808,20 @@ function AgentModelField({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const query = useQuery(agentModelsQueryOptions(agentId, projectId));
+	const query = useQuery(agentModelsQueryOptions(agentId, projectId, hostId));
 	const catalog: AgentModelCatalog | undefined = query.data;
 	const revalidationQuery = useQuery({
-		queryKey: ["agent-model-revalidation", agentId, projectId, catalog?.validatedAt ?? ""],
-		queryFn: () => revalidateAgentModels(agentId, projectId),
+		queryKey: ["agent-model-revalidation", hostId ?? LOCAL_HOST, agentId, projectId, catalog?.validatedAt ?? ""],
+		queryFn: () => revalidateAgentModels(agentId, projectId, hostId),
 		enabled: agentId !== "" && catalog?.refreshRecommended === true,
 		staleTime: Number.POSITIVE_INFINITY,
 		retry: false,
 	});
 	useEffect(() => {
 		if (revalidationQuery.data) {
-			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), revalidationQuery.data);
+			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId, hostId), revalidationQuery.data);
 		}
-	}, [agentId, projectId, queryClient, revalidationQuery.data]);
+	}, [agentId, hostId, projectId, queryClient, revalidationQuery.data]);
 	const isMode = catalog?.selectionMode === "mode";
 	const label = t(`settings.models.${role}${isMode ? "Mode" : "Model"}`);
 	const warning =
@@ -802,7 +844,7 @@ function AgentModelField({
 		const selectedMode = isConcreteModelID(mode) ? mode : "";
 		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 			value: item.id,
-			label: modelChoiceLabel(item),
+			label: agentModelDisplayLabel(agentId, modelChoiceLabel(item)),
 		}));
 		return (
 			<>
@@ -830,8 +872,8 @@ function AgentModelField({
 
 	const customModelEntry = catalog?.customModelEntry ?? (catalog?.allowCustom ? "direct" : "none");
 	const refreshCatalog = async () => {
-		const refreshed = await refreshAgentModels(agentId, projectId);
-		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), refreshed);
+		const refreshed = await refreshAgentModels(agentId, projectId, hostId);
+		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId, hostId), refreshed);
 	};
 	const selectCatalogModel = (value: string) => {
 		onModelChange(value);
@@ -841,6 +883,10 @@ function AgentModelField({
 		onModelChange(value);
 		onModeChange("");
 	};
+	const displayModels = (catalog?.models ?? []).map((item) => ({
+		...item,
+		label: agentModelDisplayLabel(agentId, item.label),
+	}));
 	return (
 		<>
 			<div className="min-w-0">
@@ -848,7 +894,7 @@ function AgentModelField({
 					<AgentModelCombobox
 						aria-label={label}
 						value={model}
-						models={catalog?.models ?? []}
+						models={displayModels}
 						allowCustom={catalog?.allowCustom}
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}
@@ -922,7 +968,7 @@ function projectKindLabel(kind: string, t: TFunction): string {
 	}
 }
 
-function repositoryHref(repository: string): string {
+function repositoryHref(repository: string): string | undefined {
 	if (/^https?:\/\//i.test(repository)) return repository;
 	if (repository.startsWith("git@")) {
 		const [host, path] = repository.slice(4).split(":", 2);
@@ -933,10 +979,10 @@ function repositoryHref(repository: string): string {
 			const parsed = new URL(repository);
 			return `https://${parsed.hostname}${parsed.pathname.replace(/\.git$/, "")}`;
 		} catch {
-			return repository;
+			return undefined;
 		}
 	}
-	return repository;
+	return undefined;
 }
 
 function scratchSupportedConfig(config: ProjectConfig): ProjectConfig {

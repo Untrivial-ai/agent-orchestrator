@@ -345,6 +345,9 @@ func New(options Options) *Server {
 	router.Get("/healthz", server.health)
 	router.Get("/readyz", server.ready)
 	router.Get("/github/healthz", server.githubHealth)
+	// Public HTTPS bounce page for the desktop sign-in flow: WorkOS redirects the
+	// browser here, and it hands the OAuth result off to the ao-app:// deep link.
+	router.Get("/app/auth/return", server.appAuthReturn)
 	if server.github != nil {
 		router.Get("/api/cloud/v1/github/install/setup", server.githubSetupCallback)
 		router.Get("/api/cloud/v1/github/oauth/callback", server.githubOAuthCallback)
@@ -470,6 +473,9 @@ func New(options Options) *Server {
 			router.Put("/provider-connections/agents/{agent}", server.putAgentConnection)
 			router.Delete("/provider-connections/agents/{agent}", server.deleteAgentConnection)
 			router.Post("/provider-connections/agents/{agent}/promote", server.promoteAgentConnection)
+			router.Get("/coder-config", server.getOrgCoderConfig)
+			router.Put("/coder-config", server.putOrgCoderConfig)
+			router.Delete("/coder-config", server.deleteOrgCoderConfig)
 			router.Get("/sessions", server.listSessions)
 			router.Post("/sessions", server.createSession)
 			router.Get("/sandbox/coder/templates", server.listCoderTemplates)

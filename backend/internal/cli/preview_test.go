@@ -12,10 +12,12 @@ import (
 // previewCapture records the request body and path the CLI hit, plus whether
 // the daemon was contacted at all.
 type previewCapture struct {
-	body   string
-	path   string
-	method string
-	called bool
+	body              string
+	path              string
+	method            string
+	previewCapability string
+	browserCapability string
+	called            bool
 }
 
 // previewServer wires an httptest server expecting POST or DELETE on
@@ -65,6 +67,8 @@ func previewLifecycleServer(t *testing.T, status int, respBody string) (*httptes
 		capture.body = string(body)
 		capture.path = r.URL.Path
 		capture.method = r.Method
+		capture.previewCapability = r.Header.Get(previewCapabilityHeader)
+		capture.browserCapability = r.Header.Get(browserCapabilityHeader)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, respBody)
@@ -153,6 +157,9 @@ func TestPreviewStartUsesNamedConfigurationAndPrintsReadyURL(t *testing.T) {
 	if capture.method != http.MethodPost || capture.path != "/api/v1/sessions/aa-47/preview/server" {
 		t.Fatalf("request = %s %s", capture.method, capture.path)
 	}
+	if capture.browserCapability != "preview-capability" || capture.previewCapability != "" {
+		t.Fatalf("worker capability headers = browser %q preview %q", capture.browserCapability, capture.previewCapability)
+	}
 	if capture.body != `{"configuration":"web"}` {
 		t.Fatalf("body = %q", capture.body)
 	}
@@ -191,6 +198,51 @@ func TestPreviewStatusAndStopUseManagedServerRoute(t *testing.T) {
 				t.Fatalf("JSON output = %q", out)
 			}
 		})
+	}
+}
+
+func TestPreviewServerCommandsUseSessionShellCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		method string
+	}{
+		{"start", []string{"preview", "start"}, http.MethodPost},
+		{"status", []string{"preview", "status"}, http.MethodGet},
+		{"stop", []string{"preview", "stop"}, http.MethodDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "aa-47")
+			t.Setenv("AO_BROWSER_CAPABILITY", "")
+			t.Setenv("AO_PREVIEW_CAPABILITY", "shell-preview-token")
+			cfg := setConfigEnv(t)
+			srv, capture := previewLifecycleServer(t, http.StatusOK, `{"sessionId":"aa-47","state":"stopped","logs":[]}`)
+			// previewLifecycleServer seeds the worker credential for its other
+			// callers; this shell case intentionally has only preview authority.
+			t.Setenv("AO_BROWSER_CAPABILITY", "")
+			writeRunFileFor(t, cfg, srv)
+			_, stderr, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, tc.args...)
+			if err != nil {
+				t.Fatalf("preview %s: %v (%s)", tc.name, err, stderr)
+			}
+			if capture.method != tc.method || capture.previewCapability != "shell-preview-token" || capture.browserCapability != "" {
+				t.Fatalf("request = %s browser credential %q preview credential %q", capture.method, capture.browserCapability, capture.previewCapability)
+			}
+		})
+	}
+}
+
+func TestPreviewStartWithoutEitherCapabilityIsUsageError(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "aa-47")
+	t.Setenv("AO_BROWSER_CAPABILITY", "")
+	t.Setenv("AO_PREVIEW_CAPABILITY", "")
+	cfg := setConfigEnv(t)
+	srv, capture := previewLifecycleServer(t, http.StatusOK, `{"sessionId":"aa-47","state":"stopped","logs":[]}`)
+	t.Setenv("AO_BROWSER_CAPABILITY", "")
+	writeRunFileFor(t, cfg, srv)
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "preview", "start")
+	if ExitCode(err) != 2 || capture.called {
+		t.Fatalf("missing capability: exit=%d daemon called=%v err=%v", ExitCode(err), capture.called, err)
 	}
 }
 

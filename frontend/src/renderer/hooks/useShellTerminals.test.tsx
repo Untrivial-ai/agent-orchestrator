@@ -9,18 +9,27 @@ const shellStoreMock = vi.hoisted(() => ({
 	setPreference: vi.fn(async () => undefined),
 	preference: { kind: "auto" as string, path: undefined as string | undefined },
 }));
-const { deleteMock, postMock, isWindowsMock } = vi.hoisted(() => ({
+const { deleteMock, getMock, postMock, isWindowsMock, remoteA, remoteB } = vi.hoisted(() => ({
 	deleteMock: vi.fn(),
+	getMock: vi.fn(),
 	postMock: vi.fn(),
 	isWindowsMock: vi.fn(() => false),
+	remoteA: { DELETE: vi.fn(), GET: vi.fn(), PATCH: vi.fn(), POST: vi.fn() },
+	remoteB: { DELETE: vi.fn(), GET: vi.fn(), PATCH: vi.fn(), POST: vi.fn() },
 }));
 const cloudResumeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { DELETE: deleteMock, PATCH: patchMock, POST: postMock },
+	apiClient: { DELETE: deleteMock, GET: getMock, PATCH: patchMock, POST: postMock },
 	apiErrorCode: (error: unknown) =>
 		typeof error === "object" && error !== null && "code" in error ? (error as { code?: string }).code : undefined,
 	hasTrustedApiBaseUrl: () => true,
+}));
+
+vi.mock("../lib/host-clients", () => ({
+	clientForSessionHost: (hostId?: string) => hostId === "host-a" ? remoteA : hostId === "host-b" ? remoteB : {
+		DELETE: deleteMock, GET: getMock, PATCH: patchMock, POST: postMock,
+	},
 }));
 
 vi.mock("../lib/platform", () => ({ isWindowsPlatform: isWindowsMock }));
@@ -36,9 +45,11 @@ vi.mock("../stores/terminal-shell-store", () => ({
 import {
 	type ShellTerminal,
 	shellTerminalsQueryKey,
+	shellTerminalsQueryKeyForHost,
 	useCloseShellTerminal,
 	useOpenShellTerminal,
 	useRenameShellTerminal,
+	useShellTerminals,
 } from "./useShellTerminals";
 
 const shells: ShellTerminal[] = [
@@ -72,14 +83,97 @@ function queryClientWithShells() {
 
 beforeEach(() => {
 	deleteMock.mockReset();
+	getMock.mockReset();
 	patchMock.mockReset();
 	postMock.mockReset();
+	for (const client of [remoteA, remoteB]) {
+		client.DELETE.mockReset();
+		client.GET.mockReset();
+		client.PATCH.mockReset();
+		client.POST.mockReset();
+	}
 	cloudResumeMock.mockReset();
 	cloudResumeMock.mockResolvedValue({ session: { desiredState: "running" } });
 	isWindowsMock.mockReturnValue(false);
 	shellStoreMock.load.mockClear();
 	shellStoreMock.setPreference.mockClear();
 	shellStoreMock.preference = { kind: "auto", path: undefined };
+});
+
+describe("host-scoped shell terminals", () => {
+	it("keeps equal daemon IDs in separate local and remote query caches", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		getMock.mockResolvedValue({ data: { shellTerminals: [{ ...shells[0], title: "local" }] } });
+		remoteA.GET.mockResolvedValue({ data: { shellTerminals: [{ ...shells[0], title: "A" }] } });
+		remoteB.GET.mockResolvedValue({ data: { shellTerminals: [{ ...shells[0], title: "B" }] } });
+		const local = renderHook(() => useShellTerminals(), { wrapper: wrapper(queryClient) });
+		const a = renderHook(() => useShellTerminals("host-a"), { wrapper: wrapper(queryClient) });
+		const b = renderHook(() => useShellTerminals("host-b"), { wrapper: wrapper(queryClient) });
+
+		await waitFor(() => expect([local.result.current.data, a.result.current.data, b.result.current.data]).toEqual([
+			[{ ...shells[0], title: "local" }],
+			[{ ...shells[0], title: "A", hostId: "host-a" }],
+			[{ ...shells[0], title: "B", hostId: "host-b" }],
+		]));
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual(a.result.current.data);
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-b"))).toEqual(b.result.current.data);
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual(local.result.current.data);
+		expect(getMock).toHaveBeenCalledWith("/api/v1/shell-terminals");
+		expect(remoteA.GET).toHaveBeenCalledWith("/api/v1/shell-terminals");
+		expect(remoteB.GET).toHaveBeenCalledWith("/api/v1/shell-terminals");
+	});
+
+	it("opens on the owning host without using the local Windows shell preference", async () => {
+		isWindowsMock.mockReturnValue(true);
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } });
+		queryClient.setQueryData(shellTerminalsQueryKey, [shells[0]]);
+		queryClient.setQueryData(shellTerminalsQueryKeyForHost("host-b"), [shells[0]]);
+		queryClient.setQueryData(shellTerminalsQueryKeyForHost("host-a"), []);
+		remoteA.POST.mockResolvedValue({ data: { shellTerminal: { ...shells[0], sessionId: "same-session" } } });
+		const { result } = renderHook(() => useOpenShellTerminal("host-a"), { wrapper: wrapper(queryClient) });
+
+		let pending!: ShellTerminal;
+		act(() => { pending = result.current.open({ projectId: "project-a", sessionId: "same-session" }); });
+		expect(pending).toMatchObject({ hostId: "host-a", sessionId: "same-session", optimistic: true });
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual([pending]);
+		await waitFor(() => expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual([
+			{ ...shells[0], sessionId: "same-session", hostId: "host-a" },
+		]));
+
+		expect(remoteA.POST).toHaveBeenCalledWith("/api/v1/shell-terminals", {
+			body: { projectId: "project-a", sessionId: "same-session" },
+		});
+		expect(postMock).not.toHaveBeenCalled();
+		expect(shellStoreMock.load).not.toHaveBeenCalled();
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-b"))).toEqual([shells[0]]);
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shells[0]]);
+	});
+
+	it("renames and closes only the matching host's equal handle", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } });
+		queryClient.setQueryData(shellTerminalsQueryKey, [shells[0]]);
+		queryClient.setQueryData(shellTerminalsQueryKeyForHost("host-a"), [{ ...shells[0], hostId: "host-a" }]);
+		queryClient.setQueryData(shellTerminalsQueryKeyForHost("host-b"), [{ ...shells[0], hostId: "host-b" }]);
+		remoteA.PATCH.mockResolvedValue({ data: { shellTerminal: { ...shells[0], title: "renamed" } } });
+		remoteA.DELETE.mockResolvedValue({});
+		const rename = renderHook(() => useRenameShellTerminal("host-a"), { wrapper: wrapper(queryClient) });
+		const close = renderHook(() => useCloseShellTerminal("host-a"), { wrapper: wrapper(queryClient) });
+
+		await act(async () => rename.result.current.mutateAsync({ handleId: shells[0].handleId, title: "renamed" }));
+		expect(remoteA.PATCH).toHaveBeenCalledWith("/api/v1/shell-terminals/{handleId}", {
+			params: { path: { handleId: shells[0].handleId } }, body: { title: "renamed" },
+		});
+		expect(queryClient.getQueryData<ShellTerminal[]>(shellTerminalsQueryKeyForHost("host-a"))?.[0]?.title).toBe("renamed");
+		await act(async () => close.result.current.mutateAsync(shells[0].handleId));
+		expect(remoteA.DELETE).toHaveBeenCalledWith("/api/v1/shell-terminals/{handleId}", {
+			params: { path: { handleId: shells[0].handleId } },
+		});
+		expect(patchMock).not.toHaveBeenCalled();
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual([]);
+		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-b"))).toEqual([{ ...shells[0], hostId: "host-b" }]);
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shells[0]]);
+	});
 });
 
 describe("useOpenShellTerminal", () => {

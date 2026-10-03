@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -170,10 +171,20 @@ func (c *NotificationsController) stream(w http.ResponseWriter, r *http.Request)
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, "event: ready\ndata: {}\n\n"); err != nil {
+		return
+	}
 	flusher.Flush()
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
 
 	for {
 		select {
+		case <-heartbeat.C:
+			if _, err := fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case <-r.Context().Done():
 			return
 		case event, ok := <-ch:

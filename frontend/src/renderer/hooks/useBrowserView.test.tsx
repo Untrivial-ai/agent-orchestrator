@@ -8,6 +8,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import { aoBridge } from "../lib/bridge";
 
 type Listener = (state: BrowserNavState) => void;
 type TabsListener = (state: import("../../main/browser-view-host").BrowserTabsState) => void;
@@ -1477,6 +1478,47 @@ describe("useBrowserView", () => {
 			}),
 		);
 		expect(bridge.navigate).toHaveBeenCalledTimes(3);
+	});
+
+	it("never opens a disconnected remote localhost preview on this machine", async () => {
+		const browser = setupBridge();
+		const resolve = vi.spyOn(aoBridge.remotes, "previewUrl").mockRejectedValueOnce(new Error("disconnected"))
+			.mockResolvedValue("http://ao-preview-abc.localhost:4000/");
+		vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const { rerender } = renderHook(({ proxyBase }) => useBrowserView({
+			sessionId: "remote:box-a:ao-1",
+			origin: { hostId: "box-a", sessionId: "ao-1", proxyBase },
+			active: true,
+			poppedOut: false,
+			previewUrl: "http://localhost:5173/",
+			previewRevision: 1,
+		}), { initialProps: { proxyBase: "" } });
+		await waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
+		expect(browser.navigate).not.toHaveBeenCalled();
+		rerender({ proxyBase: "http://127.0.0.1:4000/token" });
+		await waitFor(() => expect(browser.navigate).toHaveBeenCalledWith({
+			viewId: "42:remote:box-a:ao-1", url: "http://ao-preview-abc.localhost:4000/",
+		}));
+		expect(browser.navigate).not.toHaveBeenCalledWith(expect.objectContaining({ url: "http://localhost:5173/" }));
+	});
+
+	it("revokes a remote preview origin when its target clears or session terminates", async () => {
+		const browser = setupBridge();
+		const resolve = vi.spyOn(aoBridge.remotes, "previewUrl").mockImplementation(async (_hostId, _sessionId, source) =>
+			source ? "http://ao-preview-abc.localhost:4000/" : "");
+		const { rerender } = renderHook(({ previewUrl, previewRevision, terminated }) => useBrowserView({
+			sessionId: "remote:box-a:ao-1",
+			origin: { hostId: "box-a", sessionId: "ao-1", proxyBase: "http://127.0.0.1:4000/token" },
+			active: true, poppedOut: false, previewUrl, previewRevision, terminated,
+		}), { initialProps: { previewUrl: "http://localhost:5173/", previewRevision: 1, terminated: false } });
+		await waitFor(() => expect(resolve).toHaveBeenCalledWith("box-a", "ao-1", "http://localhost:5173/"));
+		rerender({ previewUrl: "", previewRevision: 2, terminated: false });
+		await waitFor(() => expect(resolve).toHaveBeenLastCalledWith("box-a", "ao-1", ""));
+		rerender({ previewUrl: "http://localhost:5173/", previewRevision: 3, terminated: false });
+		await waitFor(() => expect(resolve).toHaveBeenLastCalledWith("box-a", "ao-1", "http://localhost:5173/"));
+		rerender({ previewUrl: "http://localhost:5173/", previewRevision: 3, terminated: true });
+		await waitFor(() => expect(resolve).toHaveBeenLastCalledWith("box-a", "ao-1", ""));
+		expect(browser.navigate).not.toHaveBeenCalledWith(expect.objectContaining({ url: "http://localhost:5173/" }));
 	});
 
 	it("keeps the user's manual navigation on session switch-back and only re-navigates on a new preview", async () => {

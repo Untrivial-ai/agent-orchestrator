@@ -78,6 +78,19 @@ describe("connectHost", () => {
 		expect(d.saveEndpoints).toHaveBeenCalledWith("h_paired", [lan, tunnel]);
 	});
 
+	it("keeps a working NAT endpoint when the daemon advertises an unreachable address of the same kind", async () => {
+		const manual: Endpoint = { kind: "lan", host: "10.0.2.2", port: 13011, secure: false };
+		const d = deps({
+			findHost: vi.fn(async () => host({ endpoints: [manual] })),
+			race: vi.fn(async () => ({ ok: true as const, endpoint: manual, hostId: "h_paired" })),
+			refreshEndpoints: vi.fn(async () => [lan]),
+		});
+
+		await connectHost("h_paired", d);
+
+		expect(d.saveEndpoints).toHaveBeenCalledWith("h_paired", [lan, manual]);
+	});
+
 	// A quick tunnel takes ~34s to restart and settle, and the daemon advertises
 	// no tunnel for that whole window. Replacing the stored list wholesale there
 	// erased the only endpoint that works away from home — and nothing refreshes

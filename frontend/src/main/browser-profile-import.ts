@@ -1262,7 +1262,9 @@ function normalizeCookieRows(
 				url,
 				name,
 				value,
-				domain,
+				// Passing domain turns a host-only cookie into a domain cookie.
+				// Electron also rejects __Host- cookies when domain is set.
+				...(domain.startsWith(".") ? { domain } : {}),
 				path: cookiePath,
 				secure,
 				httpOnly: row.httpOnly === true,

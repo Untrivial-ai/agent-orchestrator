@@ -3,16 +3,18 @@ import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { haptics } from "../../lib/haptics";
+import { hostRouteMatches } from "../../lib/hostRoute";
 import { orchestratorProjectSections, projectDetailSessions, projectPageStats } from "../../lib/orchestratorView";
 import { ProjectPageHeader } from "../../lib/project-card";
 import { StaleBanner } from "../../lib/StaleBanner";
-import { useApp } from "../../lib/store";
+import { HostScope, useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { useOrchestratorLauncher } from "../../lib/useOrchestratorLauncher";
 import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
 import { WorkerBoardList } from "../../lib/worker-board-list";
 import { backOr } from "../../lib/backNavigation";
+import { hostedRowKey } from "../../lib/hostedRows";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
@@ -22,23 +24,30 @@ export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundar
  * archive included — so nothing here has to be relearned.
  */
 export default function ProjectScreen() {
+	const { hostId } = useLocalSearchParams<{ hostId?: string }>();
+	return hostId ? <HostScope key={hostId} hostId={hostId}><ProjectScreenContent /></HostScope> : <ProjectScreenContent />;
+}
+
+function ProjectScreenContent() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
 	const insets = useSafeAreaInsets();
-	const { id } = useLocalSearchParams<{ id: string }>();
-	const { loading, error, refresh, projects, sessions, orchestrators } = useApp();
+	const { id, hostId: routeHostId } = useLocalSearchParams<{ id: string; hostId?: string }>();
+	const { config, currentHostId, connection, loading, error, refresh, projects, sessions, orchestrators } = useApp();
+	const hostMatches = hostRouteMatches(routeHostId, currentHostId);
 	const { busyProjects, openOrchestrator } = useOrchestratorLauncher();
 	const [refreshing, setRefreshing] = useState(false);
 
 	const row = useMemo(
-		() =>
-			orchestratorProjectSections(projects, sessions, orchestrators)
+		() => hostMatches
+			? orchestratorProjectSections(projects, sessions, orchestrators)
 				.flatMap((section) => section.data)
-				.find((candidate) => candidate.project.id === id),
-		[projects, sessions, orchestrators, id],
+				.find((candidate) => candidate.project.id === id)
+			: undefined,
+		[projects, sessions, orchestrators, id, hostMatches],
 	);
-	const projectSessions = useMemo(() => projectDetailSessions(id ?? "", sessions), [id, sessions]);
+	const projectSessions = useMemo(() => hostMatches ? projectDetailSessions(id ?? "", sessions) : [], [hostMatches, id, sessions]);
 	const stats = useMemo(() => projectPageStats(projectSessions, row?.link), [projectSessions, row?.link]);
 
 	const onRefresh = useCallback(async () => {
@@ -52,8 +61,9 @@ export default function ProjectScreen() {
 	}, [refresh]);
 
 	const startTask = () => {
+		if (!hostMatches) return;
 		haptics.tap();
-		router.push({ pathname: "/spawn", params: { projectId: id } });
+		router.push({ pathname: "/spawn", params: { projectId: id, hostId: routeHostId } });
 	};
 
 	return (
@@ -71,13 +81,28 @@ export default function ProjectScreen() {
 					/>
 				}
 			/>
-			<StaleBanner error={!!error} onRetry={onRefresh} />
+			{hostMatches ? <StaleBanner error={!!error} onRetry={onRefresh} /> : null}
 
-			{!row ? (
+			{!hostMatches ? (
+				loading && !config ? (
+					<View style={styles.center}>
+						<ActivityIndicator color={t.accent} />
+					</View>
+				) : (
+					<EmptyState
+						icon="server"
+						title="Project belongs to another machine"
+						message="Open it from that machine's project list."
+						action={<Button title="Open projects" icon="folder" onPress={() => router.navigate("/projects")} />}
+					/>
+				)
+			) : !row ? (
 				loading ? (
 					<View style={styles.center}>
 						<ActivityIndicator color={t.accent} />
 					</View>
+				) : connection !== "open" ? (
+					<EmptyState icon="wifi-off" title="Machine offline" message="This project loads once the app reconnects." />
 				) : (
 					<EmptyState icon="folder" title="Project not found" message="It may have been removed from AO." />
 				)
@@ -92,7 +117,7 @@ export default function ProjectScreen() {
 						<ProjectPageHeader
 							row={row}
 							stats={stats}
-							busy={busyProjects.has(row.project.id)}
+							busy={busyProjects.has(hostedRowKey(currentHostId ?? "", row.project.id))}
 							onPress={openOrchestrator}
 						/>
 					}

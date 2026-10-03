@@ -20,10 +20,17 @@ INSERT INTO sessions (
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, effort, session_permissions,
     created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
-    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed
+    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
+    client_request_id, client_request_hash
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 );
+
+-- name: GetClientRequestSession :one
+SELECT id, client_request_hash, client_request_committed FROM sessions WHERE client_request_id = ?;
+
+-- name: CommitClientRequestSession :execrows
+UPDATE sessions SET client_request_committed = 1 WHERE id = ? AND client_request_id <> '';
 
 -- name: UpdateSession :exec
 UPDATE sessions SET
@@ -265,6 +272,8 @@ UPDATE sessions SET
     auto_inject_ci = sqlc.arg(auto_inject_ci),
     provision_state = sqlc.arg(provision_state),
     provision_error = '',
+    client_request_id = sqlc.arg(client_request_id),
+    client_request_hash = sqlc.arg(client_request_hash),
     is_task_preparation = 0
 WHERE id = sqlc.arg(id) AND is_task_preparation = 1;
 

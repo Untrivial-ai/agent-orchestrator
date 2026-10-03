@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useWorkspaceScope } from "../hooks/useWorkspaceQuery";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { openRemoteOrchestrator } from "../lib/remote-orchestrator";
 import { useUiStore } from "../stores/ui-store";
 import { hasConfiguredOrchestratorAgent, isOrchestratorSession } from "../types/workspace";
 import type { WorkspaceSession } from "../types/workspace";
@@ -18,13 +19,14 @@ import {
 type RestoreUnavailableDialogProps = {
 	open: boolean;
 	session: WorkspaceSession;
+	hostId?: string;
 	onOpenChange: (open: boolean) => void;
 	onRecreated: (newOrchestratorId: string) => void;
 };
 
-export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecreated }: RestoreUnavailableDialogProps) {
+export function RestoreUnavailableDialog({ open, session, hostId, onOpenChange, onRecreated }: RestoreUnavailableDialogProps) {
 	const { t } = useTranslation();
-	const workspaceQuery = useWorkspaceScope(session.workspaceId);
+	const workspaceQuery = useWorkspaceScope(session.workspaceId, undefined, hostId);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const orchestrator = isOrchestratorSession(session);
@@ -36,13 +38,15 @@ export function RestoreUnavailableDialog({ open, session, onOpenChange, onRecrea
 		if (checkingProject) return;
 		if (!hasOrchestratorAgent) {
 			onOpenChange(false);
-			useUiStore.getState().openProjectSettings(session.workspaceId);
+			useUiStore.getState().openProjectSettings(session.workspaceId, hostId);
 			return;
 		}
 		setBusy(true);
 		setError(undefined);
 		try {
-			const id = await spawnOrchestrator(session.workspaceId, "restore_dialog", true);
+			const id = hostId
+				? await openRemoteOrchestrator(hostId, session.workspaceId, undefined, undefined, true, "restore_dialog")
+				: await spawnOrchestrator(session.workspaceId, "restore_dialog", true);
 			onOpenChange(false);
 			onRecreated(id);
 		} catch (err) {

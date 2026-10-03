@@ -67,9 +67,9 @@ export function resolveMarkdownAssetPath(markdownFilePath: string, rawSrc: strin
  * all. Pass the file detail's load timestamp so an image the agent rewrites
  * actually reloads instead of sitting on the copy the browser already has.
  */
-export function buildWorkspaceBlobUrl(sessionId: string, path: string, version: number): string {
+export function buildWorkspaceBlobUrl(sessionId: string, path: string, version: number, apiBaseUrl = getApiBaseUrl()): string {
 	const query = new URLSearchParams({ path, side: "after", v: String(version) });
-	return `${getApiBaseUrl()}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file/blob?${query}`;
+	return `${apiBaseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(sessionId)}/workspace/file/blob?${query}`;
 }
 
 /** `undefined` for an empty src or an absolute one that should pass through untouched. */
@@ -78,8 +78,9 @@ export function resolveMarkdownImageSrc(
 	markdownFilePath: string,
 	rawSrc: string | undefined,
 	version: number,
+	apiBaseUrl?: string,
 ): string | undefined {
 	if (!rawSrc) return undefined;
 	if (isAbsoluteMarkdownAssetSrc(rawSrc)) return rawSrc;
-	return buildWorkspaceBlobUrl(sessionId, resolveMarkdownAssetPath(markdownFilePath, rawSrc), version);
+	return buildWorkspaceBlobUrl(sessionId, resolveMarkdownAssetPath(markdownFilePath, rawSrc), version, apiBaseUrl);
 }

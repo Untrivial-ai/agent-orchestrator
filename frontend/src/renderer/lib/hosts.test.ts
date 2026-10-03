@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLocal, LOCAL_HOST, parseRefKey, refKey, type Ref } from "./hosts";
+import { isLocal, LOCAL_HOST, parseRefKey, refKey, sessionUiKey, type Ref } from "./hosts";
 
 describe("refKey", () => {
 	it("round-trips a local ref", () => {
@@ -31,4 +31,12 @@ describe("isLocal", () => {
 		expect(isLocal(LOCAL_HOST)).toBe(true);
 		expect(isLocal("http://192.0.2.1:3011")).toBe(false);
 	});
+});
+
+it("keeps the same raw session ID separate in local, Box A, and Box B UI state", () => {
+	const local = sessionUiKey("session-1");
+	const boxA = sessionUiKey("session-1", "box-a");
+	const boxB = sessionUiKey("session-1", "box-b");
+	expect(local).toBe("session-1");
+	expect(new Set([local, boxA, boxB]).size).toBe(3);
 });

@@ -1,5 +1,5 @@
 import { Feather } from "../../lib/icons";
-import { useLocalSearchParams, useNavigation } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
@@ -7,37 +7,66 @@ import { getPreview } from "../../lib/api";
 import { authHeaders } from "../../lib/config";
 import { headerActionStyle, headerGlyphStyle } from "../../lib/headerAction";
 import { haptics } from "../../lib/haptics";
-import { useApp } from "../../lib/store";
+import { hostRouteMatches, previewForConfig } from "../../lib/hostRoute";
+import { HostScope, useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { iconSize, space, type } from "../../lib/tokens";
+import { Button, EmptyState } from "../../lib/ui";
 import { userFacingError } from "../../lib/connectionError";
 
 /** Session-scoped counterpart of the desktop Browser inspector. */
 export default function SessionPreviewScreen() {
-	const { id, title, previewUrl } = useLocalSearchParams<{ id: string; title?: string; previewUrl?: string }>();
+	const { hostId } = useLocalSearchParams<{ hostId?: string }>();
+	return hostId ? <HostScope key={hostId} hostId={hostId}><SessionPreviewContent /></HostScope> : <SessionPreviewContent />;
+}
+
+function SessionPreviewContent() {
+	const { id, title, previewUrl, hostId: routeHostId } = useLocalSearchParams<{ id: string; title?: string; previewUrl?: string; hostId?: string }>();
 	const navigation = useNavigation();
-	const { config } = useApp();
+	const router = useRouter();
+	const { config, currentHostId, connection } = useApp();
+	const hostMatches = hostRouteMatches(routeHostId, currentHostId);
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const web = useRef<WebView>(null);
-	const [preview, setPreview] = useState<{ entry: string; url: string; authenticated: boolean } | null>(null);
+	const [loaded, setLoaded] = useState<{ config: NonNullable<typeof config>; id: string; value: Awaited<ReturnType<typeof getPreview>> } | null>(null);
+	const preview = loaded?.id === id ? previewForConfig(loaded, config, routeHostId) : null;
+	const currentConfig = useRef(config);
+	currentConfig.current = config;
+	const currentRoute = useRef(`${routeHostId ?? ""}|${id}`);
+	currentRoute.current = `${routeHostId ?? ""}|${id}`;
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string>();
 
 	const refresh = useCallback(async () => {
-		if (!config || !id) return;
+		if (!hostMatches || !config || !id) return;
+		const route = `${routeHostId ?? ""}|${id}`;
 		setError(undefined);
 		try {
-			setPreview(await getPreview(config, id, previewUrl));
+			const value = await getPreview(config, id, previewUrl);
+			if (currentConfig.current === config && currentRoute.current === route) setLoaded({ config, id, value });
 		}
-		catch (cause) { setError(userFacingError(cause)); }
-		finally { setLoading(false); }
-	}, [config, id, previewUrl]);
+		catch (cause) {
+			if (currentConfig.current === config && currentRoute.current === route) setError(userFacingError(cause));
+		}
+		finally {
+			if (currentConfig.current === config && currentRoute.current === route) setLoading(false);
+		}
+	}, [config, hostMatches, id, previewUrl, routeHostId]);
 
-	useEffect(() => { void refresh(); const poll = setInterval(() => void refresh(), 5_000); return () => clearInterval(poll); }, [refresh]);
-	useLayoutEffect(() => { navigation.setOptions({ title: title || preview?.entry || "Preview", headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="Reload preview" hitSlop={10} onPress={() => { haptics.tap(); if (preview) web.current?.reload(); else void refresh(); }} style={headerActionStyle}><Feather name="refresh-cw" size={iconSize.md} color={t.textSecondary} style={headerGlyphStyle} /></Pressable> }); }, [navigation, preview, refresh, t.textSecondary, title]);
+	useEffect(() => {
+		setLoaded(null);
+		if (!hostMatches) return;
+		setLoading(true);
+		void refresh();
+		const poll = setInterval(() => void refresh(), 5_000);
+		return () => clearInterval(poll);
+	}, [hostMatches, refresh]);
+	useLayoutEffect(() => { navigation.setOptions({ title: title || preview?.entry || "Preview", headerRight: hostMatches ? () => <Pressable accessibilityRole="button" accessibilityLabel="Reload preview" hitSlop={10} onPress={() => { haptics.tap(); if (preview) web.current?.reload(); else void refresh(); }} style={headerActionStyle}><Feather name="refresh-cw" size={iconSize.md} color={t.textSecondary} style={headerGlyphStyle} /></Pressable> : undefined }); }, [hostMatches, navigation, preview, refresh, t.textSecondary, title]);
 
+	if (!hostMatches) return <View style={styles.center}><EmptyState icon="globe" title="Preview belongs to another machine" message="Open it from that machine's session." action={<Button title="Open board" icon="activity" onPress={() => router.navigate("/")} />} /></View>;
+	if (!config && connection === "closed") return <View style={styles.center}><EmptyState icon="wifi-off" title="Machine offline" message="This preview loads once the app reconnects." /></View>;
 	if (!config || loading) return <View style={styles.center}><ActivityIndicator color={t.accent} /><Text style={styles.copy}>Looking for a session preview…</Text></View>;
 	if (!preview) return <View style={styles.center}><Feather name={error ? "alert-triangle" : "globe"} size={iconSize.xl} color={error ? t.red : t.textTertiary} /><Text style={styles.title}>{error ? "Couldn't load the preview" : "No preview yet"}</Text><Text style={styles.copy}>{error || "Waiting for the agent to generate a page or document. This screen will keep checking."}</Text><Pressable onPress={() => { haptics.tap(); void refresh(); }} style={styles.retry}><Text style={styles.retryText}>Check again</Text></Pressable></View>;
 	return <View style={styles.screen}><WebView ref={web} source={{ uri: preview.url, headers: preview.authenticated ? authHeaders(config) : undefined }} style={styles.web} startInLoadingState renderLoading={() => <View style={styles.webLoading}><ActivityIndicator color={t.accent} /></View>} onLoadStart={() => setError(undefined)} onHttpError={(event) => setError(previewHttpErrorCopy(event.nativeEvent.statusCode))} onError={(event) => setError(event.nativeEvent.description || "Couldn't load this preview.")} />{error ? <View accessibilityRole="alert" style={styles.webError}><Feather name="alert-triangle" size={iconSize.sm} color={t.red} /><Text style={styles.webErrorText}>{error}</Text><Pressable onPress={() => { haptics.tap(); setError(undefined); web.current?.reload(); }}><Text style={styles.retryText}>Retry</Text></Pressable></View> : null}</View>;
@@ -64,5 +93,5 @@ function previewHttpErrorCopy(status: number): string {
 	if (status === 404 || status === 410) return "This page wasn't found. The agent may have moved or removed it.";
 	if (status === 401 || status === 403) return "This page needs access this phone doesn't have.";
 	if (status >= 500) return "The page's server hit an error. Check that the agent's dev server is running, then retry.";
-	return "This page didn't load. Retry, or check it on your desktop.";
+	return "This page didn't load. Retry, or check it on that machine.";
 }

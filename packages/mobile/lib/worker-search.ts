@@ -13,7 +13,7 @@ export function workerSearchClearState(query: string) {
 export function filterWorkerSessions(
 	sessions: readonly DashboardSession[],
 	query: string,
-	projectNameFor: (projectId: string) => string,
+	projectNameFor: (projectId: string, session: DashboardSession) => string,
 	statusLabelFor: (status: string | null) => string,
 ): DashboardSession[] {
 	const needle = query.trim().toLocaleLowerCase();
@@ -22,7 +22,7 @@ export function filterWorkerSessions(
 	return sessions.filter((session) => {
 		const fields = [
 			sessionTitle(session),
-			projectNameFor(session.projectId),
+			projectNameFor(session.projectId, session),
 			session.branch,
 			statusLabelFor(session.status),
 		];

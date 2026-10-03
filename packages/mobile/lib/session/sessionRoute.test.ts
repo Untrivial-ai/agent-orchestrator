@@ -32,15 +32,24 @@ const pending: SessionLookup = { state: "pending" };
 
 type ViewArgs = Parameters<typeof sessionRouteView>[0];
 const view = (over: Partial<ViewArgs> = {}) =>
-	sessionRouteView({ listed: undefined, configured: true, connection: "open", loading: false, lookup: pending, ...over });
+	sessionRouteView({ listed: undefined, configured: true, connection: "open", loading: false, lookup: pending, routeHostId: "host-a", currentHostId: "host-a", ...over });
 
 type DueArgs = Parameters<typeof sessionLookupDue>[0];
 const due = (over: Partial<DueArgs> = {}) =>
 	sessionLookupDue({ listed: false, configured: true, connection: "open", appActive: true, machineChanged: false, lookup: pending, ...over });
 
 describe("sessionRouteView", () => {
+	it("never opens another machine's same-ID session from a stale route", () => {
+		const listed = worker({ id: "same-id" });
+		expect(view({ listed, routeHostId: "host-a", currentHostId: "host-b" })).toEqual({ kind: "wrongHost" });
+		expect(view({ listed, routeHostId: undefined })).toEqual({ kind: "wrongHost" });
+	});
 	it("waits for the saved config before judging anything", () => {
-		expect(view({ configured: null, listed: orchestrator(), lookup: failed(404) })).toEqual({ kind: "loading" });
+		expect(view({ configured: null, loading: true, listed: orchestrator(), lookup: failed(404) })).toEqual({ kind: "loading" });
+	});
+	it("shows an offline paired host instead of another-machine or a permanent loader", () => {
+		expect(view({ configured: null, connection: "closed" })).toEqual({ kind: "offline" });
+		expect(view({ configured: null, connection: "closed", currentHostId: "host-b" })).toEqual({ kind: "wrongHost" });
 	});
 
 	// The store keeps the last machine's lists after Settings → forget, so a

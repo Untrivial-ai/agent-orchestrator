@@ -1,5 +1,5 @@
 import { Feather } from "../lib/icons";
-import { useRouter, type Href } from "expo-router";
+import { useLocalSearchParams, useRouter, type Href } from "expo-router";
 import { useOpenPage } from "../lib/pageNavigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -7,6 +7,7 @@ import {
 	Alert,
 	Pressable,
 	RefreshControl,
+	ScrollView,
 	SectionList,
 	StyleSheet,
 	Text,
@@ -14,6 +15,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+	clearNotification,
 	getNotifications,
 	markAllNotificationsRead,
 	markNotificationRead,
@@ -23,12 +25,13 @@ import { haptics } from "../lib/haptics";
 import { NotificationTypeIcon } from "../lib/notification-type-icon";
 import {
 	notificationSections,
+	notificationRowsForHost,
 	notificationAction,
 	notificationTarget,
 	notificationVisual,
 	relativeTime,
 } from "../lib/notificationView";
-import { useApp } from "../lib/store";
+import { HostScope, useApp } from "../lib/store";
 import { MINUTE_MS, useNow } from "../lib/useNow";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
@@ -46,6 +49,39 @@ const PAGE_SIZE = 50;
 // phone that was reachable at the time; this list is what the user can come back
 // to afterwards.
 export default function NotificationsScreen() {
+	const { hostId } = useLocalSearchParams<{ hostId?: string }>();
+	const { hostStates } = useApp();
+	if (hostId) return <HostScope key={hostId} hostId={hostId}><NotificationsContent /></HostScope>;
+	if (hostStates.length > 1) return <NotificationsHostPicker />;
+	return <NotificationsContent />;
+}
+
+function NotificationsHostPicker() {
+	const { hostStates } = useApp();
+	const styles = useThemedStyles(makeStyles);
+	const router = useRouter();
+	const insets = useSafeAreaInsets();
+	return (
+		<View style={styles.screen}>
+			<View style={{ height: insets.top }} />
+			<ScreenHeader title="Notifications" left={<HeaderIconButton icon="back" label="Back" onPress={() => backOr(router)} />} />
+			<ScrollView contentContainerStyle={[styles.hostPicker, { paddingBottom: insets.bottom + space.lg }]}>
+				<Text style={styles.hostPickerHint}>Choose a machine to view its notifications.</Text>
+				{hostStates.map((host) => (
+					<Button
+						key={host.hostId}
+						title={`${host.name}${host.notificationsUnread > 0 ? ` · ${host.notificationsUnread} unread` : ""}`}
+						icon="server"
+						variant="ghost"
+						onPress={() => router.push({ pathname: "/notifications", params: { hostId: host.hostId } })}
+					/>
+				))}
+			</ScrollView>
+		</View>
+	);
+}
+
+function NotificationsContent() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
@@ -53,18 +89,24 @@ export default function NotificationsScreen() {
 	const insets = useSafeAreaInsets();
 	const { config, connection, unreachable, errorStatus, sessions, loading: sessionsLoading, restore } = useApp();
 	const [restoringId, setRestoringId] = useState<string>();
+	const [clearingIds, setClearingIds] = useState<Set<string>>(() => new Set());
 	// A brief line rather than an Alert: the row is still there to act on, and
 	// a modal would make a dead tap feel like an error.
 	const [notice, setNotice] = useState<string>();
 	const now = useNow(MINUTE_MS);
 	const [items, setItems] = useState<NotificationRecord[]>([]);
+	const [itemsHostId, setItemsHostId] = useState<string>();
+	const currentConfig = useRef(config);
+	currentConfig.current = config;
 	const [loading, setLoading] = useState(true);
 	const [refreshing, setRefreshing] = useState(false);
 	const [loadingMore, setLoadingMore] = useState(false);
 	const [nextCursor, setNextCursor] = useState<string | undefined>(undefined);
 	const [unreadCount, setUnreadCount] = useState(0);
 	const [error, setError] = useState<string | null>(null);
-	const sections = useMemo(() => notificationSections(items), [items]);
+	const visibleItems = useMemo(() => notificationRowsForHost(items, itemsHostId, config?.hostId), [items, itemsHostId, config?.hostId]);
+	const sections = useMemo(() => notificationSections(visibleItems), [visibleItems]);
+	const visibleUnreadCount = config?.hostId && itemsHostId === config.hostId ? unreadCount : 0;
 
 	const load = useCallback(
 		async (mode: "initial" | "refresh" | "more") => {
@@ -82,6 +124,8 @@ export default function NotificationsScreen() {
 					limit: PAGE_SIZE,
 					cursor: mode === "more" ? nextCursor : undefined,
 				});
+				if (currentConfig.current !== config) return;
+				setItemsHostId(config.hostId);
 				setItems((previous) => {
 					if (mode !== "more") return page.notifications;
 					const seen = new Set(previous.map((notification) => notification.id));
@@ -93,17 +137,29 @@ export default function NotificationsScreen() {
 				setNextCursor(page.nextCursor);
 				setUnreadCount(page.unreadCount);
 			} catch (cause) {
+				if (currentConfig.current !== config) return;
+				setItemsHostId(config.hostId);
 				setError(userFacingError(cause, "Couldn't load notifications."));
 			} finally {
-				setLoading(false);
-				setRefreshing(false);
-				setLoadingMore(false);
+				if (currentConfig.current === config) {
+					setLoading(false);
+					setRefreshing(false);
+					setLoadingMore(false);
+				}
 			}
 		},
 		[config, nextCursor, loadingMore],
 	);
 
 	useEffect(() => {
+		setItems([]);
+		setItemsHostId(undefined);
+		setNextCursor(undefined);
+		setUnreadCount(0);
+		setError(null);
+		setRefreshing(false);
+		setLoadingMore(false);
+		setLoading(Boolean(config));
 		void load("initial");
 		// Paging state changes must not refetch the first page.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,6 +185,7 @@ export default function NotificationsScreen() {
 	const rejected = errorStatus !== null && !shouldKeepPolling(errorStatus);
 
 	function open(notification: NotificationRecord) {
+		if (!config?.hostId || itemsHostId !== config.hostId) return;
 		haptics.tap();
 		setItems((previous) =>
 			previous.map((item) =>
@@ -142,15 +199,35 @@ export default function NotificationsScreen() {
 		// What a tap does depends on the session behind it, exactly as the renderer
 		// decides: a terminated agent waiting on input is restored, not opened.
 		const action = notificationAction(notification, sessionState(notification.sessionId));
-		if (action.kind === "open") router.navigate(`/session/${action.sessionId}`);
-		else if (action.kind === "review") openPage(notificationTarget(notification) as Href);
-		else if (action.kind === "prs") router.navigate("/prs");
+		if (action.kind === "open") router.navigate({ pathname: "/session/[id]", params: { id: action.sessionId, hostId: config.hostId } });
+		else if (action.kind === "review") openPage(notificationTarget({ ...notification, hostId: config.hostId }, config.hostId) as Href);
+		else if (action.kind === "prs") router.navigate({ pathname: "/prs", params: { hostId: config.hostId } });
 		else if (action.kind === "restore") {
 			haptics.warning();
 			setNotice("This session is terminated. Tap restore to bring it back.");
 		} else if (action.kind === "none") {
 			haptics.warning();
 			setNotice("That session is not available yet.");
+		}
+	}
+
+	async function clear(notification: NotificationRecord) {
+		if (!config?.hostId || itemsHostId !== config.hostId || clearingIds.has(notification.id)) return;
+		const source = config;
+		setClearingIds((current) => new Set(current).add(notification.id));
+		try {
+			await clearNotification(source, notification.id);
+			if (currentConfig.current !== source) return;
+			setItems((current) => current.filter((item) => item.id !== notification.id));
+			if (notification.status === "unread") setUnreadCount((count) => Math.max(0, count - 1));
+		} catch (cause) {
+			if (currentConfig.current === source) setError(userFacingError(cause, "Couldn't clear notification."));
+		} finally {
+			setClearingIds((current) => {
+				const next = new Set(current);
+				next.delete(notification.id);
+				return next;
+			});
 		}
 	}
 
@@ -165,19 +242,20 @@ export default function NotificationsScreen() {
 	}
 
 	function restoreSession(sessionId: string) {
+		if (!config?.hostId || itemsHostId !== config.hostId) return;
 		haptics.tap();
 		setRestoringId(sessionId);
 		void restore(sessionId)
 			.then(() => {
 				haptics.success();
-				router.navigate(`/session/${sessionId}`);
+				router.navigate({ pathname: "/session/[id]", params: { id: sessionId, hostId: config.hostId } });
 			})
 			.catch((cause) => Alert.alert("Couldn't restore the session", userFacingError(cause)))
 			.finally(() => setRestoringId(undefined));
 	}
 
 	async function markAll() {
-		if (!config || unreadCount === 0) return;
+		if (!config?.hostId || itemsHostId !== config.hostId || unreadCount === 0) return;
 		haptics.success();
 		setItems((previous) => previous.map((item) => ({ ...item, status: "read" })));
 		setUnreadCount(0);
@@ -195,8 +273,8 @@ export default function NotificationsScreen() {
 		return () => clearTimeout(timer);
 	}, [notice]);
 
-	const subtitle = unreadCount > 0
-		? `${unreadCount} ${unreadCount === 1 ? "update needs" : "updates need"} you`
+	const subtitle = visibleUnreadCount > 0
+		? `${visibleUnreadCount} ${visibleUnreadCount === 1 ? "update needs" : "updates need"} you`
 		: "You're all caught up";
 
 	return (
@@ -206,13 +284,13 @@ export default function NotificationsScreen() {
 				title="Notifications"
 				left={<HeaderIconButton icon="back" label="Back" onPress={() => backOr(router)} />}
 				right={
-					unreadCount > 0 ? (
+					visibleUnreadCount > 0 ? (
 						<HeaderIconButton icon="check" label="Mark all read" onPress={() => void markAll()} />
 					) : undefined
 				}
 			/>
 
-			{loading ? (
+			{loading || (config && itemsHostId !== config.hostId) ? (
 				<View style={styles.center}>
 					<ActivityIndicator color={t.accent} />
 				</View>
@@ -222,7 +300,7 @@ export default function NotificationsScreen() {
 					keyExtractor={(notification) => notification.id}
 					contentInsetAdjustmentBehavior="automatic"
 					contentContainerStyle={
-						items.length === 0
+						visibleItems.length === 0
 							? { flexGrow: 1 }
 							: { paddingBottom: insets.bottom + 24 }
 					}
@@ -240,10 +318,10 @@ export default function NotificationsScreen() {
 					onEndReached={() => void load("more")}
 					onEndReachedThreshold={0.4}
 					ListHeaderComponent={
-						error && items.length > 0 ? (
+						error && visibleItems.length > 0 ? (
 							<View style={styles.inlineError}>
 								<Feather name="alert-circle" size={15} color={t.red} />
-								<Text selectable style={styles.inlineErrorText}>{offline ? "Not connected to your desktop. Showing the last notifications loaded." : error}</Text>
+								<Text selectable style={styles.inlineErrorText}>{offline ? "This machine is offline. Showing the last notifications loaded." : error}</Text>
 							</View>
 						) : null
 					}
@@ -258,7 +336,9 @@ export default function NotificationsScreen() {
 							now={now}
 							action={notificationAction(item, sessionState(item.sessionId)).kind}
 							restoring={restoringId === item.sessionId}
+							clearing={clearingIds.has(item.id)}
 							onPress={() => open(item)}
+							onClear={() => void clear(item)}
 							onRestore={() => item.sessionId && restoreSession(item.sessionId)}
 						/>
 					)}
@@ -273,7 +353,7 @@ export default function NotificationsScreen() {
 						offline ? (
 							<EmptyState
 								icon="wifi-off"
-								title="Not connected to your desktop"
+								title="This machine is offline"
 								message="Notifications load once the app reconnects."
 								action={<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={() => void load("refresh")} />}
 							/>
@@ -320,12 +400,14 @@ function NotificationSectionHeader({ title, count }: { title: string; count: num
 	);
 }
 
-function NotificationRow({ item, now, action, restoring, onPress, onRestore }: {
+function NotificationRow({ item, now, action, restoring, clearing, onPress, onClear, onRestore }: {
 	item: NotificationRecord;
 	now: number;
 	action: "open" | "review" | "restore" | "prs" | "none";
 	restoring: boolean;
+	clearing: boolean;
 	onPress: () => void;
+	onClear: () => void;
 	onRestore: () => void;
 }) {
 	const t = useTheme();
@@ -376,6 +458,16 @@ function NotificationRow({ item, now, action, restoring, onPress, onRestore }: {
 					: <Feather name="rotate-ccw" size={20} color={t.textSecondary} />}
 			</Pressable>
 		) : null}
+		<Pressable
+			onPress={onClear}
+			disabled={clearing}
+			accessibilityRole="button"
+			accessibilityLabel={`Clear ${item.title || visual.label}`}
+			accessibilityState={{ busy: clearing, disabled: clearing }}
+			style={({ pressed }) => [styles.clearButton, pressed && styles.rowPressed]}
+		>
+			{clearing ? <ActivityIndicator size="small" color={t.textSecondary} /> : <Feather name="x" size={18} color={t.textTertiary} />}
+		</Pressable>
 		</View>
 	);
 }
@@ -384,6 +476,8 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 60 },
+		hostPicker: { paddingHorizontal: space.lg, paddingTop: space.xl, gap: space.md },
+		hostPickerHint: { ...type.body, color: t.textSecondary, marginBottom: space.xs },
 		inlineError: {
 			flexDirection: "row",
 			alignItems: "center",
@@ -424,6 +518,7 @@ const makeStyles = (t: Theme) =>
 		// Its own column, wide enough to hit without aiming: restoring is the only
 		// thing a terminated row can do, and it should not share the row's tap.
 		restoreButton: { width: 56, alignSelf: "stretch", alignItems: "center", justifyContent: "center" },
+		clearButton: { width: 48, alignSelf: "stretch", alignItems: "center", justifyContent: "center" },
 		restorePressed: { backgroundColor: t.bgElevated },
 		rowInert: { opacity: 0.55 },
 		notice: {

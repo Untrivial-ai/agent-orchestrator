@@ -1689,17 +1689,16 @@ paths:
     get:
       operationId: streamEvents
       parameters:
-      - description: Replay events with seq greater than this cursor. When omitted,
-          clients may send Last-Event-ID instead.
+      - description: Replay events after a non-negative sequence, or use latest to
+          start at the current head. Last-Event-ID overrides latest on reconnect.
         in: query
         name: after
         schema:
-          description: Replay events with seq greater than this cursor. When omitted,
-            clients may send Last-Event-ID instead.
-          minimum: 0
+          description: Replay events after a non-negative sequence, or use latest
+            to start at the current head. Last-Event-ID overrides latest on reconnect.
           type:
           - "null"
-          - integer
+          - string
       responses:
         "200":
           content:
@@ -2199,6 +2198,56 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Enable the Connect Mobile LAN bridge and issue a fresh password
+      tags:
+      - mobile
+  /api/v1/mobile/enable-lan-only:
+    post:
+      operationId: enableMobileLANOnly
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Enable the authenticated LAN bridge without a managed public tunnel
+      tags:
+      - mobile
+  /api/v1/mobile/enable-tunnel-only:
+    post:
+      operationId: enableMobileTunnelOnly
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Enable the authenticated listener on loopback for a managed tunnel
       tags:
       - mobile
   /api/v1/mobile/keep-awake:
@@ -6638,6 +6687,187 @@ paths:
       summary: Set (or autodetect) the browser preview URL for a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/preview/app/*:
+    delete:
+      operationId: deleteSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Send a request to the running session-owned application preview
+      tags:
+      - sessions
+    get:
+      operationId: getSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            text/html:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Proxy the running session-owned application preview
+      tags:
+      - sessions
+    head:
+      operationId: headSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+        "409":
+          description: Conflict
+      summary: Read headers from the running session-owned application preview
+      tags:
+      - sessions
+    patch:
+      operationId: patchSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Send a request to the running session-owned application preview
+      tags:
+      - sessions
+    post:
+      operationId: postSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Send a request to the running session-owned application preview
+      tags:
+      - sessions
+    put:
+      operationId: putSessionPreviewApp
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Send a request to the running session-owned application preview
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/preview/files/*:
     get:
       operationId: getSessionPreviewFile
@@ -6693,6 +6923,14 @@ paths:
         name: X-AO-Browser-Capability
         schema:
           description: Opaque browser capability injected into the owning AO worker.
+          type: string
+      - description: Opaque preview-only capability injected into a session-scoped
+          user shell.
+        in: header
+        name: X-AO-Preview-Capability
+        schema:
+          description: Opaque preview-only capability injected into a session-scoped
+            user shell.
           type: string
       responses:
         "200":
@@ -6750,6 +6988,14 @@ paths:
         schema:
           description: Opaque browser capability injected into the owning AO worker.
           type: string
+      - description: Opaque preview-only capability injected into a session-scoped
+          user shell.
+        in: header
+        name: X-AO-Preview-Capability
+        schema:
+          description: Opaque preview-only capability injected into a session-scoped
+            user shell.
+          type: string
       responses:
         "200":
           content:
@@ -6805,6 +7051,14 @@ paths:
         name: X-AO-Browser-Capability
         schema:
           description: Opaque browser capability injected into the owning AO worker.
+          type: string
+      - description: Opaque preview-only capability injected into a session-scoped
+          user shell.
+        in: header
+        name: X-AO-Preview-Capability
+        schema:
+          description: Opaque preview-only capability injected into a session-scoped
+            user shell.
           type: string
       requestBody:
         content:
@@ -10336,6 +10590,7 @@ components:
           - ci_failed
           - review_pending
           - changes_requested
+          - commented
           - approved
           - mergeable
           - merged
@@ -10348,6 +10603,7 @@ components:
           - ci_failed
           - review_pending
           - changes_requested
+          - commented
           - approved
           - mergeable
           - merged
@@ -11264,6 +11520,9 @@ components:
           type: array
         brief:
           maxLength: 16384
+          type: string
+        clientRequestId:
+          maxLength: 128
           type: string
         effort:
           maxLength: 64
@@ -12416,6 +12675,8 @@ components:
           type: string
         keepAwake:
           $ref: '#/components/schemas/ControllersKeepAwakeStatus'
+        loopbackOnly:
+          type: boolean
         password:
           type: string
         port:
@@ -12430,6 +12691,7 @@ components:
           type: string
       required:
       - enabled
+      - loopbackOnly
       - endpoints
       - hostId
       - tunnel
@@ -12872,6 +13134,10 @@ components:
       properties:
         deviceName:
           description: Human-friendly device label.
+          type: string
+        hostName:
+          description: This phone's label for the host; used in OS push notification
+            titles.
           type: string
         installId:
           description: 'Stable per-install device id, keying the registry so a rotated
@@ -14131,6 +14397,9 @@ components:
             $ref: '#/components/schemas/AttachmentInput'
           type: array
         branch:
+          type: string
+        clientRequestId:
+          maxLength: 128
           type: string
         displayName:
           maxLength: 100

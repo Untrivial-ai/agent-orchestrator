@@ -22,6 +22,8 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 	const ansiBlack = terminalBg;
 	const dark: ITheme = {
 		background: terminalBg,
+		// AO owns the scrollbar gutter; xterm 6 otherwise paints a white ruler edge.
+		overviewRulerBorder: "transparent",
 		foreground: terminalForeground,
 		cursor: terminalCursor,
 		cursorAccent: terminalBg,
@@ -47,6 +49,8 @@ export function buildTerminalThemes(): { dark: ITheme; light: ITheme } {
 
 	const light: ITheme = {
 		background: terminalBg,
+		// AO owns the scrollbar gutter; xterm 6 otherwise paints a white ruler edge.
+		overviewRulerBorder: "transparent",
 		foreground: terminalForeground,
 		// xterm block cursor fills with `cursor` and paints cell text in
 		// `cursorAccent`. --color-working is fine on dark plates but reads as a

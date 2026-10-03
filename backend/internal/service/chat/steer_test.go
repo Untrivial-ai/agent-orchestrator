@@ -336,6 +336,18 @@ func TestSteerOrSendSendsWhenIdleAndRecoversWithoutRedispatch(t *testing.T) {
 	if recovered.Steered || !recovered.Duplicate || recovered.Turn.ID != first.Turn.ID {
 		t.Fatalf("recovered = %+v, want sent turn %s", recovered, first.Turn.ID)
 	}
+	for _, changed := range []ports.ChatUserMessage{
+		{Text: "different work", ClientMessageID: msg.ClientMessageID, Origin: msg.Origin},
+		{Text: msg.Text, ClientMessageID: msg.ClientMessageID, Origin: msg.Origin,
+			Content: []ports.ChatContent{{Type: "image", Data: "aGVsbG8=", MIMEType: "image/png"}}},
+		{Text: msg.Text, ClientMessageID: msg.ClientMessageID, Origin: msg.Origin, AuthoredByUser: true},
+		{Text: msg.Text, ClientMessageID: msg.ClientMessageID, Origin: msg.Origin,
+			Settings: ports.ChatTurnSettings{Model: "different-model"}},
+	} {
+		if _, err := h.svc.SteerOrSend(context.Background(), testSession, changed, false); !errors.Is(err, domain.ErrClientMessageConflict) {
+			t.Fatalf("changed retry error = %v, want client message conflict", err)
+		}
+	}
 	if calls := provider.sendCallCount(); calls != 1 {
 		t.Fatalf("provider received %d sends, want one", calls)
 	}

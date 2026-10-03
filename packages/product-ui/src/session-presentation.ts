@@ -39,6 +39,7 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"status.no_signal": "No signal",
 	"status.ci_failed": "CI failed",
 	"status.changes_requested": "Changes requested",
+	"status.commented": "Commented",
 	"status.review_pending": "Review pending",
 	"status.draft": "Draft PR",
 	"status.pr_open": "PR open",
@@ -68,6 +69,7 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"timeline.no_signal": "No Signal",
 	"timeline.ci_failed": "CI Failed",
 	"timeline.changes_requested": "Changes Requested",
+	"timeline.commented": "Commented",
 	"displayStatus.working": "Working",
 	"displayStatus.blocked": "Blocked",
 	"displayStatus.exited": "Exited",
@@ -231,6 +233,7 @@ const sessionStatusStyles: Record<SessionStatus, Omit<SessionStatusView, "label"
 	no_signal: { className: "text-status-unknown", dotClassName: "bg-status-unknown" },
 	ci_failed: { className: "text-status-exited", dotClassName: "bg-status-exited" },
 	changes_requested: { className: "text-status-needs-you", dotClassName: "bg-status-needs-you" },
+	commented: { className: "text-status-in-review", dotClassName: "bg-status-in-review" },
 	review_pending: { className: "text-status-in-review", dotClassName: "bg-status-in-review" },
 	draft: { className: "text-status-in-review", dotClassName: "bg-status-in-review" },
 	pr_open: { className: "text-status-in-review", dotClassName: "bg-status-in-review" },
@@ -448,6 +451,7 @@ export function attentionZone(input: SessionStatus | SessionStatusModel): Attent
 		case "no_signal":
 		case "ci_failed":
 		case "changes_requested":
+		case "commented":
 		case "unknown":
 			return "action";
 		case "review_pending":
@@ -477,7 +481,7 @@ export function getAttentionZoneViewForZone(
 
 export type SessionTimelinePillStatus = Extract<
 	SessionStatus,
-	"no_signal" | "ci_failed" | "changes_requested"
+	"no_signal" | "ci_failed" | "changes_requested" | "commented"
 >;
 
 export type SessionTimelinePillView = {
@@ -503,6 +507,11 @@ const sessionTimelinePillBases: Record<
 	changes_requested: {
 		labelKey: "timeline.changes_requested",
 		tone: "var(--color-status-needs-you)",
+		breathe: false,
+	},
+	commented: {
+		labelKey: "timeline.commented",
+		tone: "var(--color-status-in-review)",
 		breathe: false,
 	},
 };

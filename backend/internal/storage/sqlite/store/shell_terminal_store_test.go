@@ -27,6 +27,7 @@ func TestSelectShellTerminalsBySessionID(t *testing.T) {
 
 	recA1 := shellTerminalRecord("shellterm-a1", "run-1")
 	recA1.SessionID = sessA.ID
+	recA1.PreviewCapabilityVerifier = "preview-verifier-a1"
 	recA2 := shellTerminalRecord("shellterm-a2", "run-1")
 	recA2.SessionID = sessA.ID
 	recB := shellTerminalRecord("shellterm-b", "run-1")
@@ -47,6 +48,9 @@ func TestSelectShellTerminalsBySessionID(t *testing.T) {
 	for _, rec := range got {
 		if rec.SessionID != sessA.ID {
 			t.Errorf("terminal %s session id = %q, want %q", rec.HandleID, rec.SessionID, sessA.ID)
+		}
+		if rec.HandleID == recA1.HandleID && rec.PreviewCapabilityVerifier != recA1.PreviewCapabilityVerifier {
+			t.Errorf("preview verifier = %q, want %q", rec.PreviewCapabilityVerifier, recA1.PreviewCapabilityVerifier)
 		}
 	}
 }

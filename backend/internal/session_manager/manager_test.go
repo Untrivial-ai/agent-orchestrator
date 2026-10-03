@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,6 +59,9 @@ type fakeStore struct {
 	updateSessionErr        error
 	hibernationCASConflicts int
 	deletePrepErr           error
+
+	createClientRequestErr error
+	promoteTaskErr         error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -106,6 +110,32 @@ func (f *fakeStore) CreateAutomationSession(ctx context.Context, rec domain.Sess
 	}
 	created, err := f.CreateSession(ctx, rec)
 	return created, err == nil, err
+}
+func (f *fakeStore) CreateClientRequestSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+	if f.createClientRequestErr != nil {
+		err := f.createClientRequestErr
+		f.createClientRequestErr = nil
+		return domain.SessionRecord{}, false, err
+	}
+	if existing, found, err := f.GetSessionByClientRequestID(ctx, rec.ClientRequestID); err != nil || found {
+		return existing, false, err
+	}
+	created, err := f.CreateSession(ctx, rec)
+	return created, err == nil, err
+}
+func (f *fakeStore) GetSessionByClientRequestID(_ context.Context, id string) (domain.SessionRecord, bool, error) {
+	for _, rec := range f.sessions {
+		if id != "" && rec.ClientRequestID == id {
+			return rec, true, nil
+		}
+	}
+	return domain.SessionRecord{}, false, nil
+}
+func (f *fakeStore) CommitClientRequestSession(_ context.Context, id domain.SessionID) error {
+	rec := f.sessions[id]
+	rec.ClientRequestCommitted = true
+	f.sessions[id] = rec
+	return nil
 }
 func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) error {
 	if f.updateSessionErr != nil {
@@ -182,6 +212,11 @@ func (f *fakeStore) SetSessionProvisionState(_ context.Context, id domain.Sessio
 }
 
 func (f *fakeStore) PromoteTaskPreparation(_ context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error) {
+	if f.promoteTaskErr != nil {
+		err := f.promoteTaskErr
+		f.promoteTaskErr = nil
+		return false, err
+	}
 	current, ok := f.sessions[id]
 	if !ok || !current.IsTaskPreparation {
 		return false, nil
@@ -2376,6 +2411,80 @@ func TestSpawnAutomationAdoptsOnlyCompletedLaunch(t *testing.T) {
 	}
 	if adopted.ID != first.ID || rt.created != 1 {
 		t.Fatalf("retry session=%q runtime creates=%d, want %q and 1", adopted.ID, rt.created, first.ID)
+	}
+}
+
+func TestSpawnClientRequestReplaysCommittedWorkerAndRejectsConflictOrIncomplete(t *testing.T) {
+	m, st, rt, _ := newManager()
+	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it", ClientRequestID: "draft-1", ClientRequestHash: "v1:first"}
+	first, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil || replay.ID != first.ID || rt.created != 1 {
+		t.Fatalf("replay = %q, runtime creates = %d, err = %v", replay.ID, rt.created, err)
+	}
+	cfg.ClientRequestHash = "v1:changed"
+	if _, _, _, err := m.Spawn(ctx, cfg); !errors.Is(err, ErrClientRequestConflict) || rt.created != 1 {
+		t.Fatalf("changed payload: runtime creates = %d, err = %v", rt.created, err)
+	}
+	cfg.ClientRequestHash = "v1:first"
+	rec := st.sessions[first.ID]
+	rec.ClientRequestCommitted = false
+	st.sessions[first.ID] = rec
+	if _, _, _, err := m.Spawn(ctx, cfg); !errors.Is(err, ErrClientRequestIncomplete) || rt.created != 1 {
+		t.Fatalf("incomplete retry: runtime creates = %d, err = %v", rt.created, err)
+	}
+}
+
+func TestSpawnClientRequestRetriesAfterStorageFullWithoutDuplicateWorker(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.createClientRequestErr = syscall.ENOSPC
+	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it", ClientRequestID: "draft-1", ClientRequestHash: "v1:first"}
+	if _, _, _, err := m.Spawn(ctx, cfg); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("full-storage spawn error = %v, want ENOSPC", err)
+	}
+	if len(st.sessions) != 0 || ws.createCount != 0 || rt.created != 0 {
+		t.Fatalf("failed write left sessions=%d workspaces=%d runtimes=%d", len(st.sessions), ws.createCount, rt.created)
+	}
+	created, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil || replayed.ID != created.ID || len(st.sessions) != 1 || ws.createCount != 1 || rt.created != 1 {
+		t.Fatalf("retry/replay: created=%q replayed=%q sessions=%d workspaces=%d runtimes=%d err=%v", created.ID, replayed.ID, len(st.sessions), ws.createCount, rt.created, err)
+	}
+}
+
+func TestSpawnPreparedClientRequestRetriesAfterStorageFullWithoutDuplicateWorker(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.runBackground = func(work func()) { work() }
+	token, err := m.PrepareTaskWorkspace(ctx, st.projects["mer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.promoteTaskErr = syscall.ENOSPC
+	st.deletePrepErr = syscall.ENOSPC
+	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it", TaskPreparation: token, ClientRequestID: "draft-1", ClientRequestHash: "v1:first"}
+	if _, _, _, err := m.Spawn(ctx, cfg); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("full-storage promotion error = %v, want ENOSPC", err)
+	}
+	if len(st.sessions) != 1 || ws.createCount != 1 || ws.destroyed != 1 || rt.created != 0 {
+		t.Fatalf("failed promotion left sessions=%d workspaces=%d destroyed=%d runtimes=%d", len(st.sessions), ws.createCount, ws.destroyed, rt.created)
+	}
+	st.deletePrepErr = nil // storage recovered; retry must not reclaim the failed preparation
+	created, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, _, _, err := m.Spawn(ctx, cfg)
+	if err != nil || replayed.ID != created.ID || len(st.sessions) != 2 || !st.sessions[domain.SessionID(token)].IsTaskPreparation || ws.createCount != 2 || rt.created != 1 {
+		t.Fatalf("retry/replay: created=%q replayed=%q sessions=%d workspaces=%d runtimes=%d err=%v", created.ID, replayed.ID, len(st.sessions), ws.createCount, rt.created, err)
+	}
+	if err := m.CancelTaskPreparation(ctx, token); err != nil || len(st.sessions) != 1 {
+		t.Fatalf("recovered cleanup: sessions=%d err=%v", len(st.sessions), err)
 	}
 }
 

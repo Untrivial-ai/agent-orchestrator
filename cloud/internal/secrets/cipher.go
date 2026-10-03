@@ -25,6 +25,16 @@ func New(key []byte) (*Cipher, error) {
 	return &Cipher{aead: aead}, nil
 }
 
+// ProviderConnectionAssociatedData is the AES-GCM associated data that binds a
+// provider-connection secret to its (scope, provider, label) tuple. The scope is
+// an organization id for an org-scoped connection, or "user:<id>" for a
+// user-scoped one. The HTTP edge that encrypts a secret and any service that
+// later decrypts it MUST pass the identical string, so the construction lives
+// here, shared by both, rather than being duplicated per call site.
+func ProviderConnectionAssociatedData(scope, provider, label string) string {
+	return scope + "|" + provider + "|" + label
+}
+
 func (c *Cipher) Encrypt(
 	plaintext []byte,
 	associatedData string,

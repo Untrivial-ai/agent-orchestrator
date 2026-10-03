@@ -34,5 +34,5 @@ export function attachmentURL(apiBaseUrl: string, sessionId: string, path: strin
 		.split("/")
 		.map(encodeURIComponent)
 		.join("/")}`;
-	return apiBaseUrl ? new URL(route, apiBaseUrl).toString() : route;
+	return apiBaseUrl ? `${apiBaseUrl.replace(/\/+$/, "")}${route}` : route;
 }

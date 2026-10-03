@@ -17,6 +17,7 @@ type AgentModelPickerProps = {
 	agentId: string;
 	agentLabel: string;
 	projectId: string;
+	hostId?: string;
 	value: string;
 	mode: string;
 	disabled?: boolean;
@@ -29,6 +30,7 @@ export function AgentModelPicker({
 	agentId,
 	agentLabel,
 	projectId,
+	hostId,
 	value,
 	mode,
 	disabled = false,
@@ -38,20 +40,22 @@ export function AgentModelPicker({
 }: AgentModelPickerProps) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const query = useQuery(agentModelsQueryOptions(agentId, projectId));
+	const query = useQuery(agentModelsQueryOptions(agentId, projectId, hostId));
 	const catalog: AgentModelCatalog | undefined = query.data;
 	const revalidationQuery = useQuery({
-		queryKey: ["agent-model-revalidation", agentId, projectId, catalog?.validatedAt ?? ""],
-		queryFn: () => revalidateAgentModels(agentId, projectId),
+		queryKey: hostId
+			? ["agent-model-revalidation", hostId, agentId, projectId, catalog?.validatedAt ?? ""]
+			: ["agent-model-revalidation", agentId, projectId, catalog?.validatedAt ?? ""],
+		queryFn: () => revalidateAgentModels(agentId, projectId, hostId),
 		enabled: agentId !== "" && catalog?.refreshRecommended === true,
 		staleTime: Number.POSITIVE_INFINITY,
 		retry: false,
 	});
 	useEffect(() => {
 		if (revalidationQuery.data) {
-			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), revalidationQuery.data);
+			queryClient.setQueryData(agentModelsQueryKey(agentId, projectId, hostId), revalidationQuery.data);
 		}
-	}, [agentId, projectId, queryClient, revalidationQuery.data]);
+	}, [agentId, hostId, projectId, queryClient, revalidationQuery.data]);
 	const warning =
 		(revalidationQuery.isError
 			? revalidationQuery.error instanceof Error
@@ -67,8 +71,8 @@ export function AgentModelPicker({
 
 	const catalogLoading = agentId !== "" && query.isFetching && catalog === undefined;
 	const refreshCatalog = async () => {
-		const refreshed = await refreshAgentModels(agentId, projectId);
-		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId), refreshed);
+		const refreshed = await refreshAgentModels(agentId, projectId, hostId);
+		queryClient.setQueryData(agentModelsQueryKey(agentId, projectId, hostId), refreshed);
 	};
 
 	if (catalogLoading) {
@@ -126,7 +130,7 @@ export function AgentModelPicker({
 
 	return (
 		<AgentModelCombobox
-			key={agentId}
+			key={hostId ? `${hostId}:${agentId}` : agentId}
 			aria-label={t("newTask.model")}
 			value={value}
 			models={displayModels}
@@ -141,7 +145,7 @@ export function AgentModelPicker({
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact
-			recentScope={agentId}
+			recentScope={hostId ? `${hostId}:${agentId}` : agentId}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 			menuAlign="start"
 			renderTrigger={(label) => <span className="min-w-0 truncate text-control text-foreground" title={label}>{label}</span>}

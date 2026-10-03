@@ -613,7 +613,7 @@ export async function refreshAgentModels(cfg: ServerConfig, agent: string, proje
 // its dispatcher can deliver OS push notifications. Keyed daemon-side by install ID.
 export async function registerPushDevice(
 	cfg: ServerConfig,
-	device: { token: string; platform?: string; deviceName?: string },
+	device: { token: string; platform?: string; deviceName?: string; hostName?: string },
 ): Promise<void> {
 	const installId = await getInstallId();
 	await req(cfg, `${API}/push/devices`, {
@@ -663,6 +663,15 @@ export async function markNotificationRead(cfg: ServerConfig, id: string): Promi
 		method: "PATCH",
 		body: JSON.stringify({ status: "read" }),
 	});
+}
+
+export async function clearNotification(cfg: ServerConfig, id: string): Promise<void> {
+	try {
+		await req(cfg, `${API}/notifications/${encodeURIComponent(id)}`, { method: "DELETE" });
+	} catch (cause) {
+		// Another client may have cleared the same row already.
+		if (!(cause instanceof ApiError) || cause.status !== 404 || cause.code !== "NOTIFICATION_NOT_FOUND") throw cause;
+	}
 }
 
 // ---- Notification history ---------------------------------------------------
@@ -1011,7 +1020,7 @@ export async function sendMessage(cfg: ServerConfig, id: string, message: string
 
 export async function spawnSession(
 	cfg: ServerConfig,
-	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode; attachments?: SpawnAttachmentInput[] },
+	opts: { projectId: string; prompt?: string; issueId?: string; harness?: string; mode?: SessionMode; attachments?: SpawnAttachmentInput[]; clientRequestId?: string },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions`, {
 		method: "POST",
@@ -1029,6 +1038,7 @@ export async function spawnSession(
 			mode: opts.mode ?? "chat",
 			kind: "worker",
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
+			clientRequestId: opts.clientRequestId,
 		}),
 	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
@@ -1048,7 +1058,7 @@ export async function getSession(cfg: ServerConfig, id: string): Promise<Dashboa
 
 export async function delegateTask(
 	cfg: ServerConfig,
-	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode; attachments?: SpawnAttachmentInput[] },
+	opts: { projectId: string; brief: string; agent?: string; model?: string; mode: SessionMode; attachments?: SpawnAttachmentInput[]; clientRequestId?: string },
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/orchestrators/delegate`, {
 		method: "POST",
@@ -1060,10 +1070,11 @@ export async function delegateTask(
 			model: opts.model || undefined,
 			mode: opts.mode,
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
+			clientRequestId: opts.clientRequestId,
 		}),
 	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
-	if (!data?.workerId) throw new Error("Your desktop didn't return the new worker. Refresh the board to check whether it started.");
+	if (!data?.workerId) throw new Error("Your machine didn't return the new worker. Refresh the board to check whether it started.");
 	return getSession(cfg, data.workerId);
 }
 

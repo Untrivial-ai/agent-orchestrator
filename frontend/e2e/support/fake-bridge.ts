@@ -49,7 +49,6 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 	const updateSettings =
 		opts.updateSettings ??
 		({ enabled: false, channel: "latest", nightlyAck: false, feature: null } satisfies UpdateSettings);
-
 	await page.addInitScript(
 		({ version, daemonState, daemonPort, updateStatus, updateSettings }) => {
 			const unsubscribe = () => () => undefined;
@@ -298,8 +297,12 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 					add: async () => "offline" as const,
 					update: async () => "offline" as const,
 					remove: async () => undefined,
-					probe: async () => "offline" as const,
-					request: async () => ({ status: 0, body: null }),
+					connect: async (url: string) => {
+						throw new Error(`No fake remote for ${url}`);
+					},
+					disconnect: async () => undefined,
+					previewUrl: async (_hostId: string, _sessionId: string, sourceUrl: string) => sourceUrl,
+					resolvePreviewUrl: async (_hostId: string, _sessionId: string, viewedUrl: string) => viewedUrl,
 				},
 				cloud: {
 					getSession: async () => null,
@@ -863,8 +866,12 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					add: async () => "offline" as const,
 					update: async () => "offline" as const,
 					remove: async () => undefined,
-					probe: async () => "offline" as const,
-					request: async () => ({ status: 0, body: null }),
+					connect: async (url: string) => {
+						throw new Error(`No fake remote for ${url}`);
+					},
+					disconnect: async () => undefined,
+					previewUrl: async (_hostId: string, _sessionId: string, sourceUrl: string) => sourceUrl,
+					resolvePreviewUrl: async (_hostId: string, _sessionId: string, viewedUrl: string) => viewedUrl,
 				},
 				cloud: {
 					getSession: async () => null,

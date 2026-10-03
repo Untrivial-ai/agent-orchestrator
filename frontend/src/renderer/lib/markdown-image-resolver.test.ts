@@ -70,6 +70,11 @@ describe("resolveMarkdownImageSrc", () => {
 		expect(url).toContain("side=after");
 	});
 
+	it("keeps the remote proxy token when resolving a session image", () => {
+		const url = resolveMarkdownImageSrc("session-1", "README.md", "./flow.png", 7, "http://127.0.0.1:4000/token-a");
+		expect(url).toMatch(/^http:\/\/127\.0\.0\.1:4000\/token-a\/api\/v1\/sessions\/session-1\/workspace\/file\/blob\?/);
+	});
+
 	it("carries the version so an edited image is refetched rather than served from cache", () => {
 		const before = resolveMarkdownImageSrc("session-1", "docs/guide.md", "./flow.png", 100);
 		const after = resolveMarkdownImageSrc("session-1", "docs/guide.md", "./flow.png", 200);

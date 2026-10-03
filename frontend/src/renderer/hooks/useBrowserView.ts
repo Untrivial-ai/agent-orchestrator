@@ -16,6 +16,7 @@ import type {
 } from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { BROWSER_OVERLAY_CANDIDATE_SELECTOR, OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import { aoBridge } from "../lib/bridge";
 
 export type { BrowserNavState };
 
@@ -52,6 +53,8 @@ function sameBrowserURL(left: string, right: string): boolean {
 
 type UseBrowserViewOptions = {
 	sessionId: string;
+	/** Source daemon for preview URLs; omitted for the local daemon. */
+	origin?: { hostId: string; sessionId: string; proxyBase: string };
 	active: boolean;
 	poppedOut: boolean;
 	/**
@@ -135,7 +138,7 @@ const EMPTY_PROFILE_STATE: BrowserProfileViewState = {
 	temporary: true,
 };
 
-type PreviewTrigger = { revision: number | null; target: string };
+type PreviewTrigger = { revision: number | null; target: string; origin: string };
 
 // The native view survives React session switches, so remember which preview
 // trigger was already consumed for each session. This prevents switching back
@@ -226,6 +229,7 @@ function hiddenByFullscreen(node: HTMLElement): boolean {
 
 export function useBrowserView({
 	sessionId,
+	origin,
 	active,
 	poppedOut,
 	terminated,
@@ -257,10 +261,7 @@ export function useBrowserView({
 	const appliedLayoutRevisionRef = useRef(0);
 	const settleTimerRef = useRef<number | null>(null);
 	const observerRef = useRef<ResizeObserver | null>(null);
-	const previewTriggerRef = useRef<{
-		revision: number | null;
-		target: string;
-	} | null>(null);
+	const previewTriggerRef = useRef<PreviewTrigger | null>(null);
 	const overlayOpenRef = useRef(false);
 	const tabNoticeTimerRef = useRef<number | null>(null);
 	const tabsStateRef = useRef(tabsState);
@@ -933,6 +934,16 @@ export function useBrowserView({
 		return withView((id) => window.ao!.browser.clear(id));
 	}, [hasNativeBrowser, withView]);
 
+	// Clearing or terminating a remote preview must also retire its viewer-only
+	// origin, even when the native browser view has already been destroyed.
+	useEffect(() => {
+		if (!origin || (!terminated && previewUrl?.trim())) return;
+		void aoBridge.remotes.previewUrl(origin.hostId, origin.sessionId, "").catch(() => {
+			// A disconnected proxy is already closed, so there is nothing to revoke.
+		});
+		return undefined;
+	}, [origin?.hostId, origin?.sessionId, origin?.proxyBase, previewUrl, terminated]);
+
 	// Drive the view from the daemon-set preview target. Current daemons key
 	// this on previewRevision (bumped on every `ao preview` call); older daemons
 	// did not send it, so fall back to URL changes for compatibility.
@@ -942,19 +953,28 @@ export function useBrowserView({
 		// consume the new session's preview revision against that stale view.
 		if (!viewId || viewIdRef.current !== viewId || terminated) return;
 		const target = previewUrl?.trim() ?? "";
+		const source = origin ? `${origin.hostId}:${origin.sessionId}:${origin.proxyBase}` : "local";
 		const revision = typeof previewRevision === "number" ? previewRevision : null;
 		const previous = previewTriggerRef.current;
-		if (previous?.revision === revision && previous.target === target) return;
-		if (revision !== null && previous?.revision === revision) return;
-		const consumed: PreviewTrigger = { revision, target };
+		if (previous?.revision === revision && previous.target === target && previous.origin === source) return;
+		if (revision !== null && previous?.revision === revision && previous.origin === source) return;
+		const consumed: PreviewTrigger = { revision, target, origin: source };
 		previewTriggerRef.current = consumed;
 		if (hasNativeBrowser) consumedPreviewTriggers.set(sessionId, consumed);
 		if (target) {
-			void navigate(target);
+			let cancelled = false;
+			const resolved = origin
+				? aoBridge.remotes.previewUrl(origin.hostId, origin.sessionId, target)
+				: Promise.resolve(target);
+			void resolved.then((url) => {
+				return cancelled ? undefined : navigate(url);
+			}).catch((error) => console.warn("Unable to open browser preview", error));
+			return () => { cancelled = true; };
 		} else if ((revision !== null && revision > 0) || previous?.target) {
 			void clear();
 		}
-	}, [clear, hasNativeBrowser, navigate, previewRevision, previewUrl, sessionId, terminated, viewId]);
+		return undefined;
+	}, [clear, hasNativeBrowser, navigate, origin?.hostId, origin?.sessionId, origin?.proxyBase, previewRevision, previewUrl, sessionId, terminated, viewId]);
 
 	const destroy = useCallback(() => {
 		const id = viewIdRef.current;

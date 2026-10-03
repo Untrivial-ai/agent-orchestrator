@@ -37,12 +37,12 @@ describe("describeDesktopStatus", () => {
 		});
 	});
 
-	it("names the cause when the desktop answered with a rejection", () => {
+	it("names the cause when the machine answered with a rejection", () => {
 		const label = (failure: Parameters<typeof describeDesktopStatus>[0]["failure"]) =>
 			describeDesktopStatus({ configured: true, connection: "closed", failure }).label;
 		expect(label("auth")).toBe("Password rejected");
 		expect(label("rate-limited")).toBe("Locked out");
-		expect(label("server-error")).toBe("Desktop error");
+		expect(label("server-error")).toBe("Machine error");
 		expect(label("tunnel-rotated")).toBe("Address changed");
 	});
 });

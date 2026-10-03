@@ -214,6 +214,44 @@ func TestEventsStreamClampsCursorAheadOfCurrentDatabaseToHead(t *testing.T) {
 	}
 }
 
+func TestEventsStreamStartsAtLatestAndRetainsCursor(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &resetEventSource{}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{CDC: src, Events: live}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?after=latest", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("X-AO-Event-After"); got != "1" {
+		t.Fatalf("starting cursor = %q, want current head 1", got)
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	var cursor []string
+	for scanner.Scan() {
+		if scanner.Text() == "" {
+			break
+		}
+		cursor = append(cursor, scanner.Text())
+	}
+	if got := strings.Join(cursor, "|"); got != "id: 1|event: cursor|data: {}" {
+		t.Fatalf("initial SSE frame = %q, want ID-bearing cursor event", got)
+	}
+	live.publish(testCDCEvent(2))
+	if ids := readSSEIDs(t, resp.Body, 1); ids[0] != "2" {
+		t.Fatalf("live event id = %q, want 2", ids[0])
+	}
+	if src.after != 1 {
+		t.Fatalf("EventsAfter called with %d, want head cursor 1", src.after)
+	}
+}
+
 func TestWriteSSEEventSanitizesEventNameNewlines(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sentSeq := int64(0)
@@ -380,6 +418,48 @@ func TestEventsStreamParsesLastEventIDHeader(t *testing.T) {
 	}
 }
 
+func TestEventsStreamLatestResumesFromLastEventID(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &lastEventIDSource{live: live}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{CDC: src, Events: live}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?after=latest", nil)
+	req.Header.Set("Last-Event-ID", "7")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if ids := readSSEIDs(t, resp.Body, 1); ids[0] != "8" {
+		t.Fatalf("resumed event id = %q, want 8", ids[0])
+	}
+}
+
+func TestEventsStreamNumericAfterOverridesLastEventID(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &lastEventIDSource{live: live}
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{CDC: src, Events: live}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events?after=4", nil)
+	req.Header.Set("Last-Event-ID", "7")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if ids := readSSEIDs(t, resp.Body, 1); ids[0] != "5" {
+		t.Fatalf("event id = %q, want 5 from explicit cursor 4", ids[0])
+	}
+}
+
 func testCDCEvent(seq int64) cdc.Event {
 	return testCDCEventWithType(seq, cdc.EventSessionUpdated)
 }
@@ -402,8 +482,7 @@ func testCDCEventWithType(seq int64, typ cdc.EventType) cdc.Event {
 // it is large enough to flush on its own.
 //
 // A periodic comment frame keeps the pipe moving and carries any buffered event
-// out with it. Comments are the SSE no-op: clients ignore them, and the cursor
-// is untouched.
+// out with it. Named heartbeats are observable to clients without changing the cursor.
 func TestEventsStreamHeartbeatsWhileIdle(t *testing.T) {
 	restore := eventsHeartbeatInterval
 	eventsHeartbeatInterval = 50 * time.Millisecond
@@ -439,11 +518,10 @@ func TestEventsStreamHeartbeatsWhileIdle(t *testing.T) {
 		}
 		seen += string(buf[:n])
 		for _, line := range strings.Split(seen, "\n") {
-			// An SSE comment: a frame beginning with a colon.
-			if strings.HasPrefix(line, ":") {
+			if line == "event: heartbeat" {
 				return
 			}
 		}
 	}
-	t.Fatalf("idle stream sent no comment frame in 4s (got %q); a buffering proxy has nothing to flush an event through", seen)
+	t.Fatalf("idle stream sent no heartbeat frame in 4s (got %q); a buffering proxy has nothing to flush an event through", seen)
 }

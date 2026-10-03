@@ -30,6 +30,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
 	workspaceQueryKey: ["workspaces"],
+	workspaceQueryKeyForHost: () => ["workspaces"],
 	cloudSessionsQueryKey: ["cloud-sessions"],
 	useWorkspaceQuery: workspaceQueryMock,
 }));
@@ -162,10 +163,10 @@ describe("StandaloneArchiveView", () => {
 				},
 			),
 		);
-		expect(navigateMock).toHaveBeenCalledWith({
+		await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({
 			to: "/sessions/$sessionId",
 			params: { sessionId: "standalone-dead" },
-		});
+		}));
 	});
 });
 

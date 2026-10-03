@@ -397,6 +397,9 @@ type ChatUserMessage struct {
 	// ClientMessageID makes delivery idempotent: a retry with the same key must
 	// not produce a second provider turn.
 	ClientMessageID string
+	// ClientPayloadHash identifies the original request before AO adds reports
+	// or other server-owned context. It is internal, never supplied by a client.
+	ClientPayloadHash string
 	// Origin records the timeline attribution and delivery source. Automation
 	// shares the queue with the user and can never resolve an approval.
 	Origin domain.MessageOrigin

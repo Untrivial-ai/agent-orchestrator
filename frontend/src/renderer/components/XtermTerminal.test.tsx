@@ -39,6 +39,9 @@ const state = vi.hoisted(() => ({
 		wheelHandler?: (event: WheelEvent) => boolean;
 		selection: string;
 		options: Record<string, unknown>;
+		rows: number;
+		dimensions?: { css: { cell: { width: number; height: number } } };
+		resize: ReturnType<typeof vi.fn>;
 		modes: { bracketedPasteMode: boolean; mouseTrackingMode: string };
 		buffer: {
 			active: {
@@ -110,6 +113,8 @@ vi.mock("@xterm/xterm", () => ({
 		options: Record<string, unknown>;
 		cols = 80;
 		rows = 24;
+		dimensions?: { css: { cell: { width: number; height: number } } };
+		resize = vi.fn((cols: number, rows: number) => { this.cols = cols; this.rows = rows; });
 		selection = "";
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
@@ -255,10 +260,8 @@ vi.mock("@xterm/xterm", () => ({
 
 vi.mock("@xterm/addon-fit", () => ({
 	FitAddon: class FakeFitAddon {
-		fit() {
-			state.fit();
-		}
 		proposeDimensions() {
+			state.fit();
 			return undefined;
 		}
 	},
@@ -292,10 +295,6 @@ vi.mock("@xterm/addon-web-links", () => ({
 			state.linkHandler = handler ?? null;
 		}
 	},
-}));
-
-vi.mock("@xterm/addon-canvas", () => ({
-	CanvasAddon: class FakeCanvasAddon {},
 }));
 
 vi.mock("@xterm/addon-webgl", () => ({
@@ -419,6 +418,45 @@ describe("XtermTerminal", () => {
 				value: originalResizeObserver,
 			});
 		}
+	});
+
+	it.each([
+		["Linux x86_64", 100],
+		["MacIntel", 99],
+	])("resizes before paint from the observer box on %s without reading layout", (platform, cols) => {
+		setNavigatorPlatform(platform);
+		const callbacks: ResizeObserverCallback[] = [];
+		const original = window.ResizeObserver;
+		class CapturingResizeObserver implements ResizeObserver {
+			constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+			disconnect() {}
+			observe() {}
+			unobserve() {}
+		}
+		window.ResizeObserver = CapturingResizeObserver;
+		try {
+			const { container, rerender } = render(<XtermTerminal theme="dark" />);
+			const host = container.querySelector(".terminal-xterm-host")!;
+			const terminal = state.lastTerminal!;
+			terminal.dimensions = { css: { cell: { width: 8, height: 16 } } };
+			const entry = (width: number, height = 640) => [{ target: host, contentRect: { width, height } }] as ResizeObserverEntry[];
+			const styleSpy = vi.spyOn(window, "getComputedStyle");
+			const rectSpy = vi.spyOn(host, "getBoundingClientRect");
+			state.fit.mockClear();
+			try {
+				act(() => callbacks.at(-1)?.(entry(800.9), {} as ResizeObserver));
+				expect(terminal.resize).toHaveBeenLastCalledWith(cols, 40);
+				act(() => callbacks.at(-1)?.(entry(801), {} as ResizeObserver));
+				act(() => callbacks.at(-1)?.(entry(0, 0), {} as ResizeObserver));
+				expect(terminal.resize).toHaveBeenCalledTimes(1);
+				expect(state.fit).not.toHaveBeenCalled();
+				expect(styleSpy).not.toHaveBeenCalled();
+				expect(rectSpy).not.toHaveBeenCalled();
+			} finally { styleSpy.mockRestore(); rectSpy.mockRestore(); }
+			rerender(<XtermTerminal theme="dark" isVisible={false} />);
+			act(() => callbacks.at(-1)?.(entry(1000), {} as ResizeObserver));
+			expect(terminal.resize).toHaveBeenCalledTimes(1);
+		} finally { window.ResizeObserver = original; }
 	});
 
 	it("finishes retained activation when xterm emits no render event", async () => {
@@ -605,6 +643,121 @@ describe("XtermTerminal", () => {
 		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
 	});
 
+	it("restores focus when the cache requests activation focus", async () => {
+		let terminal: AttachableTerminal | undefined;
+		render(<XtermTerminal theme="dark" onReady={(ready) => { terminal = ready; }} />);
+		state.lastTerminal!.focus.mockClear();
+
+		act(() => terminal!.requestActivationFocus());
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+	});
+
+	it("respects an explicit focus opt-out when the cache requests activation focus", () => {
+		vi.useFakeTimers();
+		try {
+			let terminal: AttachableTerminal | undefined;
+			render(<XtermTerminal focusRequested={false} theme="dark" onReady={(ready) => { terminal = ready; }} />);
+			state.lastTerminal!.focus.mockClear();
+
+			act(() => terminal!.requestActivationFocus());
+			act(() => vi.runOnlyPendingTimers());
+
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rechecks the focus opt-out before a queued activation focus runs", () => {
+		vi.useFakeTimers();
+		try {
+			let terminal: AttachableTerminal | undefined;
+			const onReady = (ready: AttachableTerminal) => { terminal = ready; };
+			const { rerender } = render(<XtermTerminal focusRequested theme="dark" onReady={onReady} />);
+			act(() => vi.runOnlyPendingTimers());
+			state.lastTerminal!.focus.mockClear();
+
+			act(() => terminal!.requestActivationFocus());
+			rerender(<XtermTerminal focusRequested={false} theme="dark" onReady={onReady} />);
+			act(() => vi.runOnlyPendingTimers());
+
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not steal focus from a dialog when the cache requests activation focus", () => {
+		vi.useFakeTimers();
+		try {
+			let terminal: AttachableTerminal | undefined;
+			render(<XtermTerminal theme="dark" onReady={(ready) => { terminal = ready; }} />);
+			state.lastTerminal!.focus.mockClear();
+			const dialog = document.createElement("div");
+			dialog.setAttribute("role", "dialog");
+			dialog.dataset.state = "open";
+			const dialogInput = document.createElement("input");
+			dialog.appendChild(dialogInput);
+			document.body.appendChild(dialog);
+			dialogInput.focus();
+
+			act(() => terminal!.requestActivationFocus());
+			act(() => vi.runAllTimers());
+
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+			dialog.remove();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("allows a tab close button marked as a tab action to hand focus to the terminal", async () => {
+		const { rerender } = render(<XtermTerminal theme="dark" />);
+		const topbar = document.createElement("div");
+		topbar.dataset.testid = "session-workspace-topbar";
+		const close = document.createElement("button");
+		close.setAttribute("data-terminal-tab-action", "true");
+		topbar.appendChild(close);
+		document.body.appendChild(topbar);
+		close.focus();
+		state.lastTerminal!.focus.mockClear();
+
+		rerender(<XtermTerminal focusRequested theme="dark" />);
+
+		await waitFor(() => expect(state.lastTerminal!.focus).toHaveBeenCalled());
+		topbar.remove();
+	});
+
+	it("does not steal focus from other topbar buttons like the session-actions trigger", async () => {
+		const frames: FrameRequestCallback[] = [];
+		const requestAnimationFrameSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
+		try {
+			const { rerender } = render(<XtermTerminal theme="dark" />);
+			const topbar = document.createElement("div");
+			topbar.dataset.testid = "session-workspace-topbar";
+			// ⋮ trigger and embedded shell chrome are plain buttons in the
+			// topbar with no opt-in marker — they must keep focus.
+			const actionsTrigger = document.createElement("button");
+			actionsTrigger.setAttribute("data-session-actions-trigger", "");
+			topbar.appendChild(actionsTrigger);
+			document.body.appendChild(topbar);
+			actionsTrigger.focus();
+			state.lastTerminal!.focus.mockClear();
+
+			rerender(<XtermTerminal focusRequested theme="dark" />);
+			act(() => frames.splice(0).forEach((callback) => callback(performance.now())));
+
+			expect(state.lastTerminal!.focus).not.toHaveBeenCalled();
+			topbar.remove();
+		} finally {
+			requestAnimationFrameSpy.mockRestore();
+		}
+	});
+
 	it("updates the live terminal palette when the named color theme changes", () => {
 		const style = document.createElement("style");
 		style.textContent = `
@@ -672,7 +825,7 @@ describe("XtermTerminal", () => {
 	it("does not reserve width for the hidden terminal scrollbar outside macOS", () => {
 		const { container } = render(<XtermTerminal theme="dark" />);
 
-		expect(state.lastTerminal!._core.viewport.scrollBarWidth).toBe(0);
+		expect(state.lastTerminal!.options.scrollbar).toEqual({ showScrollbar: false, width: 7 });
 		expect(container.querySelector(".terminal-scrollbar")).toBeNull();
 	});
 
@@ -680,7 +833,7 @@ describe("XtermTerminal", () => {
 		setNavigatorPlatform("MacIntel");
 		const { container } = render(<XtermTerminal theme="dark" />);
 
-		expect(state.lastTerminal!._core.viewport.scrollBarWidth).toBe(7);
+		expect(state.lastTerminal!.options.scrollbar).toEqual({ showScrollbar: true, width: 7 });
 		expect(container.querySelector(".terminal-xterm-host--mac")).not.toBeNull();
 		expect(container.querySelector(".terminal-scrollbar")).not.toBeNull();
 	});

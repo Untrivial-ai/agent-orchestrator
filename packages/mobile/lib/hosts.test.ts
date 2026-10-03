@@ -57,6 +57,33 @@ describe("host store", () => {
 		expect(got.map((h) => h.id)).toEqual(["h_new", "h_old"]);
 	});
 
+	it("does not restart another live connection for a recency-only write", async () => {
+		const { sameHostConnections } = await mod();
+		const original = { id: "b", name: "B", platform: "linux", endpoints: [lan("host-b")], token: "pw", lastConnected: 1 };
+		expect(sameHostConnections([original], [{ ...original, lastConnected: 2 }])).toBe(true);
+		expect(sameHostConnections([original], [{ ...original, endpoints: [lan("new-host-b")] }])).toBe(false);
+	});
+
+	it("keeps simultaneous endpoint updates from different machines", async () => {
+		const { saveHost, updateHostEndpoints, touchHost, loadHosts } = await mod();
+		await saveHost({ id: "a", name: "A", platform: "linux", endpoints: [lan("old-a")], token: "", lastConnected: 1 });
+		await saveHost({ id: "b", name: "B", platform: "linux", endpoints: [lan("old-b")], token: "", lastConnected: 1 });
+		const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+		const delayedRead = vi.spyOn(AsyncStorage, "getItem").mockImplementation(async (key: string) => {
+			const value = plain.get(key) ?? null;
+			await new Promise((resolve) => setTimeout(resolve, 1));
+			return value;
+		});
+		try {
+			await Promise.all([updateHostEndpoints("a", [lan("new-a")]), touchHost("b", 77)]);
+			const hosts = await loadHosts();
+			expect(hosts.find((host) => host.id === "a")?.endpoints).toEqual([lan("new-a")]);
+			expect(hosts.find((host) => host.id === "b")?.lastConnected).toBe(77);
+		} finally {
+			delayedRead.mockRestore();
+		}
+	});
+
 	it("replaces a host rather than duplicating it on re-pair", async () => {
 		const { saveHost, loadHosts } = await mod();
 		await saveHost({ id: "h_one", name: "before", platform: "darwin", endpoints: [], token: "", lastConnected: 1 });
@@ -65,6 +92,13 @@ describe("host store", () => {
 		const got = await loadHosts();
 		expect(got).toHaveLength(1);
 		expect(got[0].name).toBe("after");
+	});
+
+	it("renames a machine without changing its endpoint or credential", async () => {
+		const { saveHost, renameHost, loadHosts } = await mod();
+		await saveHost({ id: "h_one", name: "old", platform: "linux", endpoints: [lan("host")], token: "secret", lastConnected: 1 });
+		await renameHost("h_one", " AzureLinux ");
+		expect((await loadHosts())[0]).toEqual(expect.objectContaining({ name: "AzureLinux", endpoints: [lan("host")], token: "secret" }));
 	});
 
 	// The connection token authorises terminal input, spawns and PR actions. It
@@ -111,19 +145,19 @@ describe("host store", () => {
 		expect(got[0].token).toBe("pw");
 	});
 
-	it("caps the list so it cannot grow without bound", async () => {
-		const { saveHost, loadHosts, MAX_HOSTS } = await mod();
-		for (let i = 0; i < MAX_HOSTS + 5; i++) {
+	it("keeps every paired host available for explicit removal", async () => {
+		const { saveHost, loadHosts } = await mod();
+		for (let i = 0; i < 15; i++) {
 			await saveHost({
 				id: `h_${i}`, name: `m${i}`, platform: "darwin",
-				endpoints: [], token: "", lastConnected: i,
+				endpoints: [], token: `pw-${i}`, lastConnected: i,
 			});
 		}
 
 		const got = await loadHosts();
-		expect(got).toHaveLength(MAX_HOSTS);
-		// The oldest fall off, not the newest.
-		expect(got[0].id).toBe(`h_${MAX_HOSTS + 4}`);
+		expect(got).toHaveLength(15);
+		expect(got[0].id).toBe("h_14");
+		expect(got[14]).toMatchObject({ id: "h_0", token: "pw-0" });
 	});
 
 	it("survives corrupted storage instead of crashing the app", async () => {

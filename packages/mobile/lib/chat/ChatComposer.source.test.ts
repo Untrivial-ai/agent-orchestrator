@@ -63,9 +63,14 @@ describe("chat composer pill", () => {
 	it("returns an emptied multiline draft to the one-line height", () => {
 		// A controlled TextInput can retain its last native content size after its
 		// value is cleared; the empty placeholder must not inherit that height.
-		expect(composer).toContain('setText("");\n\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
+		expect(composer).toMatch(/setText\(""\);\s*setFieldHeight\(COMPOSER_FIELD_HEIGHT\);/);
 		expect(composer).toContain('if (!latestText.current) {\n\t\t\t\t\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
 		expect(composer).toContain("height: text ? fieldHeight : COMPOSER_FIELD_HEIGHT");
+	});
+
+	it("does not clear a newer draft when an earlier send completes", () => {
+		expect(composer).toContain('current === text ? AsyncStorage.removeItem(draftKey) : AsyncStorage.setItem(draftKey, current)');
+		expect(composer).toContain('if (latestText.current === text) {');
 	});
 
 	it("uses the latest native text when a pasted draft grows before React renders", () => {

@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect } from "react";
-import { isConfigured, type ServerConfig } from "../config";
+import { isConfigured, machineIdentity, type ServerConfig } from "../config";
 import { streamGlobalConversationEvents } from "./api";
 import { eventCursorKey, initialCursorFor } from "./eventCursor";
 import {
@@ -14,10 +14,11 @@ const RECONNECT_MAX_MS = 15_000;
 const registry = createConversationEventRegistry();
 
 export function subscribeConversationEvents(
+	cfg: ServerConfig,
 	sessionId: string,
 	listener: (event: ConversationEvent) => void,
 ): () => void {
-	return registry.subscribe(sessionId, listener);
+	return registry.subscribe(machineIdentity(cfg), sessionId, listener);
 }
 
 /** Own the daemon's global CDC stream for the lifetime of the configured app. */
@@ -26,6 +27,7 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 		if (!cfg || !isConfigured(cfg)) return;
 		let stopped = false;
 		let controller: AbortController | undefined;
+		const hostId = machineIdentity(cfg);
 		const cursorKey = eventCursorKey(cfg);
 		const cursorPersister = createCursorPersister((cursor) =>
 			AsyncStorage.setItem(cursorKey, String(cursor)),
@@ -45,7 +47,7 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 						(event) => {
 							cursor = Math.max(cursor, event.seq);
 							cursorPersister.update(cursor);
-							registry.publish(event);
+							registry.publish(hostId, event);
 						},
 						(resetCursor) => {
 							cursor = resetCursor;
@@ -55,7 +57,7 @@ export function useConversationEventTransport(cfg: ServerConfig | null): void {
 							// Only the chat screen currently on top subscribes, so most frames
 							// have no reader — and during a cold-start replay, when no chat is
 							// open at all, none of them do. Those only need to move the cursor.
-							wantsPayload: () => registry.hasListeners(),
+							wantsPayload: () => registry.hasListeners(hostId),
 							onCursorAdvance: (seq) => {
 								cursor = Math.max(cursor, seq);
 								cursorPersister.update(cursor);

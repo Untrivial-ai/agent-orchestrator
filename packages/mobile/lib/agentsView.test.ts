@@ -83,6 +83,13 @@ describe("workerStatusGlyph", () => {
 		expect(workerStatusGlyph("mergeable")).toBe("check-circle");
 	});
 
+	// An unresolved comment is feedback same as a formal changes-requested
+	// decision, so it keeps the same glyph rather than falling through to null.
+	it("gives an unresolved comment the same glyph as changes requested", () => {
+		expect(workerStatusGlyph("commented")).toBe("message-square");
+		expect(workerStatusGlyph("commented")).toBe(workerStatusGlyph("changes_requested"));
+	});
+
 	it("separates blocked-on-you from broken", () => {
 		expect(workerStatusGlyph("needs_input")).not.toBe(workerStatusGlyph("errored"));
 	});

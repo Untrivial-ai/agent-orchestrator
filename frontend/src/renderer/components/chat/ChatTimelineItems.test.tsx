@@ -152,13 +152,13 @@ describe("AssistantMessage streaming", () => {
 		expect(frames.size).toBe(0);
 	});
 
-	it("shows a large received burst within 250ms", () => {
+	it("shows a large received burst within 80ms", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		const text = "a".padEnd(10_000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
 
 		runFrame(0);
-		for (let now = 16; now <= 240 && frames.size; now += 16) runFrame(now);
+		for (let now = 16; now <= 80 && frames.size; now += 16) runFrame(now);
 
 		expect(document.querySelector("p")?.textContent).toBe(text);
 		expect(frames.size).toBe(0);
@@ -169,7 +169,7 @@ describe("AssistantMessage streaming", () => {
 		let text = "a".padEnd(2000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
 		runFrame(0);
-		for (let now = 40; now <= 200; now += 40) {
+		for (let now = 10; now <= 50; now += 10) {
 			text += "x".repeat(2000);
 			view.rerender(<AssistantMessage message={message({ text })} />);
 			runFrame(now);
@@ -185,8 +185,8 @@ describe("AssistantMessage streaming", () => {
 		const text = "a".padEnd(2000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
 		runFrame(0);
-		runFrame(50);
-		runFrame(100);
+		runFrame(16);
+		runFrame(32);
 
 		expect(segment.mock.calls.filter(([input]) => input === text)).toHaveLength(1);
 	});
@@ -300,9 +300,11 @@ describe("AssistantMessage streaming", () => {
 			</StrictMode>,
 		);
 		runFrame(0);
-		runFrame(100);
+		runFrame(40);
 
-		expect(document.querySelector("p")?.textContent).toBe("abcdef");
+		expect(document.querySelector("p")?.textContent).toBe("abc");
+		runFrame(60);
+		expect(document.querySelector("p")?.textContent).toBe("abcdefghij");
 	});
 });
 

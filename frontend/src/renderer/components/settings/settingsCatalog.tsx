@@ -1,11 +1,10 @@
-import { BadgeCheck, Bot, CircleHelp, Cloud, Globe2, Keyboard, RefreshCw, Settings2, Smartphone, type LucideIcon } from "lucide-react";
+import { BadgeCheck, Bot, CircleHelp, Globe2, Keyboard, RefreshCw, Server, Settings2, Smartphone, type LucideIcon } from "lucide-react";
 import { lazy, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import type { GlobalSettingsSection } from "../../stores/ui-store";
 import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
-import { CloudCredentialsSection } from "./CloudCredentialsSection";
-import { CloudProviderSection } from "./CloudProviderSection";
+import { Coder11xSection } from "./Coder11xSection";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
@@ -13,6 +12,7 @@ import { HarnessSettingsSection } from "./HarnessSettingsSection";
 import { KeyboardShortcutsContent } from "./KeyboardShortcutsContent";
 import { MobileDevicesSection } from "./MobileDevicesSection";
 import { ReportProblemContent } from "./ReportProblemContent";
+import { RemoteHostsSettings } from "./RemoteHostsSettings";
 import { SettingsSection } from "./SettingsSection";
 
 const UpdatesSection = lazy(async () => {
@@ -22,7 +22,12 @@ const UpdatesSection = lazy(async () => {
 
 type CatalogContext = {
 	cloudEnabled: boolean;
+	developerMode: boolean;
+	/** Signed-in user's email ends with @11x.ai — gates the bring-your-own-Coder page. */
+	is11x: boolean;
 	focusAgentId?: string;
+	hostId?: string;
+	harnessView?: "local" | "cloud";
 };
 
 export type SettingsCatalogItem = {
@@ -48,7 +53,7 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		id: "harness",
 		icon: Bot,
 		label: (t) => t("settings.harness"),
-		render: (_t, titleHidden, { focusAgentId }) => <HarnessSettingsSection focusAgentId={focusAgentId} titleHidden={titleHidden} />,
+		render: (_t, titleHidden, { focusAgentId, hostId, harnessView }) => <HarnessSettingsSection focusAgentId={focusAgentId} {...(hostId ? { hostId } : {})} {...(harnessView ? { initialView: harnessView } : {})} titleHidden={titleHidden} />,
 	},
 	{
 		id: "agents",
@@ -63,23 +68,23 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		render: (_t, titleHidden) => (
 			<>
 				<BrowserProfilesSection titleHidden={titleHidden} />
-				<div className="border-t border-border/60 pt-5">
-					<BrowserDownloadsSection />
-				</div>
+				<BrowserDownloadsSection />
 			</>
 		),
 	},
 	{
-		id: "cloud",
-		icon: Cloud,
-		label: (t) => t("settings.cloud"),
-		visible: ({ cloudEnabled }) => cloudEnabled,
-		render: (_t, titleHidden) => (
-			<>
-				<CloudProviderSection titleHidden={titleHidden} />
-				<CloudCredentialsSection titleHidden={titleHidden} />
-			</>
-		),
+		id: "coder11x",
+		icon: Server,
+		label: (t) => t("settings.coder11x.navLabel"),
+		visible: ({ is11x }) => is11x,
+		render: (_t, titleHidden) => <Coder11xSection titleHidden={titleHidden} />,
+	},
+	{
+		id: "remoteHosts",
+		icon: Server,
+		label: (t) => t("settings.remoteHosts"),
+		visible: ({ developerMode }) => developerMode,
+		render: (_t, titleHidden) => <RemoteHostsSettings titleHidden={titleHidden} />,
 	},
 	{
 		id: "mobile",

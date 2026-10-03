@@ -242,6 +242,46 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 	});
 });
 
+it.each(["native", "ACP config"] as const)(
+	"omits the repeated Claude prefix from %s chat model labels",
+	async (source) => {
+		const user = userEvent.setup();
+		const models = [
+			{ id: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5", default: true },
+			{ id: "claude-opus-4-7", displayName: "Claude Opus 4.7", default: false },
+		];
+		const configOption: ChatConfigOption = {
+			id: "model",
+			name: "Model",
+			category: "model",
+			type: "select",
+			currentValue: models[0].id,
+			choices: models.map((model) => ({ value: model.id, name: model.displayName })),
+		};
+		render(
+			<TurnSettingsBar
+				harness="claude-code"
+				models={source === "native" ? models : []}
+				settings={{ model: models[0].id }}
+				onChange={source === "native" ? vi.fn() : undefined}
+				configOptions={source === "ACP config" ? [configOption] : undefined}
+				onChangeConfigOption={source === "ACP config" ? vi.fn() : undefined}
+			/>,
+		);
+
+		const picker = screen.getByRole("button", {
+			name: source === "native" ? "Model and reasoning effort for the next turn" : "Model",
+		});
+		expect(picker).toHaveTextContent("Sonnet 4.5");
+		expect(picker).not.toHaveTextContent("Claude");
+		await user.click(picker);
+		if (source === "native") await user.keyboard("{ArrowDown}{ArrowRight}");
+		expect(screen.getByRole("menuitemradio", { name: "Sonnet 4.5" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Opus 4.7" })).toBeInTheDocument();
+		expect(screen.queryByText(/^Claude /)).not.toBeInTheDocument();
+	},
+);
+
 describe("ACP session config options", () => {
 	it("hides a mode with only an implicit default choice", () => {
 		const mode: ChatConfigOption = {

@@ -6,6 +6,16 @@ export function conversationErrorCode(error: unknown): string | undefined {
 	return code || undefined;
 }
 
+/** Another client answered first; let the caller refresh the approval card. */
+export async function ignoreStaleApproval(answer: () => Promise<void>): Promise<void> {
+	try {
+		await answer();
+	} catch (error) {
+		if (typeof error !== "object" || error === null || !("status" in error) || error.status !== 409 ||
+			conversationErrorCode(error) !== "CHAT_REQUEST_NOT_PENDING") throw error;
+	}
+}
+
 export function conversationErrorIsPermanent(code: string | undefined, reviewer = false): boolean {
 	if (!code) return false;
 	if (reviewer && code === "CHAT_CONTROLLER_NOT_READY") return false;

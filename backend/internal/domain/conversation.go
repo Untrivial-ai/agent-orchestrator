@@ -642,6 +642,7 @@ type ConversationMessage struct {
 	// ClientMessageID is the caller-supplied idempotency key for user messages.
 	// A retry carrying the same key must not create a second provider turn.
 	ClientMessageID     string    `json:"clientMessageId,omitempty"`
+	ClientPayloadHash   string    `json:"-"`
 	DeliveryContentJSON string    `json:"-"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
@@ -713,6 +714,9 @@ var ErrSessionNotProvisioning = errors.New("session is not provisioning")
 // named against. It lives here rather than in the storage layer so a controller and
 // an HTTP handler can both recognize it without importing SQLite.
 var ErrNoConversationTurn = errors.New("conversation turn not found")
+
+// ErrClientMessageConflict refuses reuse of a delivery ID for different content.
+var ErrClientMessageConflict = errors.New("client message id belongs to a different message")
 
 // ErrNoConversationBranch reports a branch id outside the named conversation.
 var ErrNoConversationBranch = errors.New("conversation branch not found")

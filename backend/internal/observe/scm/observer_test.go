@@ -457,7 +457,7 @@ func TestStartAsyncPerformsImmediatePollAndStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestPoll_DisablesOnceWhenCredentialsUnavailable(t *testing.T) {
+func TestPoll_SkipsProviderWhenCredentialsUnavailable(t *testing.T) {
 	store := testStoreWithSession()
 	provider := &fakeProvider{
 		credentialGate: true,
@@ -472,12 +472,47 @@ func TestPoll_DisablesOnceWhenCredentialsUnavailable(t *testing.T) {
 	if err := obs.Poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if provider.credentialChecks != 1 {
-		t.Fatalf("credential checks = %d, want one lazy check", provider.credentialChecks)
+	if provider.credentialChecks != 2 {
+		t.Fatalf("credential checks = %d, want one per poll while unavailable", provider.credentialChecks)
 	}
 	if provider.repoGuardCalls != 0 || provider.listCalls != 0 || len(provider.fetchBatches) != 0 {
 		t.Fatalf("provider API calls should be skipped without credentials: guards=%d lists=%d batches=%d",
 			provider.repoGuardCalls, provider.listCalls, len(provider.fetchBatches))
+	}
+}
+
+func TestPoll_ResumesAfterCredentialsBecomeAvailable(t *testing.T) {
+	store := testStoreWithSession()
+	provider := &fakeProvider{
+		credentialGate: true,
+		repoGuards:     map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "v1"}},
+		observations:   map[string]ports.SCMObservation{},
+	}
+	var logs bytes.Buffer
+	obs := newTestObserver(store, provider, &fakeLifecycle{}, time.Unix(1, 0).UTC())
+	obs.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	for i := 0; i < 2; i++ {
+		if err := obs.Poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if provider.repoGuardCalls != 0 {
+		t.Fatalf("provider API called before authentication: guards=%d", provider.repoGuardCalls)
+	}
+
+	provider.mu.Lock()
+	provider.credentialOK = true
+	provider.mu.Unlock()
+	if err := obs.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if obs.disabled || provider.credentialChecks != 3 || provider.repoGuardCalls != 1 {
+		t.Fatalf("observer did not resume after authentication: disabled=%v credential checks=%d guards=%d",
+			obs.disabled, provider.credentialChecks, provider.repoGuardCalls)
+	}
+	if got := strings.Count(logs.String(), "scm observer disabled: provider credentials unavailable"); got != 1 {
+		t.Fatalf("unavailable credentials warning count = %d, want one: %s", got, logs.String())
 	}
 }
 

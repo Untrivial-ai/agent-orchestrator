@@ -24,12 +24,14 @@ export function describeDesktopStatus(input: {
 	// starting — not an offline desktop.
 	if (input.connection === "connecting" || input.failure === null) return { label: "Connecting…", tone: "neutral" };
 	switch (input.failure) {
+		case "incompatible-host":
+			return { label: "Update AO", tone: "error" };
 		case "auth":
 			return { label: "Password rejected", tone: "error" };
 		case "rate-limited":
 			return { label: "Locked out", tone: "error" };
 		case "server-error":
-			return { label: "Desktop error", tone: "error" };
+			return { label: "Machine error", tone: "error" };
 		case "tunnel-rotated":
 			return { label: "Address changed", tone: "error" };
 		default:

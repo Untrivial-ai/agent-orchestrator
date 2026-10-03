@@ -120,7 +120,9 @@ const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
-const STREAM_MAX_DISPLAY_LAG_MS = 200;
+// Snapshot delivery already coalesces provider output. Smooth short gaps without
+// adding another perceptible playback delay on top of the transport cadence.
+const STREAM_MAX_DISPLAY_LAG_MS = 50;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
@@ -403,7 +405,7 @@ function StagedAttachmentItems({
 }: {
 	paths: string[];
 	sessionId: string;
-	apiBaseUrl: string;
+	apiBaseUrl: string | null;
 	ariaLabel: string;
 	className?: string;
 }) {
@@ -412,7 +414,7 @@ function StagedAttachmentItems({
 		<ul aria-label={ariaLabel} className={cn("flex max-w-full flex-wrap gap-2", className)}>
 			{paths.map((path) => {
 				const name = attachmentName(path);
-				return IMAGE_ATTACHMENT_PATH.test(path) ? (
+				return IMAGE_ATTACHMENT_PATH.test(path) && apiBaseUrl !== null ? (
 					<li
 						key={path}
 						className="max-w-full overflow-hidden rounded-md border border-border bg-background"
@@ -513,7 +515,7 @@ export function HumanMessage({
 	/** The staged paths are relative to this session's workspace. */
 	sessionId: string;
 	/** The live daemon origin; passed by the timeline so daemon restarts refresh images. */
-	apiBaseUrl?: string;
+	apiBaseUrl?: string | null;
 	/** Typed while the agent was busy, and not sent yet. */
 	queued?: boolean;
 	/** True only for a human message added after the timeline first mounted. */
@@ -2166,7 +2168,7 @@ export function SteerMessage({
 }: {
 	activity: ConversationActivity;
 	sessionId: string;
-	apiBaseUrl?: string;
+	apiBaseUrl?: string | null;
 }) {
 	const text = activity.detail?.text ?? activity.summary;
 	const { body, attachments } = stagedAttachmentParts(text);
@@ -2629,7 +2631,7 @@ export function TurnChangedFiles({
 									<TooltipTrigger asChild>
 										<button
 											type="button"
-											onClick={() => onOpenFile(openPath)}
+											onClick={() => onOpenFile(tooltipPath)}
 											aria-label={`Open ${openPath} in Files`}
 											className={rowClass}
 										>

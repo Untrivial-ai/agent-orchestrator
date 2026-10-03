@@ -32,6 +32,14 @@ describe("mobile review presentation", () => {
 		});
 	});
 
+	it("qualifies review and reviewer links with their owning host", () => {
+		const session = { id: "worker-1", pr: { number: 12, url: "https://github.com/acme/repo/pull/12" } } as DashboardSession;
+		expect(reviewRouteForSession(session, "host-b")?.params).toMatchObject({ hostId: "host-b", sessionId: "worker-1" });
+		const review = state();
+		const data = { reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" } } as SessionReviews;
+		expect(reviewerDestination(data, review, session.id, "host-b")?.params).toMatchObject({ hostId: "host-b", sessionId: "worker-1" });
+	});
+
 	it("prefers the first PR in the current list and omits sessions without one", () => {
 		const session = {
 			id: "worker-1",
