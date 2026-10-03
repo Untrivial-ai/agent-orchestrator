@@ -2,8 +2,11 @@ package controllers_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -81,6 +84,37 @@ func TestSkillsRouteReportsAMissingController(t *testing.T) {
 	_ = json.Unmarshal(body, &envelope)
 	if envelope.Code != "" && envelope.Code != "CHAT_CONTROLLER_NOT_READY" {
 		t.Errorf("code = %q", envelope.Code)
+	}
+}
+
+// A provider call that fails after the driver is confirmed to support skills
+// (e.g. Codex app-server's `skills/list` returning a JSON-RPC error) must not
+// fall through to a bare 500: that would hide a provider-side, usually
+// transient fault behind "Internal server error" and give the client nothing
+// to act on. It must answer a typed, non-500 status that carries the raw
+// upstream error through for diagnostics.
+func TestSkillsRouteAnswersATypedErrorWhenTheProviderCallFails(t *testing.T) {
+	upstream := fmt.Errorf("%w: %w", chatsvc.ErrSkillsUnavailable,
+		errors.New(`skills/list: rpc error: {"code":-32000,"message":"boom"}`))
+	status, body := skillsRequest(t, &fakeConversationService{skillErr: upstream})
+	if status == http.StatusInternalServerError {
+		t.Fatalf("status = %d, want a typed non-500 (%s)", status, body)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (%s)", status, body)
+	}
+	var envelope struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	if envelope.Code != "CHAT_SKILLS_UNAVAILABLE" {
+		t.Errorf("code = %q, want CHAT_SKILLS_UNAVAILABLE", envelope.Code)
+	}
+	if !strings.Contains(envelope.Message, "boom") {
+		t.Errorf("message = %q, want it to preserve the raw upstream error", envelope.Message)
 	}
 }
 
