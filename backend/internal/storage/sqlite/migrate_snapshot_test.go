@@ -56,6 +56,7 @@ func buildMigrationSnapshots(t *testing.T, version int64) []byte {
 	if err != nil {
 		t.Fatalf("open migration checkpoint: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	defer func() { _ = db.Close() }()
 	for next := migrationSnapshots.highest + 1; next <= version; next++ {
 		upTo(t, db, next)

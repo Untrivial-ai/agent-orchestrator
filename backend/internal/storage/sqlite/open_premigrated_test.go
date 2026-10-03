@@ -66,16 +66,11 @@ func TestOpenPreMigratedRejectsStaleMigrationVersion(t *testing.T) {
 // returning the raw *sql.DB handle (caller must close it).
 func openMigratedTestDBIn(t *testing.T, dataDir string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, "ao.db")+pragmas)
+	version, err := expectedMigrationVersion()
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("expected migration version: %v", err)
 	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return db
+	return openMigratedDatabaseCopyAt(t, dataDir, version, pragmas)
 }
 
 // createEmptyDatabase creates a minimal SQLite database file with no tables.
