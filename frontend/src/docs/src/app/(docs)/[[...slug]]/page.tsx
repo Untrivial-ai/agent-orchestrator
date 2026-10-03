@@ -4,6 +4,7 @@ import { createRelativeLink } from "fumadocs-ui/mdx";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/layouts/docs/page";
 import { getMDXComponents } from "@/components/mdx";
 import { source } from "@/lib/source";
+import { visibleProductName } from "@/lib/branding";
 
 export default async function Page(props: PageProps<"/[[...slug]]">) {
   const params = await props.params;
@@ -15,7 +16,7 @@ export default async function Page(props: PageProps<"/[[...slug]]">) {
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
       <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
+      <DocsDescription>{page.data.description && visibleProductName(page.data.description)}</DocsDescription>
       <DocsBody>
         <MDX
           components={getMDXComponents({

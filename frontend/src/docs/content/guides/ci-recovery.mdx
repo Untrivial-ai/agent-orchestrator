@@ -3,17 +3,17 @@ title: CI recovery
 description: How AO observes failing GitHub checks and sends focused context to the owning session.
 ---
 
-When a claimed GitHub pull request has failing checks, AO's SCM observer records the new facts and routes a recovery message to the session that owns the PR.
+When a claimed GitHub pull request has failing checks, Orchestrator's SCM observer records the new facts and routes a recovery message to the session that owns the PR.
 
 ## The flow
 
-1. AO polls the claimed PR through its GitHub provider.
+1. Orchestrator polls the claimed PR through its GitHub provider.
 2. The lifecycle reducer derives `ci_failed` from the stored PR facts.
-3. AO formats the failing check names and links into one focused message.
+3. Orchestrator formats the failing check names and links into one focused message.
 4. The session manager delivers it through the active interface: a native Chat turn or the Terminal UI runtime.
 5. The desktop updates the PR summary and failing-check links from the same durable facts.
 
-AO fingerprints the failing-check set. An unchanged failure is not resent on every poll; a changed set can produce a new nudge.
+Orchestrator fingerprints the failing-check set. An unchanged failure is not resent on every poll; a changed set can produce a new nudge.
 
 ## Make sure the PR is linked
 
@@ -38,7 +38,7 @@ Use `--no-takeover` if the operation should fail when another active session alr
 
 ## What the agent receives
 
-The message includes the failing checks and available run URLs, plus the PR identity. Raw CI logs are not copied into AO's desktop API; the agent can follow the supplied links and use the repository host's CLI to inspect logs.
+The message includes the failing checks and available run URLs, plus the PR identity. Raw CI logs are not copied into Orchestrator's desktop API; the agent can follow the supplied links and use the repository host's CLI to inspect logs.
 
 ## Follow progress
 

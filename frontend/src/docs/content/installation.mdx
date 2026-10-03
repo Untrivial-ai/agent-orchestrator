@@ -13,19 +13,20 @@ The desktop app is the canonical install path. It owns the local daemon, require
 | --- | --- | --- |
 | Git | Always | Creates and manages isolated worktrees and branches. |
 | GitHub CLI `gh` | GitHub projects | Uses your existing authentication for repository and pull-request operations. |
-| An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
+| An agent harness | Always | The coding agent Orchestrator launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
 | tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. |
 
-AO uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
+Orchestrator uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
 
-## Set Up AO
+<span id="set-up-ao" />
+## Set Up Orchestrator
 
 <Steps>
 <Step>
 
 ### Install and open the desktop app
 
-Choose the download for your platform above, install it, and open **Agent Orchestrator**. The app starts and supervises the local Go daemon automatically.
+Choose the download for your platform above, install it, and open the desktop app. It starts and supervises the local Go daemon automatically.
 
 </Step>
 <Step>
@@ -46,7 +47,7 @@ Use an account that can read the repository and perform the branch and pull-requ
 
 ### Install and sign in to an agent
 
-Install at least one supported agent harness and run it once outside AO to complete its sign-in flow. AO detects available harnesses when you create a session.
+Install at least one supported agent harness and run it once outside Orchestrator to complete its sign-in flow. Orchestrator detects available harnesses when you create a session.
 
 For structured Chat, start with Claude Code, Codex, OpenCode, or Droid. Other supported harnesses run through their native Terminal UI.
 
@@ -55,7 +56,7 @@ For structured Chat, start with Claude Code, Codex, OpenCode, or Droid. Other su
 
 ### Add a project
 
-In the desktop app, choose **Add project** and select an existing local git repository. AO registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees.
+In the desktop app, choose **Add project** and select an existing local git repository. Orchestrator registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees.
 
 </Step>
 </Steps>
@@ -85,15 +86,16 @@ New users should install the desktop app directly instead.
 </div>
 </details>
 
-## Where AO Stores Data
+<span id="where-ao-stores-data" />
+## Where Orchestrator Stores Data
 
-All AO application state lives under `~/.ao` by default, including the daemon database, run file, managed worktrees, Electron browser data, and mobile pairing configuration. Advanced installations can override daemon paths with `AO_DATA_DIR` and `AO_RUN_FILE`.
+All Orchestrator application state lives under `~/.ao` by default, including the daemon database, run file, managed worktrees, Electron browser data, and mobile pairing configuration. Advanced installations can override daemon paths with `AO_DATA_DIR` and `AO_RUN_FILE`.
 
 ## Common Installation Problems
 
 <Accordions>
 	<Accordion title="No agent is available">
-		Install a supported agent harness, run it once to authenticate, then restart AO so the desktop-launched daemon receives the updated login-shell environment.
+		Install a supported agent harness, run it once to authenticate, then restart Orchestrator so the desktop-launched daemon receives the updated login-shell environment.
 	</Accordion>
 	<Accordion title="GitHub data is missing">
 		Run `gh auth status`. Confirm the active account can access the repository and its pull requests.
@@ -105,7 +107,7 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 		The desktop app does not require it. Only troubleshoot the package manager's global bin path if you intentionally use the frozen legacy CLI.
 	</Accordion>
 	<Accordion title="macOS says the developer cannot be verified">
-		In Finder, right-click Agent Orchestrator, choose Open, then choose Open again in the confirmation dialog. If macOS still blocks the app, run these diagnostics and include the output when opening an issue:
+		In Finder, right-click the installed desktop app, choose Open, then choose Open again in the confirmation dialog. If macOS still blocks the app, run these diagnostics and include the output when opening an issue:
 		```bash
 		sw_vers
 		codesign -dvvv "/Applications/Agent Orchestrator.app"

@@ -3,7 +3,7 @@ title: Projects
 description: Configure a registered project, its worker and orchestrator agents, setup, rules, reviews, and intake.
 ---
 
-A project is a repository, a multi-repository workspace, or an AO-managed Scratch directory. AO stores project identity and typed configuration in its database; there is no current `agent-orchestrator.yaml` lookup or global YAML registry.
+A project is a repository, a multi-repository workspace, or an Orchestrator-managed Scratch directory. Orchestrator stores project identity and typed configuration in its database; there is no current `agent-orchestrator.yaml` lookup or global YAML registry.
 
 ## Project kinds
 
@@ -25,7 +25,7 @@ ao project rm <project-id>
 
 ## Current configuration fields
 
-Project settings expose the fields that AO consumes at spawn time:
+Project settings expose the fields that Orchestrator consumes at spawn time:
 
 | Field | Purpose |
 | --- | --- |
@@ -40,15 +40,15 @@ Project settings expose the fields that AO consumes at spawn time:
 | `agentRules` | Inline standing instructions for workers |
 | `agentRulesFile` | Repo-relative rules file appended to worker instructions |
 | `orchestratorRules` | Standing instructions for orchestrator sessions |
-| `reviewers` | Reviewer harnesses used for AO review runs |
+| `reviewers` | Reviewer harnesses used for Orchestrator review runs |
 | `trackerIntake` | Opt-in, read-only issue intake that can spawn workers; inert unless the daemon also has `AO_TRACKER_INTAKE=on` |
-| `containerReap` | Project-wide opt-out from AO's session-container cleanup |
+| `containerReap` | Project-wide opt-out from Orchestrator's session-container cleanup |
 
-`symlinks` and `agentRulesFile` must remain inside the repository. AO rejects absolute paths and traversal. Scratch rejects Git-only fields such as `defaultBranch` and symlinks.
+`symlinks` and `agentRulesFile` must remain inside the repository. Orchestrator rejects absolute paths and traversal. Scratch rejects Git-only fields such as `defaultBranch` and symlinks.
 
-`defaultBranch: "auto"` resolves each repository independently. AO selects the remote named by Git's `checkout.defaultRemote`, otherwise `origin`, otherwise the repository's only remote. It asks that remote for its symbolic `HEAD`, fetches the exact advertised branch, and can fall back to the same remote's cached `HEAD` while offline.
+`defaultBranch: "auto"` resolves each repository independently. Orchestrator selects the remote named by Git's `checkout.defaultRemote`, otherwise `origin`, otherwise the repository's only remote. It asks that remote for its symbolic `HEAD`, fetches the exact advertised branch, and can fall back to the same remote's cached `HEAD` while offline.
 
-AO never treats the currently checked-out branch, `main`, or `master` as an inferred default. If a repository has no authoritative remote default (or has ambiguous remotes), spawn returns `DEFAULT_BRANCH_UNRESOLVED`. For a single repository or workspace root, set `defaultBranch` explicitly. For a workspace child, configure its primary remote with `checkout.defaultRemote` when needed and set its cached remote `HEAD` with `git remote set-head`. Repositories initialized by AO are the exception because AO records its branch choice when it creates them; older AO-created repositories are recognized and backfilled on first resolution.
+Orchestrator never treats the currently checked-out branch, `main`, or `master` as an inferred default. If a repository has no authoritative remote default (or has ambiguous remotes), spawn returns `DEFAULT_BRANCH_UNRESOLVED`. For a single repository or workspace root, set `defaultBranch` explicitly. For a workspace child, configure its primary remote with `checkout.defaultRemote` when needed and set its cached remote `HEAD` with `git remote set-head`. Repositories initialized by Orchestrator are the exception because Orchestrator records its branch choice when it creates them; older Orchestrator-created repositories are recognized and backfilled on first resolution.
 
 ## Worker and orchestrator roles
 
@@ -67,7 +67,7 @@ Workers implement tasks and own code changes. Orchestrators supervise a project 
 }
 ```
 
-The exact model names come from the installed provider. AO reuses the provider CLI and its existing authentication; it does not store provider tokens in project configuration.
+The exact model names come from the installed provider. Orchestrator reuses the provider CLI and its existing authentication; it does not store provider tokens in project configuration.
 
 ## Session interface
 
@@ -75,7 +75,7 @@ The role selects what a session does; the interface selects how you interact wit
 
 - Chat is available when the installed harness advertises native Chat support. Current drivers cover Codex, Claude Code, OpenCode, and Droid.
 - Terminal UI remains available across the wider agent adapter catalog.
-- Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while keeping their AO session and worktree.
+- Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while keeping their Orchestrator session and worktree.
 
 Choose the default interface in desktop project settings. Override it for a single CLI spawn with `--mode chat` or `--mode tui`.
 
@@ -83,11 +83,11 @@ Choose the default interface in desktop project settings. Override it for a sing
 
 Use `env`, `symlinks`, and `postCreate` for repeatable workspace setup. A failing `postCreate` command prevents the agent from starting, so keep setup deterministic.
 
-Use `agentRules` or `agentRulesFile` for worker instructions and `orchestratorRules` for supervision-specific guidance. AO combines inline and file-based worker rules when both are present.
+Use `agentRules` or `agentRulesFile` for worker instructions and `orchestratorRules` for supervision-specific guidance. Orchestrator combines inline and file-based worker rules when both are present.
 
 ## Reviewer agents
 
-Reviewer harnesses are configured separately from workers. AO currently supports Claude Code, Codex, and OpenCode reviewers. If none is configured, AO reuses the worker harness when it is review-capable, otherwise it falls back to Claude Code.
+Reviewer harnesses are configured separately from workers. Orchestrator currently supports Claude Code, Codex, and OpenCode reviewers. If none is configured, Orchestrator reuses the worker harness when it is review-capable, otherwise it falls back to Claude Code.
 
 Review runs are available in the desktop inspector and through:
 
@@ -116,7 +116,7 @@ Most users should keep `tmux`.
 
 ## Choose The Workspace
 
-`workspace` controls how AO isolates each session's code.
+`workspace` controls how Orchestrator isolates each session's code.
 
 ```yaml
 workspace: worktree
@@ -149,7 +149,7 @@ postCreate:
   - cp .env.example .env
 ```
 
-If a `postCreate` command fails, AO does not start the agent for that session. Keep these commands deterministic.
+If a `postCreate` command fails, Orchestrator does not start the agent for that session. Keep these commands deterministic.
 
 ## Give Agents Project Rules
 
@@ -168,7 +168,7 @@ Use `agentRulesFile` when the rules are long or already versioned:
 agentRulesFile: AGENTS.md
 ```
 
-If both are set, AO includes both.
+If both are set, Orchestrator includes both.
 
 Use `orchestratorRules` for instructions that only apply to the orchestrator session:
 
@@ -208,18 +208,18 @@ reviewers:
 
 Built-in reviewer harnesses are `aider`, `agy`, `amp`, `auggie`, `autohand`, `claude-code`, `cline`, `codex`, `copilot`, `crush`, `cursor`, `devin`, `droid`, `grok`, `kilocode`, `kimchi`, `kiro`, `kimi`, `opencode`, and `pi`. Kilo Code requires the
 [`@kilocode/cli`](https://kilo.ai/docs/code-with-ai/platforms/cli) package and a configured model provider (`/connect`,
-`kilo auth login`, or a supported provider environment variable). AO launches Kilo Code in the worker checkout with a
-read-only review policy and its own GitHub/AO reporting instructions. It does not invoke Kilo's local `/review` command
+`kilo auth login`, or a supported provider environment variable). Orchestrator launches Kilo Code in the worker checkout with a
+read-only review policy and its own GitHub/Orchestrator reporting instructions. It does not invoke Kilo's local `/review` command
 or parse `kilo run --format json`; the reviewer posts through `gh api` and records its verdict through
-`ao review submit`, like the other AO reviewer harnesses.
+`ao review submit`, like the other Orchestrator reviewer harnesses.
 
-Agy, Devin, Droid, Kimchi, and Kimi reviewer support is experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers: AO strengthens their reviewer system prompt and leaves native permission prompts enabled instead of passing broad unattended flags. Their readonly, plan, or
+Agy, Devin, Droid, Kimchi, and Kimi reviewer support is experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers: Orchestrator strengthens their reviewer system prompt and leaves native permission prompts enabled instead of passing broad unattended flags. Their readonly, plan, or
 approval modes constrain ordinary model behavior but are not OS isolation; terminal users, project plugins, tools, and
 network access may retain host authority.
 
 ## Tracker And SCM
 
-AO usually infers tracker and SCM from the registered repository. Override them only when needed.
+Orchestrator usually infers tracker and SCM from the registered repository. Override them only when needed.
 
 ```yaml
 tracker:
@@ -334,10 +334,10 @@ Identity fields such as `projectId`, `path`, `storageKey`, `originUrl`, and `ses
 ## Common Problems
 
 **The project does not appear in the dashboard**  
-Run `ao start` from the repository root so AO can register the project. If the repo moved, remove and re-add or relink the project instead of editing `storageKey` manually.
+Run `ao start` from the repository root so Orchestrator can register the project. If the repo moved, remove and re-add or relink the project instead of editing `storageKey` manually.
 
 **The agent starts without environment variables**  
-Add `.env` or the relevant tool config directory to `symlinks`. AO does not copy secrets into worktrees by default.
+Add `.env` or the relevant tool config directory to `symlinks`. Orchestrator does not copy secrets into worktrees by default.
 
 **Setup fails before the agent starts**  
 Check `postCreate`. A failing command stops the session before the agent launches.
@@ -346,7 +346,7 @@ Check `postCreate`. A failing command stops the session before the agent launche
 Set `sessionPrefix` in the global project registry or through project registration/settings. Session prefixes must use letters, numbers, underscores, or hyphens.
 
 **GitHub or GitLab calls fail**  
-Make sure the corresponding CLI or token is authenticated for the plugin you use. AO does not store provider tokens in project config.
+Make sure the corresponding CLI or token is authenticated for the plugin you use. Orchestrator does not store provider tokens in project config.
 
 ## Next Steps
 

@@ -21,9 +21,9 @@ Watch provider activities and changed files in Chat. If an approval or structure
 
 ## Use A Native Terminal UI
 
-Create another task and choose **Terminal UI**. AO creates the worktree and launches the harness's native interface through tmux on macOS/Linux or conpty on Windows.
+Create another task and choose **Terminal UI**. Orchestrator creates the worktree and launches the harness's native interface through tmux on macOS/Linux or conpty on Windows.
 
-Use the desktop terminal for native interactive commands. Send normal follow-up guidance through AO's message controls:
+Use the desktop terminal for native interactive commands. Send normal follow-up guidance through Orchestrator's message controls:
 
 ```text
 The failing case is on Windows path normalization. Keep the Unix behavior unchanged.
@@ -31,7 +31,7 @@ The failing case is on Windows path normalization. Keep the Unix behavior unchan
 
 ## Switch Claude Code Or Codex To Chat
 
-For a compatible idle TUI session, choose **Open Chat**. AO stops the old controller, resumes the provider conversation through the native Chat driver, and keeps the same session and worktree.
+For a compatible idle TUI session, choose **Open Chat**. Orchestrator stops the old controller, resumes the provider conversation through the native Chat driver, and keeps the same session and worktree.
 
 If the session is busy, choose deliberately:
 
@@ -58,7 +58,7 @@ ao session claim-pr <session-id> 142
 
 The shorter form reads the current worker from `AO_SESSION_ID`.
 
-AO then observes the GitHub pull request and displays CI, review, and mergeability facts with the session.
+Orchestrator then observes the GitHub pull request and displays CI, review, and mergeability facts with the session.
 
 ## Run A Reviewer
 
@@ -81,7 +81,7 @@ ao preview start
 ao preview status
 ```
 
-Open the Browser tab in the session inspector. Preview targets are session-scoped; AO does not auto-discover one when a worker starts.
+Open the Browser tab in the session inspector. Preview targets are session-scoped; Orchestrator does not auto-discover one when a worker starts.
 
 ## Use Browser Controls From An Agent
 

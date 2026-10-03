@@ -5,7 +5,7 @@ description: Diagnose desktop, daemon, agent, session, GitHub, preview, and mobi
 
 ## Start With The Desktop App
 
-The desktop app owns the local daemon. First quit and reopen Agent Orchestrator, then confirm the project and selected session still appear. The app discovers or restarts its daemon and reconnects live event and terminal streams.
+The desktop app owns the local daemon. First quit and reopen Orchestrator, then confirm the project and selected session still appear. The app discovers or restarts its daemon and reconnects live event and terminal streams.
 
 If you use the optional CLI, `ao status` and `ao doctor` provide additional local diagnostics:
 
@@ -21,10 +21,10 @@ ao doctor --json
 
 <Accordions>
 	<Accordion title="The app opens but no projects appear">
-		Confirm you opened the expected AO data home. All state defaults under `~/.ao`; an `AO_DATA_DIR` or `AO_RUN_FILE` override can point a development launch at a different daemon instance.
+		Confirm you opened the expected Orchestrator data home. All state defaults under `~/.ao`; an `AO_DATA_DIR` or `AO_RUN_FILE` override can point a development launch at a different daemon instance.
 	</Accordion>
 	<Accordion title="The CLI says the daemon is not running">
-		Open the desktop app first. Product CLI commands are thin clients and need the app-owned daemon. A stale `~/.ao/running.json` is not enough; AO also verifies the recorded process.
+		Open the desktop app first. Product CLI commands are thin clients and need the app-owned daemon. A stale `~/.ao/running.json` is not enough; Orchestrator also verifies the recorded process.
 	</Accordion>
 	<Accordion title="The daemon port is occupied">
 		The primary daemon uses loopback port `3001` by default and fails fast if it cannot bind. Stop the conflicting local process or use a deliberate development `AO_PORT` override. Never change the bind host to expose the daemon.
@@ -38,16 +38,16 @@ ao doctor --json
 
 <Accordions>
 	<Accordion title="No agent harness is offered">
-		Install the harness, run it once to authenticate, and restart AO. The desktop daemon inherits a login-shell environment and reuses each provider's installed binary and authentication.
+		Install the harness, run it once to authenticate, and restart Orchestrator. The desktop daemon inherits a login-shell environment and reuses each provider's installed binary and authentication.
 	</Accordion>
 	<Accordion title="Chat preflight fails">
 		Confirm the selected harness supports native Chat and its binary is authenticated. Chat currently supports Codex, Claude Code, OpenCode, and Droid. Choose Terminal UI when the harness lacks Chat support or preflight cannot connect.
 	</Accordion>
 	<Accordion title="A TUI session will not start on macOS or Linux">
-		Run `tmux -V` and install tmux if it is missing. On Windows, AO uses its native conpty host instead.
+		Run `tmux -V` and install tmux if it is missing. On Windows, Orchestrator uses its native conpty host instead.
 	</Accordion>
 	<Accordion title="The session is blocked">
-		Open the session and answer the pending approval or permission prompt. AO deliberately does not inject lifecycle messages while a controller is blocked.
+		Open the session and answer the pending approval or permission prompt. Orchestrator deliberately does not inject lifecycle messages while a controller is blocked.
 	</Accordion>
 	<Accordion title="The status appears wrong">
 		Status is derived from activity, termination, controller, and pull-request facts. A failed runtime probe is not treated as death. Reopen the session and inspect its Chat or terminal before killing it.
@@ -63,8 +63,8 @@ ao doctor --json
 	<Accordion title="Repository or pull-request data is missing">
 		Run `gh auth status` and confirm the active account can access the repository. GitHub authentication is lazy so an auth failure does not need to block unrelated local session work.
 	</Accordion>
-	<Accordion title="The agent opened a PR but AO did not link it">
-		Claim it from the session UI or, inside the worker, run `ao session claim-pr <pr-number-or-url>`; AO reads the worker from `AO_SESSION_ID`. From another shell, use `ao session claim-pr <session-id> <pr-number-or-url>`.
+	<Accordion title="The agent opened a PR but Orchestrator did not link it">
+		Claim it from the session UI or, inside the worker, run `ao session claim-pr <pr-number-or-url>`; Orchestrator reads the worker from `AO_SESSION_ID`. From another shell, use `ao session claim-pr <session-id> <pr-number-or-url>`.
 	</Accordion>
 	<Accordion title="CI or review data is delayed">
 		The SCM observer polls GitHub and respects rate limits and ETags. Check `gh auth status`, wait for another observation cycle, and open the pull request directly for full raw logs or comment bodies.
@@ -78,7 +78,7 @@ ao doctor --json
 
 <Accordions>
 	<Accordion title="The Browser tab is blank">
-		Select a target explicitly with `ao preview <url>`, or use `ao preview start` when the worktree contains a valid `.ao/launch.json`. AO does not auto-discover a preview for every new worker.
+		Select a target explicitly with `ao preview <url>`, or use `ao preview start` when the worktree contains a valid `.ao/launch.json`. Orchestrator does not auto-discover a preview for every new worker.
 	</Accordion>
 	<Accordion title="A configured preview server will not start">
 		Run `ao preview start <configuration>` and inspect the returned error. Verify the command and working directory in the session's `.ao/launch.json`, then run the same command in its worktree shell.
@@ -108,4 +108,4 @@ ao doctor --json
 | --- | --- |
 | macOS Gatekeeper says the developer cannot be verified | Follow the Gatekeeper steps in [Common Installation Problems](/installation#common-installation-problems). |
 
-Open an issue in the [Agent Orchestrator repository](https://github.com/AgentWrapper/agent-orchestrator/issues). Include the desktop version, operating system, agent harness and interface mode, reproduction steps, and sanitized `ao doctor --json` output when the CLI is available. Never attach credentials, provider transcripts, or the entire `~/.ao` directory.
+Open an issue in the [Orchestrator repository](https://github.com/AgentWrapper/agent-orchestrator/issues). Include the desktop version, operating system, agent harness and interface mode, reproduction steps, and sanitized `ao doctor --json` output when the CLI is available. Never attach credentials, provider transcripts, or the entire `~/.ao` directory.

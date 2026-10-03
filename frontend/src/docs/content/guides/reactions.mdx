@@ -3,9 +3,10 @@ title: Lifecycle automation
 description: Practical guidance for AO's built-in CI, review, conflict, and notification behavior.
 ---
 
-Current AO ships lifecycle policy rather than a configurable reaction recipe engine. Do not add `reactions:` to project configuration: unknown fields are rejected, and legacy keys such as `auto`, `retries`, `escalateAfter`, `threshold`, and `auto-merge` have no current consumer.
+Orchestrator currently ships lifecycle policy rather than a configurable reaction recipe engine. Do not add `reactions:` to project configuration: unknown fields are rejected, and legacy keys such as `auto`, `retries`, `escalateAfter`, `threshold`, and `auto-merge` have no current consumer.
 
-## Let AO route repository feedback
+<span id="let-ao-route-repository-feedback" />
+## Let Orchestrator route repository feedback
 
 Claim the pull request to the worker that should respond:
 
@@ -17,11 +18,11 @@ ao session claim-pr <session-id> <pr-number-or-url>
 
 The one-argument form uses `AO_SESSION_ID` and is preferred inside a worker session.
 
-AO then routes failing checks, requested changes, unresolved comments, and eligible merge conflicts to that session. Delivery is mode-aware, so the same workflow works for structured Chat and Terminal UI.
+Orchestrator then routes failing checks, requested changes, unresolved comments, and eligible merge conflicts to that session. Delivery is mode-aware, so the same workflow works for structured Chat and Terminal UI.
 
 ## Avoid duplicate nudges
 
-AO stores or remembers signatures for observed feedback. It sends again when the meaningful content changes, not merely because another poll happened. This keeps long-lived agent sessions from receiving the same CI failure or review body repeatedly.
+Orchestrator stores or remembers signatures for observed feedback. It sends again when the meaningful content changes, not merely because another poll happened. This keeps long-lived agent sessions from receiving the same CI failure or review body repeatedly.
 
 ## Know what requires a human
 
@@ -52,7 +53,7 @@ ao pr merge <pr-number>
 
 ## Switch interfaces when useful
 
-For compatible Claude Code and Codex sessions, use **Open Chat** or **Open Terminal UI**. AO preserves the session and worktree, drains or interrupts active work according to your choice, and commits only one controller at a time.
+For compatible Claude Code and Codex sessions, use **Open Chat** or **Open Terminal UI**. Orchestrator preserves the session and worktree, drains or interrupts active work according to your choice, and commits only one controller at a time.
 
 <Callout type="info">
 	A first Terminal UI → Chat switch preserves provider-native context where supported, but it does not convert old terminal screen output into structured Chat cards.

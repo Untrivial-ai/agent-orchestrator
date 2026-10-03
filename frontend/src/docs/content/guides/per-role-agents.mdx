@@ -3,7 +3,7 @@ title: Per-role agents
 description: Configure separate harnesses and models for worker and orchestrator sessions.
 ---
 
-AO has two session roles:
+Orchestrator has two session roles:
 
 - A **worker** implements a focused task in an isolated workspace and may own pull requests.
 - An **orchestrator** supervises a project, monitors sessions, and delegates implementation to workers.
@@ -61,12 +61,12 @@ ao spawn --project my-project --kind worker \
 - Use **Chat** for structured messages, provider activity, approvals, plans, changed files, usage, compaction, and rollback. Current native drivers cover Codex, Claude Code, OpenCode, and Droid.
 - Use **Terminal UI** when you want the agent's native interface or a harness without native Chat support.
 
-Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. Idle sessions switch directly. When work is active, AO asks whether to finish and drain it or stop and interrupt it before switching controllers.
+Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. Idle sessions switch directly. When work is active, Orchestrator asks whether to finish and drain it or stop and interrupt it before switching controllers.
 
 ## Project rules
 
 Use `agentRules` and `agentRulesFile` for worker instructions. Use `orchestratorRules` for supervision-specific guidance. These are stored in the typed project config and injected into the appropriate session role.
 
 <Callout type="info">
-	AO uses the provider CLI already installed and authenticated on your machine. Run `ao doctor` if a configured harness fails preflight.
+	Orchestrator uses the provider CLI already installed and authenticated on your machine. Run `ao doctor` if a configured harness fails preflight.
 </Callout>

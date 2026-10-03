@@ -3,7 +3,7 @@ title: Platforms
 description: Install and use AO on macOS, Windows, Linux, and mobile.
 ---
 
-AO ships as a desktop application for macOS, Windows, and Linux. The core workflow is the same everywhere: register a repository, create an isolated worktree, run an agent in Chat or Terminal UI, and follow its pull request.
+Orchestrator ships as a desktop application for macOS, Windows, and Linux. The core workflow is the same everywhere: register a repository, create an isolated worktree, run an agent in Chat or Terminal UI, and follow its pull request.
 
 <PlatformSupport
 	macos="full"
@@ -47,19 +47,19 @@ sudo apt install tmux
 
 If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names the exact
 `sudo` command for whichever package manager it finds (`apt-get`, `dnf`, `pacman`, `zypper`, or `apk`). Run it
-yourself: AO never asks for your administrator password.
+yourself: Orchestrator never asks for your administrator password.
 
 Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution.
 
 ## Windows
 
-Windows supports the desktop workflow, structured Chat, and native Terminal UI through AO's conpty host. It does not require tmux, and iTerm2-specific helpers do not apply.
+Windows supports the desktop workflow, structured Chat, and native Terminal UI through Orchestrator's conpty host. It does not require tmux, and iTerm2-specific helpers do not apply.
 
-Use PowerShell, Command Prompt, or Git Bash for optional CLI commands. AO suppresses transient console windows for tools launched by the desktop daemon.
+Use PowerShell, Command Prompt, or Git Bash for optional CLI commands. Orchestrator suppresses transient console windows for tools launched by the desktop daemon.
 
 ## Mobile Companion
 
-AO's Expo mobile app is a second interface to the desktop daemon, not a cloud relay. In desktop settings, choose **Connect Mobile** to enable a separate LAN listener and pair the phone.
+Orchestrator's Expo mobile app is a second interface to the desktop daemon, not a cloud relay. In desktop settings, choose **Connect Mobile** to enable a separate LAN listener and pair the phone.
 
 Security properties:
 
@@ -75,12 +75,12 @@ Mobile defaults new workers and orchestrators to Chat when the selected harness 
 
 The desktop daemon's primary listener is deliberately bound to `127.0.0.1` without authentication. Do not expose it through a public bind or reverse proxy. Connect Mobile is the only built-in off-device listener and is deliberately limited to an explicitly enabled home-network workflow.
 
-For unattended work, keep the desktop host awake and reachable on its local network. AO does not turn the local desktop product into a hosted multi-user service.
+For unattended work, keep the desktop host awake and reachable on its local network. Orchestrator does not turn the local desktop product into a hosted multi-user service.
 
 ## Next
 
 <Cards>
-	<Card title="Installation" href="/installation" description="Download AO and connect GitHub and an agent harness." />
+	<Card title="Installation" href="/installation" description="Download Orchestrator and connect GitHub and an agent harness." />
 	<Card title="Dashboard" href="/dashboard" description="Learn the desktop and mobile control surfaces." />
 	<Card title="Troubleshooting" href="/troubleshooting" description="Resolve platform-specific startup and terminal issues." />
 </Cards>

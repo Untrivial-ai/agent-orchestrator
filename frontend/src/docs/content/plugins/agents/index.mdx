@@ -3,7 +3,7 @@ title: Agent adapters
 description: The terminal harnesses built into AO and the smaller set that also supports structured Chat.
 ---
 
-AO compiles agent adapters into the daemon. It uses your locally installed agent CLI and its existing authentication; it does not bundle provider credentials or install adapters from npm.
+Orchestrator compiles agent adapters into the daemon. It uses your locally installed agent CLI and its existing authentication; it does not bundle provider credentials or install adapters from npm.
 
 ## Shipped terminal harnesses
 
@@ -55,10 +55,10 @@ All advertised harnesses can run through their native terminal interface. These 
 | `cursor` | Native ACP |
 | `omp` | Native ACP |
 | `qwen` | Native ACP |
-| `unreal-agent` | Built into AO |
+| `unreal-agent` | Built into Orchestrator |
 | `deepseek-harness` | Native ACP (`dsh --profile acp`) |
 
-Every other harness is Terminal UI-only. Choose the initial interface with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while retaining the AO session and worktree.
+Every other harness is Terminal UI-only. Choose the initial interface with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while retaining the Orchestrator session and worktree.
 
 ## Choosing and configuring a harness
 

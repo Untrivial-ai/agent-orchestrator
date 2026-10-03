@@ -3,10 +3,10 @@ title: Quickstart
 description: Add a project, start one worker, and follow it from task to pull request.
 ---
 
-This guide follows the smallest useful AO loop in the desktop app: add one repository, start one worker, watch it work, and review the result.
+This guide follows the smallest useful Orchestrator loop in the desktop app: add one repository, start one worker, watch it work, and review the result.
 
 <Callout type="info" title="Before you start">
-	Install AO, authenticate `gh` for a GitHub project, and sign in to one supported agent harness. See [Installation](/installation).
+	Install the desktop app, authenticate `gh` for a GitHub project, and sign in to one supported agent harness. See [Installation](/installation).
 </Callout>
 
 ## Pick A Safe First Task
@@ -25,7 +25,7 @@ Choose a repository where you can create a branch and pull request. Good first t
 
 ### Add the repository
 
-Open Agent Orchestrator, choose **Add project**, and select the local repository. The desktop app registers it and keeps the original checkout intact.
+Open the desktop app, choose **Add project**, and select the local repository. It registers the project and keeps the original checkout intact.
 
 </Step>
 <Step>
@@ -39,7 +39,7 @@ Choose the interface that fits the task:
 - **Chat** for structured conversation, activities, approvals, plans, and durable history.
 - **Terminal UI** for the harness's native interactive terminal.
 
-AO creates an isolated git worktree and branch for the session before launching the selected controller.
+Orchestrator creates an isolated git worktree and branch for the session before launching the selected controller.
 
 </Step>
 <Step>
@@ -48,7 +48,7 @@ AO creates an isolated git worktree and branch for the session before launching 
 
 Select the session in the sidebar or board. The main pane shows either its Chat conversation or live terminal. The inspector keeps session details, pull-request state, reviews, changed files, and browser preview close at hand.
 
-Activity such as active, idle, waiting for input, blocked, or exited is combined with pull-request facts to derive the status shown by AO.
+Activity such as active, idle, waiting for input, blocked, or exited is combined with pull-request facts to derive the status shown by Orchestrator.
 
 </Step>
 <Step>
@@ -68,9 +68,9 @@ For a TUI session, the terminal remains available when direct interaction is nee
 
 ### Review the pull request
 
-After the worker opens or claims a pull request, AO shows a concise summary of CI, reviewers, unresolved review comments, and mergeability. You can run a reviewer agent, send requested changes back to the worker, resolve comments, or merge when appropriate.
+After the worker opens or claims a pull request, Orchestrator shows a concise summary of CI, reviewers, unresolved review comments, and mergeability. You can run a reviewer agent, send requested changes back to the worker, resolve comments, or merge when appropriate.
 
-AO never force-deletes a dirty worktree. Cleanup preserves user work when it cannot safely remove a session workspace.
+Orchestrator never force-deletes a dirty worktree. Cleanup preserves user work when it cannot safely remove a session workspace.
 
 </Step>
 </Steps>
@@ -83,11 +83,11 @@ For a web task, start the app inside the session and select its URL with the opt
 ao preview http://127.0.0.1:5173
 ```
 
-If the repository includes `.ao/launch.json`, `ao preview start` can start a configured development server. The Browser tab then displays the selected target. AO does not guess a preview target merely because a worker exists.
+If the repository includes `.ao/launch.json`, `ao preview start` can start a configured development server. The Browser tab then displays the selected target. Orchestrator does not guess a preview target merely because a worker exists.
 
 ## Try Switching Interfaces
 
-Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. An idle session can switch directly. If a turn is busy, AO asks whether to finish and drain it or stop and interrupt it before replacing the controller. The AO session and worktree remain the same.
+Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. An idle session can switch directly. If a turn is busy, Orchestrator asks whether to finish and drain it or stop and interrupt it before replacing the controller. The Orchestrator session and worktree remain the same.
 
 ## Optional CLI
 

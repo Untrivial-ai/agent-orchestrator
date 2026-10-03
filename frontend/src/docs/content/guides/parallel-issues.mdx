@@ -3,7 +3,7 @@ title: Parallel work
 description: Run isolated worker sessions across issues without mixing branches, terminals, or conversations.
 ---
 
-Start each task as its own worker session. Git projects receive separate worktrees and branches; Scratch receives separate AO-managed directories. Chat conversations and Terminal UI runtimes are session-scoped.
+Start each task as its own worker session. Git projects receive separate worktrees and branches; Scratch receives separate Orchestrator-managed directories. Chat conversations and Terminal UI runtimes are session-scoped.
 
 ## Start sessions from desktop
 
@@ -30,7 +30,7 @@ ao spawn --project api --name auth-fix --prompt "Fix token refresh" --harness co
 | Terminal | Session runtime or session-scoped worktree shell |
 | Browser preview | Dedicated selected-session browser target and ephemeral profile |
 
-AO-managed worktrees live under `~/.ao/data/worktrees`, not `~/.worktrees`. External side effects such as pushes, pull requests, CI runs, and review comments are naturally shared with the repository host.
+Orchestrator-managed worktrees live under `~/.ao/data/worktrees`, not `~/.worktrees`. External side effects such as pushes, pull requests, CI runs, and review comments are naturally shared with the repository host.
 
 ## Inspect and clean up
 

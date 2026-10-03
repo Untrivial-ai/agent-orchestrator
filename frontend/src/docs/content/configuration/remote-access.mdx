@@ -3,13 +3,13 @@ title: Connect Mobile
 description: Pair the native AO mobile app through the authenticated, opt-in LAN listener.
 ---
 
-AO's primary daemon listener is always bound to `127.0.0.1`. It is unauthenticated because it is loopback-only, and its host cannot be changed. Do not expose it with `HOST=0.0.0.0`, a public reverse proxy, or port forwarding.
+Orchestrator's primary daemon listener is always bound to `127.0.0.1`. It is unauthenticated because it is loopback-only, and its host cannot be changed. Do not expose it with `HOST=0.0.0.0`, a public reverse proxy, or port forwarding.
 
 For a phone, the desktop app creates a separate listener through **Connect Mobile**. It is disabled by default, binds to the LAN only while enabled, requires a bearer connection password, and exposes app API routes without exposing daemon-control routes.
 
 ## Pair on the same network
 
-1. Install the AO mobile app and put the phone on the same trusted Wi-Fi as the desktop.
+1. Install the Orchestrator mobile app and put the phone on the same trusted Wi-Fi as the desktop.
 2. Open desktop **Settings → Connect Mobile**.
 3. Enable mobile access.
 4. In the mobile app, scan the pairing code to fill the address, port, and connection password automatically.
@@ -40,5 +40,5 @@ The Expo/React Native app is a native control surface over the same daemon resou
 Mobile supports structured Chat, Terminal UI, session creation, the same capability-gated Chat/TUI handoff, approvals and structured input, changed files, model/provider controls, compaction and rollback, voice dictation, attachments, and a session-scoped worktree shell.
 
 <Callout type="info">
-	Chat and Terminal UI are two controllers for the same AO session. Switching does not create a new worktree, but a first switch from Terminal UI to Chat does not reconstruct old terminal screen output as structured messages.
+	Chat and Terminal UI are two controllers for the same Orchestrator session. Switching does not create a new worktree, but a first switch from Terminal UI to Chat does not reconstruct old terminal screen output as structured messages.
 </Callout>

@@ -3,13 +3,13 @@ title: Aider
 description: Built-in Terminal UI support for a local Aider installation.
 ---
 
-AO resolves `aider` from your machine and leaves model credentials to Aider's normal configuration.
+Orchestrator resolves `aider` from your machine and leaves model credentials to Aider's normal configuration.
 
 ```bash
 ao agent ls --refresh
 ao spawn --project my-app --name aider-task --agent aider --mode tui
 ```
 
-Aider is currently Terminal UI-only. It does not have an AO structured Chat driver, so `--mode chat` is rejected explicitly.
+Aider is currently Terminal UI-only. It does not have an Orchestrator structured Chat driver, so `--mode chat` is rejected explicitly.
 
-Use project `agentConfig` and environment settings for supported model/permission overrides. Agent adapters are compiled into AO; there is no separate Aider plugin package or YAML plugin block.
+Use project `agentConfig` and environment settings for supported model/permission overrides. Agent adapters are compiled into Orchestrator; there is no separate Aider plugin package or YAML plugin block.

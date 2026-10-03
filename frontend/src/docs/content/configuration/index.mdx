@@ -3,7 +3,7 @@ title: Configuration
 description: Configure projects, agents, session interfaces, and local daemon behavior in current AO.
 ---
 
-AO keeps its durable state under `~/.ao`. The daemon stores projects, sessions, pull-request facts, notifications, and typed project configuration in SQLite under `~/.ao/data`; `~/.ao/running.json` lets the desktop app and CLI find the running daemon.
+Orchestrator keeps its durable state under `~/.ao`. The daemon stores projects, sessions, pull-request facts, notifications, and typed project configuration in SQLite under `~/.ao/data`; `~/.ao/running.json` lets the desktop app and CLI find the running daemon.
 
 The desktop app is the normal place to add projects and change settings. The CLI talks to the same daemon API when you need a scriptable path.
 
@@ -23,13 +23,13 @@ ao project add --path /absolute/path/to/repo \
   --orchestrator-agent claude-code
 ```
 
-AO also supports workspace projects, which contain a root repository and direct child repositories:
+Orchestrator also supports workspace projects, which contain a root repository and direct child repositories:
 
 ```bash
 ao project add --path /absolute/path/to/workspace --as-workspace
 ```
 
-Fresh installations include a Scratch project for work that does not need Git. Scratch sessions use AO-managed directories and do not support branches or pull-request claims.
+Fresh installations include a Scratch project for work that does not need Git. Scratch sessions use Orchestrator-managed directories and do not support branches or pull-request claims.
 
 ## Inspect and update configuration
 
@@ -66,9 +66,9 @@ Do not set `HOST=0.0.0.0` or proxy the primary daemon to a network. For phone ac
 Every session commits to one interface at a time:
 
 - **Chat** uses a structured, runtime-less provider controller with durable messages, activities, approvals, and usage.
-- **Terminal UI** runs the agent's native terminal interface through AO's terminal runtime.
+- **Terminal UI** runs the agent's native terminal interface through Orchestrator's terminal runtime.
 
-Choose the default for new sessions in project settings. You can also select it explicitly from the new-session flow or with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can switch interfaces later without changing the AO session or worktree.
+Choose the default for new sessions in project settings. You can also select it explicitly from the new-session flow or with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can switch interfaces later without changing the Orchestrator session or worktree.
 
 <Cards>
 	<Card title="Projects" href="/configuration/projects" description="Configure one project and its session roles." />

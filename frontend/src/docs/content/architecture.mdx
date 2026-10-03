@@ -3,7 +3,7 @@ title: Architecture
 description: How the Go daemon, Electron app, storage, controllers, and adapters fit together.
 ---
 
-Agent Orchestrator is a local, single-user system built around a long-running Go daemon. The Electron/React desktop app, optional CLI, and Expo mobile app are thin clients over the daemon's HTTP, SSE, and terminal interfaces.
+Orchestrator is a local, single-user system built around a long-running Go daemon. The Electron/React desktop app, optional CLI, and Expo mobile app are thin clients over the daemon's HTTP, SSE, and terminal interfaces.
 
 ## System Overview
 
@@ -21,18 +21,18 @@ The desktop app discovers, launches, and supervises the daemon. The renderer use
 
 ## Sessions And Worktrees
 
-Workers in Git projects own isolated worktrees; workspace projects can materialize a root plus child-repository worktrees, while Scratch sessions use an AO-managed directory. A session also commits to exactly one agent interface at a time:
+Workers in Git projects own isolated worktrees; workspace projects can materialize a root plus child-repository worktrees, while Scratch sessions use an Orchestrator-managed directory. A session also commits to exactly one agent interface at a time:
 
 - **Terminal UI** runs the harness inside a tmux runtime on macOS/Linux or a conpty host on Windows.
 - **Chat** runs a native provider controller without an agent terminal runtime.
 
 Chat conversations are durable and include provider identity, turns, messages, activities, approvals, structured input, usage, compaction, and rollback state.
 
-For compatible Claude Code and Codex sessions, an interface transition can move the same provider conversation between TUI and Chat. AO drains or interrupts the old controller before committing the replacement, so both controllers are never live at once. The session and worktree do not change.
+For compatible Claude Code and Codex sessions, an interface transition can move the same provider conversation between TUI and Chat. Orchestrator drains or interrupts the old controller before committing the replacement, so both controllers are never live at once. The session and worktree do not change.
 
 ## Durable Facts, Derived Status
 
-AO stores durable facts rather than a display status. Important session facts include:
+Orchestrator stores durable facts rather than a display status. Important session facts include:
 
 - Agent activity: active, idle, waiting for input, blocked, or exited.
 - Whether the session has been terminated.
@@ -56,7 +56,7 @@ All application state remains under `~/.ao`, including the run file, managed wor
 
 HTTP controllers validate requests and call domain services. Services own read/write policy; session and lifecycle managers coordinate multi-step work. External systems sit behind Go port interfaces and leaf adapters.
 
-Current adapters include more than twenty agent harnesses, tmux/conpty runtime support, git-worktree isolation, native Chat drivers, and GitHub SCM observation. AO reuses installed provider binaries and their existing authentication.
+Current adapters include more than twenty agent harnesses, tmux/conpty runtime support, git-worktree isolation, native Chat drivers, and GitHub SCM observation. Orchestrator reuses installed provider binaries and their existing authentication.
 
 GitHub PR observation is shipped. The broader tracker lane is still incomplete, so historical claims that every tracker plugin participates in lifecycle automation should not be treated as current behavior.
 

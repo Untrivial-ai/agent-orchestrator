@@ -7,14 +7,14 @@ description: Move from the frozen npm CLI and older AO architecture to the deskt
 
 The desktop application is the current, supported distribution. It owns the Go daemon and checks for updates automatically.
 
-The npm package `@aoagents/ao` is frozen at `0.10.0`. It remains available for existing users but will not receive new features or fixes. Do not use npm for a new AO installation.
+The npm package `@aoagents/ao` is frozen at `0.10.0`. It remains available for existing users but will not receive new features or fixes. Do not use npm for a new Orchestrator installation.
 
 <Steps>
 <Step>
 
 ### Preserve active work
 
-Before changing installs, inspect any active sessions and worktrees. Commit, push, or otherwise preserve changes you need. AO will not force-delete dirty registered worktrees, but you should not rely on cleanup as a backup strategy.
+Before changing installs, inspect any active sessions and worktrees. Commit, push, or otherwise preserve changes you need. Orchestrator will not force-delete dirty registered worktrees, but you should not rely on cleanup as a backup strategy.
 
 </Step>
 <Step>
@@ -34,7 +34,7 @@ The frozen CLI uses this as a bridge to fetch and open the desktop build. It no 
 
 ### Add or import projects
 
-Open the desktop app and add each local repository you want AO to manage. If your installation exposes a legacy import flow, review the projects it finds before accepting them. Do not copy old flat-file session directories over the current database by hand.
+Open the desktop app and add each local repository you want Orchestrator to manage. If your installation exposes a legacy import flow, review the projects it finds before accepting them. Do not copy old flat-file session directories over the current database by hand.
 
 </Step>
 <Step>
@@ -47,7 +47,7 @@ Confirm GitHub and at least one agent harness are still authenticated:
 gh auth status
 ```
 
-Run the agent harness once outside AO if its sign-in expired, then restart the desktop app.
+Run the agent harness once outside Orchestrator if its sign-in expired, then restart the desktop app.
 
 </Step>
 </Steps>
@@ -68,11 +68,11 @@ Old `agent-orchestrator.yaml` examples and Node plugin packages are not authorit
 
 ## Data Locations
 
-Current AO state defaults to `~/.ao`:
+Orchestrator state defaults to `~/.ao`:
 
 - `~/.ao/data` contains durable daemon database files.
 - `~/.ao/running.json` advertises the supervised daemon process and port.
-- Managed worktrees and AO metadata remain under the AO home.
+- Managed worktrees and Orchestrator metadata remain under the Orchestrator home.
 - `~/.ao/electron` contains the desktop app's Chromium data.
 - `~/.ao/mobile/config.json` contains mobile-listener configuration with a hashed password.
 

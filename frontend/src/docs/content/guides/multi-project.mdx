@@ -3,7 +3,7 @@ title: Multi-project
 description: Manage repositories, multi-repository workspaces, and Scratch sessions from one desktop.
 ---
 
-AO's daemon owns a durable project registry in SQLite. The desktop sidebar shows every registered project and its sessions; there is no single `agent-orchestrator.yaml` containing a `projects:` map.
+Orchestrator's daemon owns a durable project registry in SQLite. The desktop sidebar shows every registered project and its sessions; there is no single `agent-orchestrator.yaml` containing a `projects:` map.
 
 ## Add projects
 
@@ -38,7 +38,7 @@ ao spawn --project api --name api-issue --issue 42 --mode chat
 ao spawn --project web --name web-fix --prompt "Fix the header" --mode tui
 ```
 
-When `--project` is omitted, AO can resolve `AO_PROJECT_ID`, the current registered repository, or Scratch when it is the only project. Supplying the project explicitly is clearest in scripts.
+When `--project` is omitted, Orchestrator can resolve `AO_PROJECT_ID`, the current registered repository, or Scratch when it is the only project. Supplying the project explicitly is clearest in scripts.
 
 ## Inspect across projects
 
