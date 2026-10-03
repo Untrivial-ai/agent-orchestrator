@@ -100,7 +100,7 @@ Kiro security and reporting rules:
 - Your process runs outside the checkout. Use the read, glob, and grep tools on the absolute worker checkout path from the task.
 - Shell is deny-by-default. Only the narrow git inspection and review-reporting command shapes configured by AO can run.
 - The supported git shell shapes are exactly: status with optional --short; diff with --no-ext-diff --no-textconv; log; and show. Additional arguments must be single whitespace-free refs, options, or paths. Filenames with spaces, extra shell quoting, compound commands, redirections, and complex ref expressions are intentionally unsupported; use read, glob, or grep instead.
-- For each JSON reporting body, base64-encode the UTF-8 JSON yourself and use the task's command with the JSON replaced by the base64 text: printf '%s' '<base64>' | base64 --decode | gh api ... or ... | ao review submit .... Use base64 -D instead of --decode on systems that require it.
+- For each reporting command, base64-encode the UTF-8 command tail you cannot type literally and use the task's command with the affected text replaced by the base64 text: printf '%s' '<base64>' | base64 --decode | ao review submit .... Use base64 -D instead of --decode on systems that require it.
 - Never request or attempt any write, unrestricted shell, commit, push, extension, MCP server, skill, steering, or project agent resource.
 `
 	if err := hookutil.AtomicWriteFile(kiroSystemPath, append(system, extra...), 0o600); err != nil {
@@ -142,6 +142,10 @@ func shellAllowedCommands(inv ports.ReviewInvocation) []string {
 	gitPrefix := `git --no-pager -C ['"]?` + workspace + `['"]? `
 	safeArg := `[A-Za-z0-9_./:=,@{}^~+\-]+`
 	base64Pipe := `printf '%s' '[A-Za-z0-9+/=]+' \| base64 (?:--decode|-D) \| `
+	// The submit command carries the review body on stdin and its inline
+	// findings as the repeatable --comment-* trio; the trio may repeat any
+	// number of times, in order.
+	submitFlags := `--run [A-Za-z0-9_-]+ --verdict (?:approved|changes_requested) --body -(?: --comment-path ` + safeArg + ` --comment-line [0-9]+ --comment-body '[^']*')*$`
 	// Kiro accepts regex policies rather than structured argv. Anchor every
 	// pattern to the complete command and intentionally support only the exact
 	// whitespace-free argument shapes described in the reviewer prompt above.
@@ -150,7 +154,6 @@ func shellAllowedCommands(inv ports.ReviewInvocation) []string {
 		`^` + gitPrefix + `diff --no-ext-diff --no-textconv(?: ` + safeArg + `)*(?: --(?: ` + safeArg + `)*)?$`,
 		`^` + gitPrefix + `log(?: ` + safeArg + `)*$`,
 		`^` + gitPrefix + `show(?: ` + safeArg + `)*(?: --(?: ` + safeArg + `)*)?$`,
-		`^` + base64Pipe + `gh api --method POST repos/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+/pulls/[0-9]+/reviews --input - --jq '[.]id'$`,
-		`^` + base64Pipe + `ao review submit --session ` + session + ` --reviews -$`,
+		`^` + base64Pipe + `ao review submit --session ` + session + ` ` + submitFlags,
 	}
 }

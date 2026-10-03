@@ -94,6 +94,8 @@ func writePRError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "PR_HEAD_CHANGED", "PR head changed; refresh before merging", nil)
 	case errors.Is(err, prsvc.ErrPRPreconditions):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "PR_PRECONDITIONS_UNMET", "PR merge preconditions are not met", nil)
+	case errors.Is(err, prsvc.ErrPRProviderUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "PR_PROVIDER_UNAVAILABLE", "Pull request provider is unreachable; try again", nil)
 	case errors.Is(err, prsvc.ErrNothingToResolve):
 		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "NOTHING_TO_RESOLVE", "No unresolved review threads to resolve", nil)
 	default:
