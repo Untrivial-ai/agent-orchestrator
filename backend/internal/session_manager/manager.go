@@ -154,6 +154,11 @@ var (
 	// agent hook callback, so the native startup sequence (including pre-session
 	// approval dialogs) may still be consuming pane input.
 	ErrStartupPending = errors.New("session: agent startup not ready for input")
+	// ErrComposerBusy means a TUI session's composer holds an unsent human draft,
+	// so delivering now would concatenate with the operator's half-typed text and
+	// submit both as one prompt (#5711). The API maps it to a retryable 409; the
+	// caller retries once the operator submits or discards their draft.
+	ErrComposerBusy = errors.New("session: composer has an unsent draft")
 
 	// Spawn-stage sentinels. Each is the existing log word after "spawn" /
 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
@@ -290,6 +295,13 @@ type TerminalInputGate interface {
 	// barrier to avoid trusting an idle hook which predates already-buffered PTY
 	// input.
 	BeginInputDrain(terminalID string) (lastInputAt time.Time, release func())
+}
+
+// TerminalInputObserver is an optional TerminalInputGate capability: it reports
+// the newest accepted keystroke without closing input. Keystrokes arriving while
+// a drain is held are dropped, not buffered, so a read must never open a drain.
+type TerminalInputObserver interface {
+	LastInputAt(terminalID string) time.Time
 }
 
 // ReviewerTerminator tears down a worker's reviewer pane when the worker leaves
@@ -624,6 +636,24 @@ func (m *Manager) beginTerminalInputDrain(rec domain.SessionRecord) (lastInputAt
 		return time.Time{}, nil
 	}
 	return gate.BeginInputDrain(handle.ID)
+}
+
+// lastTerminalInputAt reports the newest keystroke AO accepted for a TUI
+// session's terminal, read-only. It is zero when nothing was typed through AO
+// or the gate cannot be read without closing input.
+func (m *Manager) lastTerminalInputAt(rec domain.SessionRecord) time.Time {
+	handle := runtimeHandle(rec.Metadata)
+	if domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeTUI || handle.ID == "" {
+		return time.Time{}
+	}
+	m.terminalInputGateMu.Lock()
+	gate := m.terminalInputGate
+	m.terminalInputGateMu.Unlock()
+	observer, ok := gate.(TerminalInputObserver)
+	if !ok {
+		return time.Time{}
+	}
+	return observer.LastInputAt(handle.ID)
 }
 
 // beginShellTerminalTeardown starts the shell-terminal gate for id ahead of
@@ -4244,11 +4274,22 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 			}
 		}
 	}
-	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, message, afterWrite)
+	// A non-empty send must not land in a composer that holds an unsent human
+	// draft (#5711). An empty message is the deliberate Enter that submits an
+	// existing draft, and an internal report delivery has no durable queue to
+	// retry a refusal from, so both are left unchecked. The check runs under the
+	// guard's held input lease, immediately before the write.
+	var composerBusy func(context.Context, domain.SessionRecord) bool
+	if strings.TrimSpace(message) != "" && !internalReportDelivery {
+		composerBusy = m.composerBusyCheck()
+	}
+	outcome, err := m.messenger.DeliverWithComposerCheck(ctx, id, message, composerBusy, afterWrite)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", id, err)
 	}
 	switch outcome {
+	case sessionguard.SuppressedComposerBusy:
+		return fmt.Errorf("send %s: %w", id, ErrComposerBusy)
 	case sessionguard.SuppressedNotFound:
 		return fmt.Errorf("send %s: %w", id, ErrNotFound)
 	case sessionguard.SuppressedTerminated:

@@ -297,6 +297,36 @@ func TestBeginInputDrainReturnsTheLastAcceptedWriteBarrier(t *testing.T) {
 	}
 }
 
+func TestLastInputAtReadsWithoutBlockingInput(t *testing.T) {
+	pty := newFakePTY()
+	mgr := NewManager(&fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{pty}}}, nil, testLogger(), WithHeartbeat(0))
+	defer mgr.Close()
+
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgOpen}
+	recv(t, conn, chTerminal, msgOpened, time.Second)
+	if got := mgr.LastInputAt("t1"); !got.IsZero() {
+		t.Fatalf("LastInputAt before any input = %s, want zero", got)
+	}
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("first\n"))}
+	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "first\n" })
+
+	first := mgr.LastInputAt("t1")
+	if first.IsZero() {
+		t.Fatal("accepted input was not recorded")
+	}
+	// Reading must not close input: the next keystroke is still written.
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgData, Data: base64.StdEncoding.EncodeToString([]byte("second\n"))}
+	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "first\nsecond\n" })
+	if !mgr.LastInputAt("t1").After(first) {
+		t.Fatal("LastInputAt did not advance with the next accepted keystroke")
+	}
+}
+
 // nextTerminal returns the next frame on conn.out (no skipping), so callers can
 // assert frame ordering rather than just presence.
 func nextTerminal(t *testing.T, c *fakeConn) serverMsg {

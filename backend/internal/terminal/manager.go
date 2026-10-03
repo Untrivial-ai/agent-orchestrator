@@ -165,6 +165,15 @@ func (m *Manager) BeginInputDrain(terminalID string) (lastInputAt time.Time, rel
 	}
 }
 
+// LastInputAt returns when the newest keystroke was accepted for one terminal,
+// without blocking input. A drain (BeginInputDrain) drops keystrokes while it is
+// held, so read-only callers must use this instead.
+func (m *Manager) LastInputAt(terminalID string) time.Time {
+	m.inputMu.Lock()
+	defer m.inputMu.Unlock()
+	return m.lastInputAt[terminalID]
+}
+
 func (m *Manager) writeInput(terminalID string, a *attachment, raw []byte, release func()) {
 	m.inputMu.Lock()
 	defer m.inputMu.Unlock()
