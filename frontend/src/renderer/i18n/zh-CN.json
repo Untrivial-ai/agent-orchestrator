@@ -1256,6 +1256,7 @@
 	"session.notFound": "找不到会话。它可能已被清理——请从侧边栏选择另一个会话。",
 	"session.actionsMenu": "会话操作",
 	"settings.updates.updateFailed": "更新失败。",
+	"settings.updates.retryScheduled": "AO 将自动重试更新。",
 	"switchAgent.action": "切换代理",
 	"switchAgent.checkingStatus": "正在检查切换状态…",
 	"switchAgent.compact.switching": "正在切换到 {{target}}",

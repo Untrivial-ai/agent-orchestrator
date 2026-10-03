@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { UpdateStatus } from "../../main/update-settings";
+import { shouldReconcileUpdateStatus } from "../../shared/update-state";
 import { aoBridge } from "../lib/bridge";
 
 let current: UpdateStatus = { state: "idle" };
@@ -35,7 +36,7 @@ function connect() {
 	};
 	void refresh();
 	const timer = setInterval(() => {
-		if (reconcileUsers > 0 || ["available", "downloading", "preparing", "downloaded", "error"].includes(current.state)) void refresh();
+		if (reconcileUsers > 0 || shouldReconcileUpdateStatus(current.state)) void refresh();
 	}, 3_000);
 	return () => {
 		live = false;

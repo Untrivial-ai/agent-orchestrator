@@ -26,10 +26,19 @@ export interface UpdateSettings {
 	macDifferentialUpdates?: boolean;
 }
 
-// Live state of an automatic or manual update check/download, streamed to the
-// renderer so Settings and the sidebar can reflect progress.
-export type UpdateState =
-	"idle" | "checking" | "available" | "not-available" | "downloading" | "preparing" | "downloaded" | "error" | "unsupported";
+// In shared/ so the renderer can import these values without this module's node:fs.
+export {
+	UPDATE_STATE_KIND,
+	UPDATE_STATE_RECONCILES,
+	UPDATE_STATE_RESOLVES_CHANNEL_SWITCH,
+	UPDATE_CHECK_TIMEOUT_MS,
+	isReportedFailure,
+	isUpdateInProgress,
+	resolvesChannelSwitch,
+	shouldReconcileUpdateStatus,
+	type UpdateState,
+} from "../shared/update-state";
+import type { UpdateState } from "../shared/update-state";
 
 export interface UpdateStatus {
 	state: UpdateState;

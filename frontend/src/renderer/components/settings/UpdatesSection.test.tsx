@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { UpdatesSection } from "./UpdatesSection";
+import { MAX_MANUAL_CHECK_MS, UpdatesSection } from "./UpdatesSection";
 import { useUiStore } from "../../stores/ui-store";
 import type { UpdateStatus } from "../../../main/update-settings";
+import { UPDATE_CHECK_TIMEOUT_MS } from "../../../shared/update-state";
 
 const {
 	updGetStatus,
@@ -87,4 +88,28 @@ it("renders the installed nightly build time as the device-local instant", async
 		new Date(Date.UTC(2026, 8, 7, 3, 0)),
 	);
 	expect(await screen.findByText(`Built ${builtAt}`)).toBeVisible();
+});
+
+it("shows a retry-scheduled status as calm text, never as a red failure", async () => {
+	// The whole point of the state. Rendered rather than asserted on a string,
+	// because the regression this guards is a styling one: the line reaching the
+	// user in the error treatment while the app is still recovering by itself.
+	const message = "AO couldn't verify the downloaded update. Downloading it again and retrying in about 15 minutes (attempt 1 of 3).";
+	updGetStatus.mockResolvedValue({ state: "retry-scheduled", message } satisfies UpdateStatus);
+
+	renderUpdates();
+
+	// The colour lives on the outer flex row, two levels above the <p>.
+	const row = (await screen.findByText(message)).closest("div")?.parentElement;
+	expect(row?.className ?? "").toContain("text-settings-muted");
+	expect(row?.className ?? "").not.toContain("text-error");
+	// Still reachable: a calm state must not disable the way back.
+	expect(await screen.findByRole("button", { name: /check for updates/i })).toBeEnabled();
+});
+
+it("keeps the renderer check watchdog above the main process deadline", () => {
+	// A renderer ceiling BELOW the main deadline fires while a slow check is still
+	// legitimately running, then cannot retract itself when the real answer lands,
+	// leaving a red "stopped responding" over a check that actually succeeded.
+	expect(MAX_MANUAL_CHECK_MS).toBeGreaterThan(UPDATE_CHECK_TIMEOUT_MS);
 });

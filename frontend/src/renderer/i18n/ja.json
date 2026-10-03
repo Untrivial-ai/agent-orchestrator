@@ -1272,6 +1272,7 @@
 	"session.notFound": "セッションが見つかりません。クリーンアップされた可能性があります — サイドバーから別のセッションを選んでください。",
 	"session.actionsMenu": "セッション操作",
 	"settings.updates.updateFailed": "アップデートに失敗しました。",
+	"settings.updates.retryScheduled": "AO は自動的にアップデートを再試行します。",
 	"switchAgent.action": "エージェントを切り替える",
 	"switchAgent.checkingStatus": "切り替えステータスを確認中…",
 	"switchAgent.compact.switching": "{{target}} に切り替え中",

@@ -1272,6 +1272,7 @@
 	"session.notFound": "Sitzung nicht gefunden. Sie wurde möglicherweise bereinigt — wählen Sie eine andere in der Seitenleiste.",
 	"session.actionsMenu": "Sitzungsaktionen",
 	"settings.updates.updateFailed": "Update fehlgeschlagen.",
+	"settings.updates.retryScheduled": "AO wird das Update automatisch erneut versuchen.",
 	"switchAgent.action": "Agent wechseln",
 	"switchAgent.checkingStatus": "Wechselstatus wird geprüft…",
 	"switchAgent.compact.switching": "Wechsel zu {{target}}",

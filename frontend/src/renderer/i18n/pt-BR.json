@@ -1293,6 +1293,7 @@
 	"session.notFound": "Sessão não encontrada. Ela pode ter sido limpa — escolha outra na barra lateral.",
 	"session.actionsMenu": "Ações da sessão",
 	"settings.updates.updateFailed": "Falha na atualização.",
+	"settings.updates.retryScheduled": "O AO tentará a atualização novamente automaticamente.",
 	"switchAgent.action": "Trocar agente",
 	"switchAgent.checkingStatus": "Verificando o status da troca…",
 	"switchAgent.compact.switching": "Trocando para {{target}}",

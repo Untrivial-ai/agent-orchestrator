@@ -1410,6 +1410,7 @@
 	"session.notFound": "Session not found. It may have been cleaned up — pick another from the sidebar.",
 	"session.actionsMenu": "Session actions",
 	"settings.updates.updateFailed": "Update failed.",
+	"settings.updates.retryScheduled": "AO will try the update again automatically.",
 	"switchAgent.action": "Switch agent",
 	"switchAgent.checkingStatus": "Checking switch status…",
 	"switchAgent.compact.switching": "Switching to {{target}}",

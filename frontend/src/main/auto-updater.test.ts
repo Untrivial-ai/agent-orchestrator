@@ -408,7 +408,11 @@ async function importAutoUpdater(
       return next;
     },
   );
-  vi.doMock("./update-settings", () => ({
+  // Spread the real module: only the persistence functions need stubbing, and a
+  // bare object silently drops the pure constants and state helpers, which then
+  // fail at import as missing exports rather than as anything readable.
+  vi.doMock("./update-settings", async () => ({
+    ...(await vi.importActual<typeof import("./update-settings")>("./update-settings")),
     readUpdateSettings,
     writeUpdateSettings,
     updateUpdateSettings,
@@ -473,12 +477,17 @@ function intervalWithDelay(
 function deferred<T = void>(): {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason: unknown) => void;
 } {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  // The download rejection is observed by the updater, not always by the test.
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
 }
 
 async function flushMicrotasks(turns = 16): Promise<void> {
@@ -2689,7 +2698,7 @@ describe("startAutoUpdates", () => {
       : kind === "automatic" ? h.module.startAutoUpdates(stateDir) : h.module.returnToHome(stateDir, "hung");
     await vi.advanceTimersByTimeAsync(0);
     const retry = h.module.checkForUpdatesNow(stateDir, { requestId: "retry" });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(180_000);
     expect(requestAborted).toBe(true);
     if (kind === "automatic") {
       // A background check the user never asked for must not strand its timeout
@@ -2717,7 +2726,7 @@ describe("startAutoUpdates", () => {
       downloadPromise: new Promise<void>((resolve) => { finishDownload = resolve; }),
     });
     const checking = h.module.startAutoUpdates(stateDir);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(180_000);
     expect(h.autoUpdater.httpExecutor.request).toBe(originalRequest);
     finishDownload();
     await checking;
@@ -3561,14 +3570,14 @@ describe("quitAndInstallUpdate", () => {
         updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
         return transfer.promise;
       });
-      const assertion = expect(module.quitAndInstallUpdate()).rejects.toThrow(/nothing changed/);
+      const assertion = expect(module.quitAndInstallUpdate()).rejects.toThrow();
       await flushMicrotasks();
       await vi.advanceTimersByTimeAsync(180_000);
       await assertion;
       nativeAutoUpdater.emit("update-downloaded");
       transfer.resolve();
       await flushMicrotasks();
-      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/nothing changed/);
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow();
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
       expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); restore(); }
@@ -4030,13 +4039,9 @@ describe("staged install rejection", () => {
       "code failed to satisfy specified code requirement(s)",
   );
 
-  it("keeps the verified download on a first failure and re-stages instead", async () => {
-    // Squirrel verifies the copy it extracted, in-process, before ShipIt exists.
-    // A rejection therefore indicts the EXTRACTION, not the zip — which
-    // electron-updater already checked against the feed sha512. Observed on a
-    // real failure: the cached zip was byte-identical to the feed and the next
-    // attempt extracted it cleanly. Purging here would force a 176 MB
-    // re-download to fix a bad untar.
+  it("purges the cached archive on the very first failure", async () => {
+    // electron-updater re-serves a cached file on existence alone, so keeping
+    // the archive made the next attempt fail identically.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -4047,21 +4052,22 @@ describe("staged install rejection", () => {
     updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
     updaterEvents.get("error")?.(rejection);
 
+    // Deferred onto the operation chain, so it has not run at the instant the
+    // rejection is handled; draining one operation proves it did.
     expect(autoUpdater.downloadedUpdateHelper.clear).not.toHaveBeenCalled();
-    // Still disarmed: that copy cannot install, and leaving it staged would
-    // promise a restart that fails. This also re-enables auto-download, which
-    // is what drives the re-extraction.
-    expect(module.getUpdateStatus().staged).toBeUndefined();
-    expect(statusMessages().at(-1)?.payload).toMatchObject({
-      state: "error",
-      message: expect.stringContaining("prepare it again"),
-    });
+    await module.checkForUpdatesNow(stateDir);
+    expect(autoUpdater.downloadedUpdateHelper.clear).toHaveBeenCalledTimes(1);
+    // A recoverable first failure: reported calmly, not as a red error.
+    expect(statusMessages().map((m) => (m.payload as { message?: string }).message)).toContainEqual(
+      expect.stringContaining("Retrying Download (attempt 1 of 3)"),
+    );
     consoleErrorSpy.mockRestore();
   });
 
-  it("discards the download once the same build fails a second time", async () => {
+  it("purges again on a repeat failure so every retry re-downloads", async () => {
     // A re-extraction failing too is the first real evidence the bytes are
-    // suspect, so now the zip goes.
+    // suspect, so the zip goes and the NEXT attempt is a genuine download.
+    // Without this the "retrying" the user is promised replays identical bytes.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -4077,16 +4083,16 @@ describe("staged install rejection", () => {
     // Deferred, not fired and forgotten: the clear is queued on the operation
     // chain, so it has not run at the instant the rejection is handled.
     expect(autoUpdater.downloadedUpdateHelper.clear).not.toHaveBeenCalled();
+    // Still calm. Running out of fast attempts is not a dead end any more.
     expect(statusMessages().at(-1)?.payload).toMatchObject({
-      state: "error",
-      message: expect.stringContaining("stopped retrying on its own"),
+      state: "retry-scheduled",
     });
 
     // ...and the next operation cannot begin until it has. Awaiting one drains
     // the queue behind the cleanup, which is the property that stops a download
     // starting into a pending directory that is still being emptied.
     await module.checkForUpdatesNow(stateDir);
-    expect(autoUpdater.downloadedUpdateHelper.clear).toHaveBeenCalledTimes(1);
+    expect(autoUpdater.downloadedUpdateHelper.clear).toHaveBeenCalledTimes(2);
     consoleErrorSpy.mockRestore();
   });
 
@@ -4094,27 +4100,29 @@ describe("staged install rejection", () => {
   // cheap re-preparation. Unbounded, that is also a loop: fetch 176 MB, fail
   // verification, discard, fetch again, on every check for as long as the app
   // runs. These three cover the bound and both of its resets.
-  const failTwice = (
+  const failUntilExhausted = (
     updaterEvents: Map<string, (...args: unknown[]) => unknown>,
   ) => {
-    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
-    updaterEvents.get("error")?.(rejection);
-    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
-    updaterEvents.get("error")?.(rejection);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(rejection);
+    }
   };
 
-  it("stops automatically re-downloading a build that failed twice", async () => {
+  it("keeps re-downloading on the ordinary cadence after the attempts are used up", async () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
 
     await module.startAutoUpdates(stateDir);
 
-    expect(autoUpdater.autoDownload).toBe(false);
+    // Never latches. The contract for the settled state is a plain 15 minute
+    // retry, so automatic download stays armed rather than being suppressed.
+    expect(autoUpdater.autoDownload).toBe(true);
     consoleErrorSpy.mockRestore();
   });
 
@@ -4127,7 +4135,7 @@ describe("staged install rejection", () => {
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
     updaterEvents.get("update-available")?.({ version: "2.2.0" });
 
     await module.startAutoUpdates(stateDir);
@@ -4180,15 +4188,15 @@ describe("staged install rejection", () => {
   });
 
   it("restores the budget when the user checks again", async () => {
-    // The exhausted message tells the user to check for updates again, so that
-    // has to actually do something.
+    // Once the automatic retries are spent, an explicit manual check is the user's
+    // way back in, so it has to reset the budget and re-arm auto-download.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
     await module.checkForUpdatesNow(stateDir);
 
     await module.startAutoUpdates(stateDir);
@@ -4221,8 +4229,8 @@ describe("staged install rejection", () => {
 
     expect(statusMessages().at(-1)?.payload).toEqual(afterFirstDelivery);
     expect(statusMessages().at(-1)?.payload).toMatchObject({
-      state: "error",
-      message: expect.stringContaining("prepare it again"),
+      state: "retry-scheduled",
+      message: expect.stringContaining("Retrying Download"),
     });
     // The repeat must not be miscounted as a genuine second failure, which
     // would discard a download that has only actually failed once.
@@ -4252,7 +4260,8 @@ describe("staged install rejection", () => {
   it("surfaces the failure even on an automatic check", async () => {
     // The automatic path suppresses one-off failures so the UI does not flash
     // an error nobody asked for. That suppression must not swallow this class:
-    // an install the user cannot retry out of is exactly what has to be shown.
+    // a staged build that failed to install is exactly what has to be shown,
+    // even when the report is the calm "will retry" line.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -4268,7 +4277,7 @@ describe("staged install rejection", () => {
     });
     await module.startAutoUpdates(stateDir);
 
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     expect(module.getUpdateStatus().staged).toBeUndefined();
     consoleErrorSpy.mockRestore();
   });
@@ -4300,7 +4309,7 @@ describe("staged install rejection", () => {
     );
 
     expect(module.getUpdateStatus().staged).toBeUndefined();
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     consoleErrorSpy.mockRestore();
   });
 
@@ -4323,7 +4332,7 @@ describe("staged install rejection", () => {
     );
 
     expect(module.getUpdateStatus().staged).toBeUndefined();
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     consoleErrorSpy.mockRestore();
   });
 
@@ -4363,6 +4372,135 @@ describe("staged install rejection", () => {
 
     expect(autoUpdater.downloadedUpdateHelper.clear).not.toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
+  });
+
+  it("releases the Check button when a second delivery lands on the manual path", async () => {
+    // The renderer clears its pending check on a status carrying that request's
+    // id, so dropping the duplicate left the button spinning until the watchdog.
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const consoleDebugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+    const transfer = deferred();
+    const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater();
+
+    autoUpdater.checkForUpdates.mockImplementationOnce(() => {
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(rejection);
+      transfer.reject(rejection);
+      return Promise.resolve({ downloadPromise: transfer.promise });
+    });
+    await module.checkForUpdatesNow(stateDir, { requestId: "req-1" });
+    await flushMicrotasks();
+
+    const last = statusMessages().at(-1)?.payload as { state: string; requestId?: string; message?: string };
+    expect(last.requestId).toBe("req-1");
+    expect(last.state).toBe("retry-scheduled");
+    expect(last.message).not.toMatch(/did not pass validation|static code/i);
+    consoleDebugSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("keeps the calm line when the same rejection also rejects the download promise", async () => {
+    // One Squirrel failure arrives twice: re-emitted, and as the download
+    // promise rejection. The second route's guard tested one literal state name,
+    // which `retry-scheduled` is not, so the raw dump overwrote the calm line.
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const consoleDebugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+    const transfer = deferred();
+    const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater();
+
+    // Both deliveries of the ONE failure, in the order MacUpdater produces them:
+    // the re-emitted event first, then the rejection of the awaited download.
+    autoUpdater.checkForUpdates.mockImplementationOnce(() => {
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(rejection);
+      transfer.reject(rejection);
+      return Promise.resolve({ downloadPromise: transfer.promise });
+    });
+    await module.checkForUpdatesNow(stateDir);
+    await flushMicrotasks();
+
+    const shown = statusMessages().at(-1)?.payload as { state: string; message?: string };
+    expect(shown.state).toBe("retry-scheduled");
+    expect(shown.message).not.toMatch(/did not pass validation|static code/i);
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
+    consoleDebugSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("reports a signature rejection as a verification retry, not as a stall", async () => {
+    // The shortener rewrote anything matching /signature/ to the stall line
+    // before anything classified it, so verification failures read as a stall
+    // that never happened. Driven through the native error mid-check.
+    const restore = stubProcess("darwin", process.execPath);
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const consoleDebugSpy = vi
+      .spyOn(console, "debug")
+      .mockImplementation(() => undefined);
+    try {
+      const transfer = deferred();
+      const { module, autoUpdater, updaterEvents, nativeUpdaterEvents, statusMessages } =
+        await importAutoUpdater(undefined, { nativeReadyManually: true });
+
+      autoUpdater.checkForUpdates.mockImplementationOnce(() => {
+        updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+        return Promise.resolve({ downloadPromise: transfer.promise });
+      });
+      const checking = module.checkForUpdatesNow(stateDir);
+      await flushMicrotasks();
+      nativeUpdaterEvents.get("error")?.(rejection);
+      await flushMicrotasks();
+      await checking;
+
+      const shown = statusMessages().at(-1)?.payload as { message?: string };
+      expect(shown.message ?? "").not.toContain("finish preparing");
+      expect(module.getUpdateStatus().message ?? "").not.toContain("finish preparing");
+    } finally {
+      consoleDebugSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+      restore();
+    }
+  });
+
+  it("retries on the real 15 minute periodic check after the attempts are used up", async () => {
+    // Through the scheduler's own callback, not startAutoUpdates with the clock
+    // moved: only the real timer proves the periodic path still arms a download.
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater({
+        enabled: true, channel: "latest", nightlyAck: true, feature: null,
+      });
+      await module.startAutoUpdates(stateDir);
+      failUntilExhausted(updaterEvents);
+
+      const shown = statusMessages().at(-1)?.payload as { state: string; message?: string };
+      expect(shown.state).toBe("retry-scheduled");
+      expect(shown.message).toContain("Download failed");
+      expect(shown.message).toContain("15 minutes");
+
+      const checksBefore = autoUpdater.checkForUpdates.mock.calls.length;
+      // The scheduler's own 15 minute tick, not a hand-rolled call.
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      await flushMicrotasks();
+
+      expect(autoUpdater.checkForUpdates.mock.calls.length).toBeGreaterThan(checksBefore);
+      expect(autoUpdater.autoDownload).toBe(true);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -4516,12 +4654,16 @@ it("keeps timed-out native preparation non-installable even after a late event",
     await module.checkForUpdatesNow(stateDir);
     updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
     await vi.advanceTimersByTimeAsync(3 * 60_000);
-    expect(module.getUpdateStatus()).toMatchObject({ state: "error", staged: { ready: false } });
-    expect(module.getUpdateStatus().message).toContain("nothing changed");
-    await expect(module.quitAndInstallUpdate()).rejects.toThrow(/nothing changed/);
+    // A stall is AO's to retry, not the user's to fix, so it reports calmly even
+    // though Squirrel's missing cancel API means the retry waits for a restart.
+    // The stalled stage is killed and the build dropped, so there is nothing
+    // installable left and the retry rides the normal ladder.
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
+    expect(module.getUpdateStatus().staged).toBeUndefined();
+    await expect(module.quitAndInstallUpdate()).rejects.toThrow();
     expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     nativeUpdaterEvents.get("update-downloaded")?.({}, "notes", "2.0.0");
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
   } finally { restore(); vi.useRealTimers(); }
 });
 
@@ -4538,10 +4680,13 @@ it("gives the signature-verification plateau a grace before calling a stall", as
     // Past the 90s inactivity window but still inside the verification grace:
     // the plateau alone must not be treated as a stall yet.
     await vi.advanceTimersByTimeAsync(2 * 60_000);
-    expect(module.getUpdateStatus().state).not.toBe("error");
+    // Asserted positively: "not error" would also hold for the stall state this
+    // now reports, so it would pass even if the grace were removed entirely.
+    expect(module.getUpdateStatus().state).toBe("preparing");
     // Past the grace with the plateau unbroken: now it is a stall.
     await vi.advanceTimersByTimeAsync(2 * 60_000);
-    expect(module.getUpdateStatus()).toMatchObject({ state: "error", staged: { ready: false } });
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
+    expect(module.getUpdateStatus().staged).toBeUndefined();
   } finally { restore(); vi.useRealTimers(); }
 });
 
@@ -4601,4 +4746,145 @@ it("falls back to the 2 GiB cap when the archive size is unknown", async () => {
     updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
     expect(required.at(-1)).toBe(2 * 1024 * 1024 * 1024);
   } finally { restore(); }
+});
+
+it("purges the archive when preparation stalls, so the next launch re-downloads", async () => {
+  // The stall handler sets the no-more-staging latch and THEN queues the purge.
+  // The serialized queue used to reject every operation while that latch was
+  // set, including this one, so the purge never ran and the next launch replayed
+  // a zip that is still checksum-valid but cannot be extracted.
+  vi.useFakeTimers();
+  const restore = stubProcess("darwin", process.execPath);
+  try {
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+    module.__setStagingProbesForTesting({ readStagingBytes: () => 1 });
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
+    expect(autoUpdater.downloadedUpdateHelper.clear).toHaveBeenCalled();
+  } finally { restore(); vi.useRealTimers(); }
+});
+
+it("lets a manual check run normally after a stall, instead of wedging the app", async () => {
+  // The latch made every later operation throw, and the dedupe guard then
+  // swallowed the user's click. Killing the extraction removes the latch.
+  vi.useFakeTimers();
+  const restore = stubProcess("darwin", process.execPath);
+  const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const consoleDebugSpy = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+  try {
+    const { module, updaterEvents, statusMessages } = await importAutoUpdater(undefined, { nativeReadyManually: true });
+    module.__setStagingProbesForTesting({ readStagingBytes: () => 1 });
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
+
+    const before = statusMessages().length;
+    await module.checkForUpdatesNow(stateDir, { requestId: "req-after-stall" });
+    await flushMicrotasks();
+
+    const after = statusMessages().slice(before).map((m) => m.payload as { requestId?: string; state: string });
+    // Answered, so the renderer can release the Check button...
+    expect(after.some((s) => s.requestId === "req-after-stall")).toBe(true);
+    // ...and it really ran rather than being refused by a latch.
+    expect(after.some((s) => s.state === "checking")).toBe(true);
+    expect(module.getUpdateStatus().state).not.toBe("error");
+  } finally {
+    consoleDebugSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    restore();
+    vi.useRealTimers();
+  }
+});
+
+it("carries the retry budget across a restart instead of granting three more", async () => {
+  // Three attempts for THIS build, not three per process: held only in memory,
+  // a restart handed a permanently bad build a fresh three, without limit.
+  const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const squirrelRejection = new Error(
+    "Code signature at URL file:///Users/x/Library/Caches/dev.agent-orchestrator.desktop.ShipIt/" +
+      "update.M9ZvE0X/Agent%20Orchestrator.app/ did not pass validation: " +
+      "code failed to satisfy specified code requirement(s)",
+  );
+  try {
+    const enabled = { enabled: true, channel: "latest" as const, nightlyAck: true, feature: null };
+    const first = await importAutoUpdater(enabled);
+    await first.module.startAutoUpdates(stateDir);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      first.updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      first.updaterEvents.get("error")?.(squirrelRejection);
+    }
+    // Wait for the write itself. A manual check would drain the queue too, but
+    // it also clears the budget by design, which is the thing under test.
+    const file = nodePath.join(stateDir, "install-rejections.json");
+    for (let i = 0; i < 100 && !existsSync(file); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ version: "2.1.0", count: 3 });
+
+    // A brand new process: fresh module registry, same state dir.
+    const second = await importAutoUpdater(enabled);
+    await second.module.startAutoUpdates(stateDir);
+    second.updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    second.updaterEvents.get("error")?.(squirrelRejection);
+
+    // The count carried over, so this reads as the fourth failure and stays in
+    // the settled state. Without persistence it would restart at "attempt 1 of
+    // 3" and the build would look freshly retriable on every relaunch.
+    const shown = second.statusMessages().at(-1)?.payload as { message?: string };
+    expect(shown.message).toContain("Download failed");
+    expect(shown.message).not.toContain("attempt 1 of 3");
+  } finally {
+    consoleErrorSpy.mockRestore();
+  }
+});
+
+it("kills a stalled stage and retries it, three times, then keeps the 15 minute cadence", async () => {
+  // Detect, STOP, retry. It used to latch, so this class had no in-process
+  // recovery: while the wedged extraction lives every later stage is refused.
+  vi.useFakeTimers();
+  const restore = stubProcess("darwin", process.execPath);
+  const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    const { module, autoUpdater, updaterEvents, statusMessages } = await importAutoUpdater({
+      enabled: true, channel: "latest", nightlyAck: true, feature: null,
+    }, { nativeReadyManually: true });
+    const killed = vi.fn(() => 1);
+    module.__setStagingProbesForTesting({ readStagingBytes: () => 1, killStagingTask: killed });
+    await module.startAutoUpdates(stateDir);
+
+    const messages: string[] = [];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      messages.push((statusMessages().at(-1)?.payload as { message?: string }).message ?? "");
+      // Each stall drops the archive, so the retry is a real download.
+      expect(module.getUpdateStatus().staged).toBeUndefined();
+    }
+
+    expect(messages[0]).toContain("Retrying Download (attempt 1 of 3)");
+    expect(messages[1]).toContain("Retrying Download (attempt 2 of 3)");
+    // Past the bound: the steady state, still calm, still on the 15 minute poll.
+    expect(messages[2]).toContain("Download failed");
+    expect(messages[2]).toContain("15 minutes");
+    expect(autoUpdater.downloadedUpdateHelper.clear).toHaveBeenCalled();
+    // The stage is actually STOPPED each time, not just given up on. Without
+    // this the wedged extraction keeps Squirrel's command executing and every
+    // retry below would be refused before it started.
+    expect(killed).toHaveBeenCalledTimes(3);
+
+    // Never latched: automatic download stays armed for the next periodic check.
+    const checksBefore = autoUpdater.checkForUpdates.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    await flushMicrotasks();
+    expect(autoUpdater.checkForUpdates.mock.calls.length).toBeGreaterThan(checksBefore);
+    expect(autoUpdater.autoDownload).toBe(true);
+  } finally {
+    consoleErrorSpy.mockRestore();
+    restore();
+    vi.useRealTimers();
+  }
 });

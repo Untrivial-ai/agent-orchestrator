@@ -8,7 +8,8 @@ import { parseNightlyVersion } from "../../lib/build-channel";
 import { useUiStore } from "../../stores/ui-store";
 import { useRequestUpdateInstall } from "../../hooks/useRequestUpdateInstall";
 import { useUpdateStatus, requestUpdateDownload } from "../../hooks/useUpdateStatus";
-import type { UpdateChannel, UpdateSettings, UpdateState, UpdateStatus } from "../../../main/update-settings";
+import type { UpdateChannel, UpdateSettings, UpdateStatus } from "../../../main/update-settings";
+import { UPDATE_CHECK_TIMEOUT_MS, resolvesChannelSwitch, type UpdateState } from "../../../shared/update-state";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -30,7 +31,12 @@ const MIN_MANUAL_CHECK_VISIBLE_MS = 1_000;
 // request id disables the Check button for the rest of the session with nothing
 // on screen to explain it. Releasing the button is always safe: the main process
 // serializes updater operations, so a redundant check queues rather than racing.
-const MAX_MANUAL_CHECK_MS = 90_000;
+// Derived, never picked independently: when this was a standalone 90s it sat
+// BELOW the main process's own deadline, so a slow-but-successful check was
+// declared failed at 90s and the banner had no way to retract itself when the
+// real answer arrived. Staying above the main deadline means this only ever
+// fires when the IPC call genuinely never settles, which is what it is for.
+export const MAX_MANUAL_CHECK_MS = UPDATE_CHECK_TIMEOUT_MS + 30_000;
 
 let updateRequestSequence = 0;
 
@@ -105,7 +111,7 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 			finishManualCheck(next.requestId);
 		}
 		const pending = channelSwitchRef.current;
-		if (pending && next.requestId === pending.requestId && ["not-available", "error", "unsupported"].includes(next.state)) {
+		if (pending && next.requestId === pending.requestId && resolvesChannelSwitch(next.state)) {
 			setChannelSwitch(null);
 		}
 	}, true);
@@ -136,7 +142,7 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 		} else if (status.state === "downloaded") {
 			void aoBridge.updates.install();
 			autoProgressRef.current = null;
-		} else if (status.state === "error" || status.state === "unsupported" || status.state === "not-available") {
+		} else if (status.state === "error" || status.state === "unsupported" || status.state === "not-available" || status.state === "retry-scheduled") {
 			autoProgressRef.current = null;
 		}
 	}, [status]);
@@ -684,6 +690,15 @@ function UpdateStatusLine({
 		case "unsupported":
 			icon = <Info className="size-icon-sm shrink-0" aria-hidden="true" />;
 			label = status.message ?? t("settings.updates.needInstalledApp");
+			break;
+		case "retry-scheduled":
+			// Non-error on purpose: AO is recovering on its own, so this reads as a
+			// neutral status line (muted text, clock icon), never a red failure.
+			icon = <Clock3 className="size-icon-sm shrink-0" aria-hidden="true" />;
+			// The fallback is not "Update failed": nothing has failed from the user's
+			// side while AO is still working through its retries.
+			label = status.message ?? t("settings.updates.retryScheduled");
+			detail = status.version ? t("settings.updates.targetVersion", { version: status.version }) : null;
 			break;
 		case "error":
 			className = "text-error";

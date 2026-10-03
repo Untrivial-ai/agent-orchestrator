@@ -8,6 +8,7 @@ import { startMacUpdateProgress } from "./mac-update-progress";
 import { markUpdateRelaunch } from "./update-relaunch-flag";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import semver from "semver";
@@ -19,8 +20,11 @@ import {
   updateUpdateSettings,
   writeUpdateSettings,
   UPDATE_SETTINGS_FILE_NAME,
+  UPDATE_CHECK_TIMEOUT_MS,
+  isReportedFailure,
   type UpdateChannel,
   type UpdateSettings,
+  type UpdateState,
   type UpdateStatus,
   type UpdateInstallResult,
 } from "./update-settings";
@@ -234,9 +238,50 @@ function requiredFreeBytesToStage(archiveBytes: number | undefined): number {
   const derived = archiveBytes * STAGE_ARCHIVE_EXPANSION_FACTOR;
   return Math.min(STAGE_FREE_BYTES_CAP, Math.max(STAGE_FREE_BYTES_FLOOR, derived));
 }
-// Short user-facing lines; the raw ditto/pkzip/codesign detail is logged, not shown.
-const STAGE_STALL_MESSAGE = "Couldn't finish preparing the update. AO stayed open, so nothing changed. Retry to try again.";
-const STAGE_DISK_MESSAGE = "Not enough disk space to install the update. Free up space, then retry.";
+/**
+ * Why a staged build could not be installed. Decides the wording and whether AO
+ * retries at all: a full disk is the user's to fix, a bad copy is AO's to refetch.
+ *
+ * Carried on the Error, because the text used to be rewritten to a friendly line
+ * BEFORE anything classified it, so the handler could not tell a signature
+ * rejection from a stall. Text matching is the fallback for raw Squirrel errors.
+ */
+export type StageFailureKind = "disk-full" | "verification" | "stall" | "unknown";
+
+const STAGE_FAILURE_KIND = Symbol.for("ao.stageFailureKind");
+
+function stageError(kind: StageFailureKind, message: string): Error {
+  return Object.assign(new Error(message), { [STAGE_FAILURE_KIND]: kind });
+}
+
+function stageFailureKind(err: unknown): StageFailureKind {
+  const tagged = (err as Record<symbol, unknown> | undefined)?.[STAGE_FAILURE_KIND];
+  if (typeof tagged === "string") return tagged as StageFailureKind;
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/no space left on device/i.test(raw)) return "disk-full";
+  if (STAGED_INSTALL_REJECTION_PATTERN.test(raw)) return "verification";
+  if (/ditto:|pkzip|failed to (?:extract|unzip)/i.test(raw)) return "stall";
+  return "unknown";
+}
+
+/** True for failures a fresh download can plausibly fix. A full disk cannot. */
+function isRetriableStageFailure(kind: StageFailureKind): boolean {
+  return kind === "verification" || kind === "stall";
+}
+
+const STAGE_DISK_MESSAGE = "Your Mac is out of disk space, so AO can't install the update. Free up some space, then try again.";
+const STAGE_STALL_MESSAGE = "AO couldn't finish preparing the update, so nothing on your Mac changed. It will try again automatically.";
+
+/**
+ * Both retriable kinds share one line: the remedy is the same and the difference
+ * is diagnostic, so the user is told what AO is doing, not which stage failed.
+ */
+function stageRetryMessage(attempt: number): string {
+  return attempt < MAX_FAST_INSTALL_ATTEMPTS
+    ? `Retrying Download (attempt ${attempt} of ${MAX_FAST_INSTALL_ATTEMPTS}).`
+    : "Download failed. AO will try again in about 15 minutes.";
+}
+
 let nativePreparationBlocked: Error | undefined;
 let rejectNativeOperation: ((error: Error) => void) | undefined;
 let nativePreparation: { version: string; promise: Promise<void>; finish(error?: Error): void } | undefined;
@@ -291,17 +336,74 @@ function insufficientDiskForStaging(requiredBytes: number): boolean {
   } catch { return false; }
 }
 
-// Rewrites only known extraction/verification failures to a short line; any
-// other error passes through so its own recovery and messaging stay intact.
-function shortStagingMessage(err: unknown): string {
+/**
+ * Shorten a staging failure for display, preserving what kind it was. Signature
+ * rejections are NOT collapsed into the stall line: the handler that owns them
+ * identifies them by message, so rewriting here erased the evidence.
+ */
+function shortStagingError(err: unknown): Error {
+  const kind = stageFailureKind(err);
   const raw = err instanceof Error ? err.message : String(err);
-  if (/no space left on device/i.test(raw)) return STAGE_DISK_MESSAGE;
-  if (/ditto:|pkzip|code ?signature|codesign|failed to (?:extract|unzip)/i.test(raw)) return STAGE_STALL_MESSAGE;
-  return raw;
+  if (kind === "disk-full") return stageError(kind, STAGE_DISK_MESSAGE);
+  if (kind === "stall") return stageError(kind, STAGE_STALL_MESSAGE);
+  // Raw Squirrel text kept so the install-rejection handler still matches it.
+  return Object.assign(new Error(raw), { [STAGE_FAILURE_KIND]: kind });
 }
 
-function blockNativePreparation(message: string): void {
-  nativePreparationBlocked = new Error(message);
+/**
+ * Kill the extraction that has stopped making progress.
+ *
+ * Squirrel unzips in THIS process (ditto, an NSTask child) and exposes no way to
+ * cancel it, so a wedged ditto holds SQRLUpdater's command in `executing` and
+ * every later stage is refused. Killing the child is the only way out.
+ *
+ * Safe here, and only here: SQRLInstaller does not touch the installed app until
+ * phases that run from ShipIt after quit, so an interrupted extraction leaves
+ * just a scratch dir. Interrupting the later swap would not be safe.
+ */
+function killStalledStagingTask(): number {
+  if (process.platform !== "darwin") return 0;
+  let pids: number[] = [];
+  try {
+    pids = execFileSync("/usr/bin/pgrep", ["-P", String(process.pid), "-x", "ditto"], {
+      encoding: "utf8",
+      timeout: 5_000,
+    })
+      .split("\n")
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+  } catch {
+    return 0; // pgrep exits non-zero when nothing matches
+  }
+  let killed = 0;
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+      killed += 1;
+    } catch { /* already gone */ }
+  }
+  return killed;
+}
+
+/** Shared by the Squirrel error event and the stall watchdog, which had drifted apart. */
+function recordRetriableStageFailure(kind: StageFailureKind, err: unknown): void {
+  const failures = recordInstallRejection(stagedVersion);
+  handledInstallRejection = { version: stagedVersion };
+  discardStagedBuild();
+  // electron-updater re-serves a cached file on existence alone, so a retry that
+  // skipped this would hand Squirrel byte-identical input. Queued, because
+  // discardStagedBuild() re-arms a download into the directory being emptied.
+  void runSerializedUpdaterOperation("cache-clear", clearPendingUpdateCache).catch(() => undefined);
+  console.error(
+    `staged update ${kind === "stall" ? "stalled while preparing" : "rejected at install time"} (attempt ${failures}, discarding cached download so the next attempt re-downloads):`,
+    err,
+  );
+  // Never red: the user cannot act on this and AO is already handling it.
+  broadcast(withActiveRequest({ state: "retry-scheduled", message: stageRetryMessage(failures) }));
+}
+
+function blockNativePreparation(error: Error): void {
+  nativePreparationBlocked = error;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   activeDownloadCancellation?.cancel();
@@ -311,24 +413,28 @@ function blockNativePreparation(message: string): void {
 // deterministically. A fresh module import restores the defaults.
 let readStagingBytes: (dir: string | undefined) => number | undefined = shipItStagingBytes;
 let stagingDiskIsFull: (requiredBytes: number) => boolean = insufficientDiskForStaging;
+// Overridable: the real one signals a process, so tests assert the stage is stopped.
+let killStagingTask: () => number = killStalledStagingTask;
 export function __setStagingProbesForTesting(probes: {
   readStagingBytes?: (dir: string | undefined) => number | undefined;
   stagingDiskIsFull?: (requiredBytes: number) => boolean;
+  killStagingTask?: () => number;
 }): void {
   if (probes.readStagingBytes) readStagingBytes = probes.readStagingBytes;
   if (probes.stagingDiskIsFull) stagingDiskIsFull = probes.stagingDiskIsFull;
+  if (probes.killStagingTask) killStagingTask = probes.killStagingTask;
 }
 
 function beginNativePreparation(version: string, archiveBytes?: number): void {
   if (nativePreparationBlocked) return;
   if (nativePreparation) {
-    nativePreparationBlocked = new Error(STAGE_STALL_MESSAGE);
+    nativePreparationBlocked = stageError("stall", STAGE_STALL_MESSAGE);
     nativePreparation.finish(nativePreparationBlocked);
     return;
   }
   // Catch a full disk before ditto fails partway with a cryptic pkzip error (#5170).
   if (stagingDiskIsFull(requiredFreeBytesToStage(archiveBytes))) {
-    blockNativePreparation(STAGE_DISK_MESSAGE);
+    blockNativePreparation(stageError("disk-full", STAGE_DISK_MESSAGE));
     nativeReadyVersion = undefined;
     nativePreparationError = nativePreparationBlocked;
     broadcast(stagedDownloadedStatus());
@@ -365,12 +471,16 @@ function beginNativePreparation(version: string, archiveBytes?: number): void {
   let lastBytes = readStagingBytes(stagingDir);
   let lastProgressAt = startedAt;
   const trip = (): void => {
-    // No cancel API, so never stage again on top of a stalled request even if
-    // its JS transfer settles later; recovery is a clean relaunch.
-    console.error(`native update preparation stalled after ${Math.round((Date.now() - startedAt) / 1000)}s with no staging progress`);
-    blockNativePreparation(STAGE_STALL_MESSAGE);
-    preparation.finish(nativePreparationBlocked);
-    broadcast(stagedDownloadedStatus());
+    const stalledFor = Math.round((Date.now() - startedAt) / 1000);
+    // Stop it first: until the wedged ditto dies every later stage is refused,
+    // so a retry would be rejected before it began.
+    const killed = killStagingTask();
+    console.error(
+      `native update preparation stalled after ${stalledFor}s with no staging progress; killed ${killed} extraction task(s)`,
+    );
+    const stall = stageError("stall", STAGE_STALL_MESSAGE);
+    preparation.finish(stall);
+    recordRetriableStageFailure("stall", stall);
   };
   const watchdog = setInterval(() => {
     const now = Date.now();
@@ -1142,7 +1252,10 @@ function supersedesStagedBuild(version: string | undefined): boolean {
 
 type UpdateCheckOutcome = Awaited<ReturnType<typeof autoUpdater.checkForUpdates>>;
 
-const UPDATE_CHECK_TIMEOUT_MS = 60_000;
+// GitHub's release-assets CDN can take ~75s just to establish a connection on
+// slower networks, so a 60s deadline aborted checks that would have succeeded.
+// Defined in update-settings so the renderer's own watchdog derives from it
+// rather than picking a shorter deadline and declaring a live check dead.
 const UPDATE_CHECK_TIMEOUT_MESSAGE = "Update check timed out. The update service did not respond in time. Try again.";
 
 // electron-updater owns this executor but omits it from its public declarations.
@@ -1244,8 +1357,15 @@ function broadcastDiscoveredAvailable(): void {
 // stagedDownloadedStatus rebuilds the enriched downloaded status from module
 // state, so transient check states can restore the row without recomputing.
 function stagedDownloadedStatus(): UpdateStatus {
+  // A blocked preparation is only an ERROR when the user has to do something.
+  // A full disk is theirs to clear; a stall is AO's to retry, so it reports
+  // calmly even though this process cannot be the one that retries it.
+  const blockedState: UpdateState =
+    nativePreparationBlocked !== undefined && isRetriableStageFailure(stageFailureKind(nativePreparationBlocked))
+      ? "retry-scheduled"
+      : "error";
   return {
-    state: nativePreparationBlocked ? "error" : isNativeInstallReady() || !stagedInCurrentProcess ? "downloaded" : "preparing",
+    state: nativePreparationBlocked ? blockedState : isNativeInstallReady() || !stagedInCurrentProcess ? "downloaded" : "preparing",
     ...(nativePreparationBlocked ? { message: nativePreparationBlocked.message } : {}),
     version: stagedVersion,
     stagedAt: stagedAtMs,
@@ -1321,7 +1441,11 @@ async function runSerializedUpdaterOperation(
   requestId?: string,
 ): Promise<void> {
   const run = async () => {
-    if (nativePreparationBlocked) throw nativePreparationBlocked;
+    // The latch stops AO STAGING again, which is the thing Squirrel cannot be
+    // asked to cancel. Cleanup is not staging, and the stall handler queues a
+    // purge immediately after setting the latch, so gating that too made the
+    // purge unreachable and left the failed archive to be replayed next launch.
+    if (nativePreparationBlocked && operation !== "cache-clear") throw nativePreparationBlocked;
     // A completed proxy transfer is not completed native staging. Holding this
     // gate prevents a late native event for A being attributed to a newer B.
     if (nativePreparation) await nativePreparation.promise;
@@ -1590,12 +1714,15 @@ function isStagedInstallRejection(err: unknown): boolean {
 }
 
 /**
- * Consecutive verification failures for one staged version.
+ * Consecutive install failures for one staged version.
  *
  * Keyed by version because the question is "has THIS build failed before", not
  * "how many failures have we seen". A different build resets the count.
+ * `lastAt` drives the backoff once the fast attempts are spent.
  */
-let installRejections: { version: string | undefined; count: number } | undefined;
+let installRejections:
+  | { version: string | undefined; count: number; lastAt: number }
+  | undefined;
 
 /**
  * The rejection already handled and reported, so the SAME native failure
@@ -1616,50 +1743,113 @@ let installRejections: { version: string | undefined; count: number } | undefine
 let handledInstallRejection: { version: string | undefined } | undefined;
 
 /**
- * How many times one build may fail verification before AO stops re-preparing
- * it on every check.
- *
- * Two: the first failure buys a re-preparation from the archive already in the
- * cache, the second discards that archive. A third automatic attempt would just
- * re-download the same bytes on every check forever, which is the loop this
- * bound exists to stop.
+ * Attempts shown as an active retry. Nothing stops after three: the count only
+ * decides the wording, and AO keeps retrying on the ordinary 15 minute cadence.
  */
-const MAX_AUTOMATIC_INSTALL_ATTEMPTS = 2;
+const MAX_FAST_INSTALL_ATTEMPTS = 3;
 
 /**
- * True once a build has used up its automatic recovery attempts.
- *
- * Checked before an automatic check arms auto-download, which is the only place
- * the loop can be broken: the download is started by checkForUpdates() itself,
- * before the offered version is known, so this cannot discriminate by version at
- * that point. It is deliberately cleared as soon as the feed offers something
- * else, or the user asks explicitly — see forgetInstallRejections.
+ * Never paused, deliberately. A build that can never install is re-fetched every
+ * 15 minutes while the app runs; that cost is accepted so the common transient
+ * cause recovers promptly.
  */
-function automaticRecoveryExhausted(): boolean {
-  return (
-    installRejections !== undefined &&
-    installRejections.count >= MAX_AUTOMATIC_INSTALL_ATTEMPTS
-  );
+function automaticRecoveryPaused(): boolean {
+  return false;
 }
 
 /**
  * Reset the budget.
  *
  * Called when the feed offers a different build (a new target gets its own
- * attempts) and on an explicit manual check or download (the user asking again
- * is the "explicit retry" route the exhausted message points at).
+ * attempts) and on an explicit manual check or download, which is the "check
+ * again" route the retry message points at.
  */
 function forgetInstallRejections(): void {
   installRejections = undefined;
+  forgetPersistedInstallRejections(escalationStateDir);
 }
 
 /** Count this rejection and report how many times this build has now failed. */
-function recordInstallRejection(version: string | undefined): number {
+function recordInstallRejection(version: string | undefined, now = Date.now()): number {
   installRejections =
     installRejections !== undefined && installRejections.version === version
-      ? { version, count: installRejections.count + 1 }
-      : { version, count: 1 };
+      ? { version, count: installRejections.count + 1, lastAt: now }
+      : { version, count: 1, lastAt: now };
+  persistInstallRejections(escalationStateDir);
   return installRejections.count;
+}
+
+const INSTALL_REJECTIONS_FILE_NAME = "install-rejections.json";
+
+function installRejectionsFile(stateDir: string): string {
+  return path.join(stateDir, INSTALL_REJECTIONS_FILE_NAME);
+}
+
+let rejectionPersistenceQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Carry the budget across restarts.
+ *
+ * Without this the bound is only ever "three attempts per PROCESS". A build that
+ * can never install exhausts its attempts, and then quitting and reopening AO
+ * hands it a fresh three, so a user who restarts the app a few times a day
+ * re-downloads the same bad archive indefinitely. The counter is keyed by
+ * version and still cleared by a newer build or an explicit manual check, so the
+ * intended rule, three automatic attempts for THIS build, is the one that
+ * actually holds.
+ *
+ * Kept in its own file rather than staged-update.json: the rejection handler
+ * calls discardStagedBuild(), which deletes that file, so the record of the
+ * failure would be erased by the very failure it is meant to remember.
+ */
+function persistInstallRejections(stateDir: string | undefined): void {
+  if (stateDir === undefined || installRejections === undefined) return;
+  const payload = `${JSON.stringify(installRejections)}\n`;
+  rejectionPersistenceQueue = rejectionPersistenceQueue
+    .then(() => mkdir(stateDir, { recursive: true, mode: 0o750 }))
+    .then(() => writeFile(installRejectionsFile(stateDir), payload, { mode: 0o600 }))
+    .catch(() => undefined);
+}
+
+function forgetPersistedInstallRejections(stateDir: string | undefined): void {
+  if (stateDir === undefined) return;
+  rejectionPersistenceQueue = rejectionPersistenceQueue
+    .then(() => unlink(installRejectionsFile(stateDir)))
+    .catch(() => undefined);
+}
+
+/**
+ * Reload the budget recorded by an earlier run.
+ *
+ * Discarded when it belongs to a version other than the one now on offer, or
+ * when it is unreadable: a wrong budget that blocks a good build is worse than
+ * no budget at all, so every doubtful case fails open to a fresh three attempts.
+ */
+function restoreInstallRejections(stateDir: string): void {
+  // Synchronous for the same reason as restoreStagedBuild: a few dozen bytes,
+  // read once, and the launch-time check should not wait an I/O turn for it.
+  let raw: { version?: unknown; count?: unknown; lastAt?: unknown };
+  try {
+    raw = JSON.parse(readFileSync(installRejectionsFile(stateDir), "utf8")) as typeof raw;
+  } catch {
+    return;
+  }
+  if (
+    typeof raw.count !== "number" ||
+    !Number.isFinite(raw.count) ||
+    raw.count <= 0 ||
+    typeof raw.lastAt !== "number" ||
+    !Number.isFinite(raw.lastAt) ||
+    (raw.version !== undefined && typeof raw.version !== "string")
+  ) {
+    forgetPersistedInstallRejections(stateDir);
+    return;
+  }
+  installRejections = {
+    version: raw.version as string | undefined,
+    count: raw.count,
+    lastAt: raw.lastAt,
+  };
 }
 
 /**
@@ -1754,7 +1944,7 @@ function wireUpdaterEvents(): void {
     nativeAutoUpdater.on("error", (error) => {
       // Log the full detail; surface only a short line.
       console.error("native macOS updater error during staging:", error);
-      const short = new Error(shortStagingMessage(error));
+      const short = shortStagingError(error);
       nativePreparation?.finish(short);
       nativeReadyVersion = undefined;
       nativePreparationError = short;
@@ -1991,7 +2181,7 @@ function wireUpdaterEvents(): void {
     // verification failure arrives, silently reclassifying install rejections as
     // generic check errors. Re-anchor it to the active native preparation in the
     // same change that moves the assignment.
-    if (hasStagedBuild() && isStagedInstallRejection(err)) {
+    if (hasStagedBuild() && isRetriableStageFailure(stageFailureKind(err))) {
       // Squirrel verifies the bundle it just extracted, in this process, before
       // any ShipIt request exists. So a rejection indicts the EXTRACTED COPY.
       //
@@ -2003,43 +2193,13 @@ function wireUpdaterEvents(): void {
       //
       // Disarm either way: the copy Squirrel holds cannot install, and leaving
       // it staged makes the UI promise a restart that fails. Dropping the staged
-      // record re-enables auto-download, so the next check re-stages and
-      // re-prepares from the archive already in the cache.
+      // record re-enables auto-download, so the next check re-stages.
       //
-      const failures = recordInstallRejection(stagedVersion);
-      const exhausted = failures >= MAX_AUTOMATIC_INSTALL_ATTEMPTS;
-      handledInstallRejection = { version: stagedVersion };
-      discardStagedBuild();
-      // Only once a re-preparation has ALSO failed is the archive worth
-      // suspecting. Purging earlier costs a full re-download to fix a copy that
-      // may well prepare cleanly on the next attempt.
-      //
-      // Queued on the operation chain rather than fired and forgotten:
-      // discardStagedBuild() re-enables auto-download, so the next check can
-      // start a download into the very directory this is emptying.
-      if (exhausted) {
-        void runSerializedUpdaterOperation(
-          "cache-clear",
-          clearPendingUpdateCache,
-        ).catch(() => undefined);
-      }
-      console.error(
-        `staged update rejected at install time (attempt ${failures}${exhausted ? ", discarding cached download and stopping automatic retries" : ""}):`,
-        err,
-      );
-      broadcast(
-        withActiveRequest({
-          state: "error",
-          message:
-            exhausted
-              ? "Couldn't install the update — the copy failed verification twice. " +
-                "AO has discarded the download and stopped retrying on its own. Check " +
-                "for updates again to start a fresh one, or download the latest build " +
-                "manually and install it over this one."
-              : "Couldn't install the update — the downloaded copy failed verification. " +
-                "AO will prepare it again on the next check.",
-        }),
-      );
+      // A stall takes the same ladder. It fails at a different point and for a
+      // different reason, but the remedy is identical and neither is actionable
+      // by the user, so treating them separately only meant one of them had no
+      // recovery at all.
+      recordRetriableStageFailure(stageFailureKind(err), err);
       return;
     }
     if (activeUpdaterOperation === "automatic-check" && activeUpdaterPhase === "check") {
@@ -2191,13 +2351,13 @@ async function runAutomaticUpdateCheck(
       // downloading is off, or quitting installs the build they moved away from.
       const staleStaged = stagedBuildIsStale(settings);
       if (staleStaged) discardStagedBuild();
-      // automaticRecoveryExhausted() breaks the re-download loop: without it a
+      // automaticRecoveryPaced() paces the re-download loop: without it a
       // build that keeps failing verification is fetched and re-prepared on
       // every check, forever. A stale staged build still overrides, because
       // leaving THAT one armed installs a channel the user has left.
       autoUpdater.autoDownload =
         staleStaged || (hasStagedBuild() && !isNativeInstallReady()) ||
-        (settings.enabled && !hasStagedBuild() && !automaticRecoveryExhausted());
+        (settings.enabled && !hasStagedBuild() && !automaticRecoveryPaused());
       applyInstallOnQuitPolicy();
       // Only prerelease channels resolve a direct feed. Skipping the await on
       // stable keeps that check's event ordering exactly as it was.
@@ -2233,7 +2393,7 @@ async function runAutomaticUpdateCheck(
         // (#3526). Record before restoring so the restore broadcast is stamped.
         if (handleMacStagingFailure(err)) return;
         if (activeUpdaterPhase === "download") {
-          if (!downloadStalled && lastStatus.state !== "error") broadcast(withActiveRequest({ state: "error", message: errorMessage(err), version: pendingUpdateVersion }));
+          if (!downloadStalled && !isReportedFailure(lastStatus.state)) broadcast(withActiveRequest({ state: "error", message: errorMessage(err), version: pendingUpdateVersion }));
         } else {
           recordAutomaticCheckFailure(err);
           restoreAutomaticCheckPreviousStatus();
@@ -2314,6 +2474,9 @@ async function requestAutomaticUpdateCheck(
 export async function startAutoUpdates(stateDir: string): Promise<void> {
   escalationStateDir = stateDir;
   restoreStagedBuild(stateDir);
+  // Before the first automatic check, so a build that already used up its
+  // attempts in an earlier run is not handed a fresh three by the restart.
+  restoreInstallRejections(stateDir);
   startRetirementPollTimer(stateDir);
   const intervalMs = await requestAutomaticUpdateCheck(stateDir);
   if (intervalMs !== undefined)
@@ -2454,6 +2617,21 @@ export async function checkForUpdatesNow(
         lastCheckError = errorMessage(err);
         broadcast(stagedDownloadedStatus());
       }
+    } else if (isReportedFailure(lastStatus.state) && isRetriableStageFailure(stageFailureKind(err))) {
+      // Same failure, second delivery. MacUpdater rejects the awaited download
+      // with the error it has already re-emitted, so a staged build that failed
+      // to install arrives here too, after the handler above has reported it
+      // properly. Overwriting would replace the calm line with the raw Squirrel
+      // text on exactly the path the user triggered by hand.
+      //
+      // Re-broadcast rather than drop it: the renderer releases the Check button
+      // on a status carrying THIS request's id, so swallowing outright left the
+      // button spinning until the watchdog. Same message, this request's stamp.
+      console.debug("manual check: install failure already reported, restamping it:", err);
+      broadcastCompletedCheck({
+        ...lastStatus,
+        ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+      });
     } else {
       broadcastCompletedCheck({
         state: "error",
