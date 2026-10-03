@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -150,5 +151,213 @@ func TestAggregatingSinkClosedTwiceDoesNotFlushAgain(t *testing.T) {
 
 	if got := len(rec.snapshot()); got != 1 {
 		t.Fatalf("events after double Close = %d, want 1 (no duplicate rollup)", got)
+	}
+}
+
+type blockingFlushSink struct {
+	emitStarted  chan struct{}
+	releaseEmit  chan struct{}
+	closeStarted chan struct{}
+	closeErr     error
+
+	emitOnce        sync.Once
+	closeOnce       sync.Once
+	releaseOnce     sync.Once
+	mu              sync.Mutex
+	closes          int
+	counts          []int
+	emitsAfterClose int
+}
+
+func (s *blockingFlushSink) Emit(_ context.Context, ev ports.TelemetryEvent) {
+	s.emitOnce.Do(func() { close(s.emitStarted) })
+	<-s.releaseEmit
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closes > 0 {
+		s.emitsAfterClose++
+	}
+	count, _ := ev.Payload["count"].(int)
+	s.counts = append(s.counts, count)
+}
+
+func (s *blockingFlushSink) unblock() {
+	s.releaseOnce.Do(func() { close(s.releaseEmit) })
+}
+
+func (s *blockingFlushSink) Close(context.Context) error {
+	s.mu.Lock()
+	s.closes++
+	s.mu.Unlock()
+	s.closeOnce.Do(func() { close(s.closeStarted) })
+	return s.closeErr
+}
+
+func (s *blockingFlushSink) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closes
+}
+
+func newBlockedAggregatingSink(t *testing.T, closeErr error) (*AggregatingSink, *blockingFlushSink) {
+	t.Helper()
+	next := &blockingFlushSink{
+		emitStarted:  make(chan struct{}),
+		releaseEmit:  make(chan struct{}),
+		closeStarted: make(chan struct{}),
+		closeErr:     closeErr,
+	}
+	sink := NewAggregatingSink(next, []string{"ao.http.5xx"}, time.Millisecond)
+	t.Cleanup(func() {
+		next.unblock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = sink.Close(ctx)
+	})
+	sink.Emit(context.Background(), ports.TelemetryEvent{Name: "ao.http.5xx"})
+	select {
+	case <-next.emitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("ticker flush did not reach downstream sink")
+	}
+	return sink, next
+}
+
+func TestAggregatingSinkCloseJoinsTickerFlushAndSharesResult(t *testing.T) {
+	downstreamErr := errors.New("downstream close failed")
+	sink, next := newBlockedAggregatingSink(t, downstreamErr)
+	// The ticker already owns the first window. These belong to the final one.
+	sink.Emit(context.Background(), ports.TelemetryEvent{Name: "ao.http.5xx"})
+	sink.Emit(context.Background(), ports.TelemetryEvent{Name: "ao.http.5xx"})
+
+	beginClose := make(chan struct{})
+	callersReady := make(chan struct{}, 2)
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			callersReady <- struct{}{}
+			<-beginClose
+			results <- sink.Close(context.Background())
+		}()
+	}
+	<-callersReady
+	<-callersReady
+	close(beginClose)
+
+	closedBeforeFlushFinished := false
+	select {
+	case <-next.closeStarted:
+		closedBeforeFlushFinished = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	next.unblock()
+
+	for range 2 {
+		select {
+		case err := <-results:
+			if !errors.Is(err, downstreamErr) {
+				t.Errorf("Close() error = %v, want %v", err, downstreamErr)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Close() did not finish after ticker flush was released")
+		}
+	}
+	if closedBeforeFlushFinished {
+		t.Error("downstream Close started before the ticker flush finished")
+	}
+	if got := next.closeCount(); got != 1 {
+		t.Errorf("downstream Close calls = %d, want 1", got)
+	}
+	next.mu.Lock()
+	defer next.mu.Unlock()
+	if next.emitsAfterClose != 0 {
+		t.Errorf("rollups emitted after downstream close = %d, want 0", next.emitsAfterClose)
+	}
+	if len(next.counts) != 2 || next.counts[0] != 1 || next.counts[1] != 2 {
+		t.Errorf("rollup counts = %v, want [1 2]", next.counts)
+	}
+}
+
+func TestAggregatingSinkCloseJoinsTickerWithoutFinalBucket(t *testing.T) {
+	sink, next := newBlockedAggregatingSink(t, nil)
+	// The ticker already owns the only bucket. A final flush has no Emit
+	// to block on, so only joining the ticker can hold downstream Close.
+	result := make(chan error, 1)
+	go func() { result <- sink.Close(context.Background()) }()
+
+	select {
+	case <-next.closeStarted:
+		t.Error("downstream Close started while the ticker's only rollup was blocked")
+	case <-time.After(50 * time.Millisecond):
+	}
+	next.unblock()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not finish after ticker flush was released")
+	}
+	next.mu.Lock()
+	defer next.mu.Unlock()
+	if next.closes != 1 || next.emitsAfterClose != 0 {
+		t.Errorf("downstream closes = %d, emits after close = %d; want 1 and 0", next.closes, next.emitsAfterClose)
+	}
+	if len(next.counts) != 1 || next.counts[0] != 1 {
+		t.Errorf("rollup counts = %v, want [1]", next.counts)
+	}
+}
+
+func TestAggregatingSinkCanceledCloseLeavesShutdownForLaterCaller(t *testing.T) {
+	downstreamErr := errors.New("downstream close failed")
+	sink, next := newBlockedAggregatingSink(t, downstreamErr)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sink.Close(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close(canceled) error = %v, want context canceled", err)
+	}
+	select {
+	case <-next.closeStarted:
+		t.Fatal("downstream Close started while the ticker flush was blocked")
+	default:
+	}
+
+	laterResult := make(chan error, 1)
+	go func() { laterResult <- sink.Close(context.Background()) }()
+	select {
+	case err := <-laterResult:
+		t.Fatalf("later Close returned before the ticker flush finished: %v", err)
+	default:
+	}
+
+	next.unblock()
+	select {
+	case err := <-laterResult:
+		if !errors.Is(err, downstreamErr) {
+			t.Fatalf("later Close error = %v, want %v", err, downstreamErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("later Close did not observe shutdown completion")
+	}
+	if got := next.closeCount(); got != 1 {
+		t.Errorf("downstream Close calls = %d, want 1", got)
+	}
+}
+
+func TestAggregatingSinkDiscardsAggregatedEventsAfterClose(t *testing.T) {
+	rec := &syncRecordingSink{}
+	sink := NewAggregatingSink(rec, []string{"ao.http.5xx"}, time.Hour)
+	if err := sink.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		sink.Emit(context.Background(), ports.TelemetryEvent{Name: "ao.http.5xx"})
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.buckets) != 0 {
+		t.Fatalf("closed aggregator retained %d buckets without a flush loop", len(sink.buckets))
 	}
 }
