@@ -295,7 +295,10 @@ function resolveTerminal(
 			target: { id: "terminal", name: "Command Prompt", kind: "terminal" },
 			command: {
 				command: deps.env.ComSpec || deps.env.COMSPEC || "cmd.exe",
-				argsForWorkspace: () => [],
+				// launchCommand disconnects stdin, so a directly spawned cmd.exe exits
+				// immediately. `start` creates a new console with interactive input and
+				// inherits launchCommand's cwd without interpolating the workspace path.
+				argsForWorkspace: () => ["/d", "/s", "/c", 'start "" "%ComSpec%" /d /k'],
 			},
 		};
 	}

@@ -121,6 +121,22 @@ describe("editor handoff", () => {
 		);
 	});
 
+	it("keeps a standalone Command Prompt open in the Windows workspace", async () => {
+		const workspacePath = "C:\\work trees\\ao-1";
+		const input = winDeps({
+			resolveWorkspace: vi.fn().mockResolvedValue(workspacePath),
+			isExecutable: () => false,
+		});
+
+		await createEditorHandoff(input).open({ sessionId: "ao-1", targetId: "terminal" });
+
+		expect(input.launch).toHaveBeenCalledWith(
+			"C:\\Windows\\System32\\cmd.exe",
+			["/d", "/s", "/c", 'start "" "%ComSpec%" /d /k'],
+			workspacePath,
+		);
+	});
+
 	it("reports a missing workspace without hiding the available targets", async () => {
 		const handoff = createEditorHandoff(deps({
 			resolveWorkspace: vi.fn().mockRejectedValue(new Error("Session workspace is not available.")),
