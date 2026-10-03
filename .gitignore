@@ -91,6 +91,10 @@ frontend/agent-browser/
 !.agents/skills/ao-desktop-dev/**
 !.agents/skills/bug-triage/
 !.agents/skills/bug-triage/**
+!.agents/skills/commit-and-pr-messages/
+!.agents/skills/commit-and-pr-messages/**
+!.agents/skills/simplified-technical-english/
+!.agents/skills/simplified-technical-english/**
 !.agents/skills/pr-description/
 !.agents/skills/pr-description/**
 skills-lock.json
