@@ -32,6 +32,12 @@ import {
 import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
+import {
+	defaultRangeExtractor,
+	measureElement,
+	observeElementRect,
+	useVirtualizer,
+} from "@tanstack/react-virtual";
 import { cn } from "../../lib/utils";
 import {
 	acknowledgeChatInlineEditMutation,
@@ -2052,6 +2058,11 @@ function ControllerBanner({
  * the turn that changed. Older pages are prepended explicitly instead of keeping
  * an unbounded history in every snapshot response.
  */
+const CHAT_VIRTUALIZE_THRESHOLD = 20;
+const CHAT_ESTIMATED_TURN_HEIGHT = 600;
+const CHAT_TURN_GAP = 18;
+const CHAT_INITIAL_VIEWPORT_HEIGHT = 800;
+
 function Timeline({
 	snapshot,
 	assetBaseUrl,
@@ -2103,6 +2114,10 @@ function Timeline({
 	const uiSessionId = draftScope.sessionId;
 	const scroller = useRef<HTMLDivElement>(null);
 	const scrollContent = useRef<HTMLDivElement>(null);
+	const virtualContent = useRef<HTMLDivElement>(null);
+	const [virtualScrollMargin, setVirtualScrollMargin] = useState(20);
+	const measuredVirtualGroups = useRef(new WeakSet<TimelineGroup>());
+	const pendingVirtualLayout = useRef(false);
 	const promptSpacer = useRef<HTMLDivElement>(null);
 	const scrollTrack = useRef<HTMLDivElement>(null);
 	const drag = useRef<{
@@ -2671,9 +2686,68 @@ function Timeline({
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	const navigableGroups = useMemo(() => groups.filter(groupHasHumanPrompt), [groups]);
 	const previews = useMemo(() => navigableGroups.map(groupPreview), [navigableGroups]);
+	const virtualized = groups.length > CHAT_VIRTUALIZE_THRESHOLD;
+	const virtualItemKey = useCallback((index: number) => groups[index]!.key, [groups]);
+	const virtualizer = useVirtualizer({
+		// Scroll anchoring may notify during a layout effect; defer the React
+		// update rather than attempting a synchronous flush inside that effect.
+		useFlushSync: false,
+		// Measure short histories too, so crossing the windowing threshold can
+		// preserve the visible turn by key rather than restarting at the bottom.
+		enabled: groups.length > 0,
+		count: groups.length,
+		getScrollElement: () => scroller.current,
+		getItemKey: virtualItemKey,
+		estimateSize: () => CHAT_ESTIMATED_TURN_HEIGHT,
+		gap: CHAT_TURN_GAP,
+		overscan: 2,
+		scrollMargin: virtualScrollMargin,
+		initialRect: { width: 768, height: CHAT_INITIAL_VIEWPORT_HEIGHT },
+		initialOffset: () => virtualized
+			? Math.max(0, groups.length * (CHAT_ESTIMATED_TURN_HEIGHT + CHAT_TURN_GAP) - CHAT_INITIAL_VIEWPORT_HEIGHT)
+			: 0,
+		anchorTo: virtualized ? "end" : "start",
+		followOnAppend: virtualized && pinned,
+		// Bootstrap unmeasurable panels until their real geometry is available.
+		observeElementRect: (instance, callback) => observeElementRect(instance, (rect) =>
+			callback(rect.height ? rect : { width: rect.width, height: CHAT_INITIAL_VIEWPORT_HEIGHT })),
+		measureElement: (element, entry, instance) => {
+			const group = groups[Number(element.getAttribute("data-index"))];
+			if (group && !measuredVirtualGroups.current.has(group)) {
+				measuredVirtualGroups.current.add(group);
+				pendingVirtualLayout.current = true;
+			}
+			return measureElement(element, entry, instance) || CHAT_ESTIMATED_TURN_HEIGHT;
+		},
+		scrollToFn: (offset, { adjustments = 0 }, instance) => {
+			if (instance.scrollElement) instance.scrollElement.scrollTop = offset + adjustments;
+		},
+		rangeExtractor: (range) => {
+			const indexes = defaultRangeExtractor(range);
+			// Keep an in-progress inline edit mounted while its row leaves view.
+			const editing = messageEdit ? groups.findIndex((group) => group.turnId === messageEdit.turnId) : -1;
+			if (editing >= 0 && !indexes.includes(editing)) indexes.push(editing);
+			if (pinned && !indexes.includes(groups.length - 1)) indexes.push(groups.length - 1);
+			return indexes.sort((a, b) => a - b);
+		},
+	});
+	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = virtualized ? undefined : () => false;
+	const virtualRows = virtualizer.getVirtualItems();
+	const virtualHeight = virtualizer.getTotalSize();
+	const renderedGroups = virtualized
+		? virtualRows.map((row) => ({ group: groups[row.index]!, row, index: row.index }))
+		: groups.map((group, index) => ({ group, row: undefined, index }));
+	useEffect(() => {
+		const node = scroller.current;
+		const content = virtualized ? virtualContent.current
+			: virtualContent.current?.querySelector<HTMLElement>('[data-index="0"]');
+		if (node && content) {
+			setVirtualScrollMargin(content.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop);
+		}
+	}, [virtualized, hasOlder]);
 
-	// Keep the full transcript mounted (selection/find still work), but measure
-	// prompt positions only when content geometry changes, not on every scroll.
+	// Long transcripts use measured/estimated row positions for the full minimap,
+	// including turns that are currently outside the mounted viewport.
 	const anchorGeometry = useRef<{ height: number; width: number; positions: number[] } | null>(null);
 	const contentMutations = useRef<MutationObserver | null>(null);
 
@@ -2692,7 +2766,7 @@ function Timeline({
 		const fraction = maxScroll > 0 ? Math.min(1, Math.max(0, node.scrollTop / maxScroll)) : 0;
 		if (contentMutations.current?.takeRecords().length) anchorGeometry.current = null;
 		let geometry = anchorGeometry.current;
-		if (!geometry || geometry.height !== node.scrollHeight || geometry.width !== node.clientWidth) {
+		if (virtualized || !geometry || geometry.height !== node.scrollHeight || geometry.width !== node.clientWidth) {
 			const viewportRect = node.getBoundingClientRect();
 			const anchors = Array.from(
 				scrollContent.current?.querySelectorAll<HTMLElement>("[data-chat-scroll-anchor]") ?? [],
@@ -2700,7 +2774,10 @@ function Timeline({
 			geometry = {
 				height: node.scrollHeight,
 				width: node.clientWidth,
-				positions: anchors.map((anchor) => {
+				positions: virtualized ? groups.flatMap((group, index) => {
+					const row = virtualizer.measurementsCache[index];
+					return groupHasHumanPrompt(group) && row ? [row.start + row.size / 2] : [];
+				}) : anchors.map((anchor) => {
 					const rect = anchor.getBoundingClientRect();
 					return rect.top - viewportRect.top + node.scrollTop + rect.height / 2;
 				}),
@@ -2741,7 +2818,7 @@ function Timeline({
 				? current
 				: next,
 		);
-	}, []);
+	}, [virtualized, virtualizer, groups]);
 
 	/**
 	 * Size the trailing spacer so scrolling to the bottom parks the latest human
@@ -2758,19 +2835,21 @@ function Timeline({
 			"[data-chat-scroll-anchor]",
 		);
 		const anchor = anchors && anchors.length > 0 ? anchors[anchors.length - 1] : null;
-		const nextHeight = anchor
+		const lastPromptIndex = groups.findLastIndex(groupHasHumanPrompt);
+		const virtualAnchor = virtualized && lastPromptIndex >= 0 ? virtualizer.measurementsCache[lastPromptIndex] : undefined;
+		const nextHeight = (virtualAnchor || anchor)
 			? promptSpacerHeight({
 					viewportHeight: node.clientHeight,
 					contentHeightWithoutSpacer: node.scrollHeight - pad.offsetHeight,
 					anchorOffset:
-						anchor.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop,
+						virtualAnchor?.start ?? (anchor!.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop),
 					topInset: promptTopInset(node.clientHeight),
 				})
 			: 0;
 		if (Math.abs(pad.offsetHeight - nextHeight) > 0.5) {
 			pad.style.height = `${nextHeight}px`;
 		}
-	}, []);
+	}, [virtualized, virtualizer, groups]);
 
 	const syncScrollLayout = useCallback(() => {
 		anchorGeometry.current = null;
@@ -2796,6 +2875,15 @@ function Timeline({
 	useEffect(() => {
 		syncScrollLayout();
 	}, [pinned, snapshot.latestSequence, groups.length, messageEdit?.turnId, syncScrollLayout]);
+	useEffect(() => {
+		if (!virtualized) return;
+		// Wait for measured sizes to reach the DOM before following new content.
+		// Resizing an already measured group only refreshes scroll metrics.
+		if (pendingVirtualLayout.current && virtualHeight === virtualizer.getTotalSize()) {
+			pendingVirtualLayout.current = false;
+			syncScrollLayout();
+		} else syncScrollMetrics();
+	}, [virtualized, virtualHeight, virtualizer, syncScrollLayout, syncScrollMetrics]);
 
 	useEffect(() => {
 		const content = scrollContent.current;
@@ -2847,7 +2935,12 @@ function Timeline({
 		if (!track || !node) return;
 		const marker = (event.target as HTMLElement).closest<HTMLElement>("[data-chat-scroll-marker]");
 		if (marker?.dataset.scrollTarget) {
-			node.scrollTop = Number(marker.dataset.scrollTarget);
+			const group = navigableGroups[Number(marker.dataset.markerIndex)];
+			if (virtualized && group) {
+				virtualizer.scrollToIndex(groups.findIndex((candidate) => candidate.key === group.key), { align: "center" });
+			} else {
+				node.scrollTop = Number(marker.dataset.scrollTarget);
+			}
 			onScroll();
 			return;
 		}
@@ -2944,6 +3037,7 @@ function Timeline({
 				role="log"
 				aria-live="polite"
 				aria-label="Conversation"
+				style={virtualized ? { overflowAnchor: "none" } : undefined}
 			>
 				<div ref={scrollContent} className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4.5">
 					{hasOlder ? (
@@ -2963,7 +3057,9 @@ function Timeline({
 							</Button>
 						</div>
 					) : null}
-					{groups.map((group) => {
+					<div ref={virtualContent} className={virtualized ? "relative w-full" : "contents"}
+						style={virtualized ? { height: virtualHeight } : undefined}>
+					{renderedGroups.map(({ group, row, index }) => {
 						const retrySelected = !retryControl?.turnId || retryControl.turnId === group.turnId;
 						const retry =
 							group.turnId &&
@@ -2987,6 +3083,12 @@ function Timeline({
 						return (
 							<div
 								key={group.key}
+								ref={virtualizer.measureElement}
+								data-index={index}
+								style={row ? {
+									position: "absolute", top: 0, left: 0, width: "100%",
+									transform: `translateY(${row.start - virtualScrollMargin}px)`,
+								} : undefined}
 								data-chat-scroll-anchor={groupHasHumanPrompt(group) ? "" : undefined}
 							>
 								<TurnGroup
@@ -3031,6 +3133,7 @@ function Timeline({
 							</div>
 						);
 					})}
+					</div>
 					{turn?.state === "running" && !groups.some((group) => group.turnId === turn.id) ? (
 						<TurnLiveStatus startedAt={turn.startedAt ?? turn.requestedAt} />
 					) : null}
@@ -3118,6 +3221,7 @@ function Timeline({
 										key={index}
 										data-chat-scroll-marker=""
 										data-scroll-target={marker.scrollTop}
+										data-marker-index={index}
 										onPointerEnter={() => setHoveredMarker(index)}
 										className="chat-scroll-marker-hit"
 										style={{ top: marker.top }}
