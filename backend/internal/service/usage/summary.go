@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -14,6 +15,7 @@ type usageSummaryStore interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListCompactSessionUsageAggregates(context.Context, domain.ProjectID) ([]domain.CompactSessionUsageAggregate, error)
 	ListUsageModelAggregates(context.Context, domain.SessionID) ([]domain.UsageModelAggregate, error)
+	GetUsageSessionEventWindow(context.Context, domain.SessionID) (domain.UsageEventWindow, error)
 	GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error)
 }
 
@@ -74,6 +76,10 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
 	}
+	window, err := r.store.GetUsageSessionEventWindow(ctx, sessionID)
+	if err != nil {
+		return domain.SessionUsageSummary{}, err
+	}
 	totals, err := usageTotals(models)
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
@@ -84,7 +90,52 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	}
 	return domain.SessionUsageSummary{
 		SessionID: sessionID, Incomplete: incomplete, Totals: totals, Harnesses: harnesses,
+		Turns: window.EventCount, TokensPerSecond: usageTokensPerSecond(window),
 	}, nil
+}
+
+// activeTimeGapCutoff caps how much wall-clock a single inter-event gap may
+// contribute to the throughput divisor. Consecutive assistant responses of
+// one turn arrive seconds apart (the tool calls between them usually finish
+// faster too); a longer silence is user/orchestrator think time or an idle
+// pause between turns — not generation.
+const activeTimeGapCutoff = 2 * time.Minute
+
+// usageTokensPerSecond divides measurable OUTPUT tokens by measurable time:
+// an event's output tokens count only when the gap to the previous event is
+// itself measurable — monotonic and no longer than activeTimeGapCutoff — and
+// that same gap is the only time summed into the divisor. Timestamps are
+// response completion times, so the first event of the window and events
+// after a long gap have no observable generation interval; their tokens stay
+// out of the numerator instead of inflating the rate. Output tokens are the
+// numerator — input and its cache reads ride along per turn and would
+// inflate the rate to physically impossible numbers. Any unknown input — a
+// missing timestamp, an event whose output tokens went unrecorded, or no
+// measurable gap at all — leaves throughput unavailable rather than
+// reporting a silently wrong rate.
+func usageTokensPerSecond(window domain.UsageEventWindow) *float64 {
+	if window.KnownCreatedAtCount != window.EventCount {
+		return nil
+	}
+	for _, output := range window.OutputTokens {
+		if output == nil {
+			return nil
+		}
+	}
+	var tokens, seconds float64
+	for i := 1; i < len(window.Timestamps); i++ {
+		delta := window.Timestamps[i].Sub(window.Timestamps[i-1])
+		if delta <= 0 || delta > activeTimeGapCutoff {
+			continue
+		}
+		tokens += float64(*window.OutputTokens[i])
+		seconds += delta.Seconds()
+	}
+	if seconds <= 0 {
+		return nil
+	}
+	throughput := tokens / seconds
+	return &throughput
 }
 
 func usageTotals(models []domain.UsageModelAggregate) (domain.UsageMetricTotals, error) {

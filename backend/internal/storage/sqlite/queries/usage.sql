@@ -604,6 +604,22 @@ WHERE ub.session_id = ?
 GROUP BY ub.harness, mue.model_id
 ORDER BY SUM(mue.input_tokens + mue.output_tokens) DESC, ub.harness, mue.model_id;
 
+-- name: ListUsageSessionEventTimestamps :many
+-- Turns and the throughput divisor read the same visible-event scope the
+-- token totals use: assistant messages only, AO's synthetic notices
+-- excluded. Timestamps and per-event output tokens come back individually
+-- rather than as MIN/MAX/SUM so the service can pair each event's tokens
+-- with its own preceding gap: only measurable gaps (monotonic, no longer
+-- than the active-time cutoff) contribute both time and tokens, instead of
+-- one session-long span that would also count think time and idle between
+-- turns.
+SELECT mue.created_at AS created_at, mue.output_tokens AS output_tokens
+FROM model_usage_events mue
+JOIN usage_bindings ub ON ub.id = mue.binding_id
+WHERE ub.session_id = ?
+  AND lower(trim(mue.model_id)) <> '<synthetic>'
+ORDER BY mue.created_at;
+
 -- name: GetUsageSessionIncomplete :one
 SELECT CAST(COALESCE((
     SELECT incomplete FROM usage_session_integrity WHERE session_id = ?

@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -15,7 +16,8 @@ type usageSummaryStoreStub struct {
 	found      bool
 	incomplete bool
 	models     []domain.UsageModelAggregate
-	calls      [4]int
+	window     domain.UsageEventWindow
+	calls      [5]int
 }
 
 func (s *usageSummaryStoreStub) ListCompactSessionUsageAggregates(_ context.Context, id domain.ProjectID) ([]domain.CompactSessionUsageAggregate, error) {
@@ -30,8 +32,12 @@ func (s *usageSummaryStoreStub) ListUsageModelAggregates(context.Context, domain
 	s.calls[2]++
 	return s.models, nil
 }
-func (s *usageSummaryStoreStub) GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error) {
+func (s *usageSummaryStoreStub) GetUsageSessionEventWindow(context.Context, domain.SessionID) (domain.UsageEventWindow, error) {
 	s.calls[3]++
+	return s.window, nil
+}
+func (s *usageSummaryStoreStub) GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error) {
+	s.calls[4]++
 	return s.incomplete, nil
 }
 
@@ -155,7 +161,7 @@ func TestSummaryReaderGetPreservesStrongestPartialLowerBoundWithoutDoubleCountin
 		got.Harnesses[1].Totals.ProcessedTokens == nil || *got.Harnesses[1].Totals.ProcessedTokens != 125 {
 		t.Fatalf("processed totals by scope = %+v", got.Harnesses)
 	}
-	if store.calls != [4]int{0, 1, 1, 1} {
+	if store.calls != [5]int{0, 1, 1, 1, 1} {
 		t.Fatalf("store calls = %v", store.calls)
 	}
 }
@@ -258,6 +264,105 @@ func TestSummaryReaderGetReturnsUnavailableMetricsWithoutEvents(t *testing.T) {
 		got.Totals.ProcessedTokens != nil || got.Totals.EstimatedCost != nil || len(got.Harnesses) != 0 {
 		t.Fatalf("empty usage = %+v", got)
 	}
+	if got.Turns != 0 || got.TokensPerSecond != nil {
+		t.Fatalf("empty usage turns/rate = %d/%v, want 0/nil", got.Turns, got.TokensPerSecond)
+	}
+}
+
+func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
+	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	// Deltas: 30 s + 10 s (in-turn) + 600 s idle (past the cutoff) + 45 s.
+	timestamps := []time.Time{
+		base, base.Add(30 * time.Second), base.Add(40 * time.Second),
+		base.Add(640 * time.Second), base.Add(685 * time.Second),
+	}
+	// Per-event output tokens (10+20+30+40+20 = 120, matching the totals).
+	outputs := []int64{10, 20, 30, 40, 20}
+	store := &usageSummaryStoreStub{
+		found:   true,
+		session: domain.SessionRecord{ID: "reverb-13", Harness: domain.HarnessClaudeCode},
+		models: []domain.UsageModelAggregate{
+			{
+				Harness: domain.HarnessClaudeCode, ModelID: "claude-sonnet",
+				Tokens: testUsageMetrics(1000, 400, 600, 120),
+				Cost:   completeCostAggregate(5, 0, 0, 0, 0),
+			},
+		},
+		window: usageWindow(timestamps, outputs),
+	}
+	got, err := NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if store.calls != [5]int{0, 1, 1, 1, 1} {
+		t.Fatalf("store calls = %v", store.calls)
+	}
+	if got.Turns != 5 {
+		t.Fatalf("turns = %d, want 5", got.Turns)
+	}
+	// Only the tokens of events with a measurable preceding gap over 85 s of
+	// active time: the 600 s between-turn idle gap keeps both its time and
+	// the 40 tokens after it out of the rate, and the first event's 10 tokens
+	// have no observable interval at all.
+	if got.TokensPerSecond == nil || math.Abs(*got.TokensPerSecond-70.0/85.0) > 1e-9 {
+		t.Fatalf("tokensPerSecond = %v, want %v", got.TokensPerSecond, 70.0/85.0)
+	}
+
+	// One NULL timestamp widens the unknown instead of shortening the divisor.
+	partialWindow := store.window
+	partialWindow.KnownCreatedAtCount = 4
+	store.window = partialWindow
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.Turns != 5 || got.TokensPerSecond != nil {
+		t.Fatalf("turns/rate = %d/%v, want 5/nil with a NULL timestamp", got.Turns, got.TokensPerSecond)
+	}
+
+	// A single event has no inter-event gap to divide by.
+	store.window = usageWindow(timestamps[:1], outputs[:1])
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.TokensPerSecond != nil {
+		t.Fatalf("tokensPerSecond = %v, want nil for a single-event window", *got.TokensPerSecond)
+	}
+
+	// A long gap followed by a substantial response must not inflate the
+	// rate: that event's tokens have no measurable interval either.
+	longGap := []time.Time{base, base.Add(1 * time.Second), base.Add(10 * time.Minute)}
+	store.window = usageWindow(longGap, []int64{5, 60, 5000})
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.TokensPerSecond == nil || math.Abs(*got.TokensPerSecond-60.0) > 1e-9 {
+		t.Fatalf("tokensPerSecond = %v, want 60 for a long-gap window", got.TokensPerSecond)
+	}
+
+	// One event with unrecorded output tokens leaves the rate unknown.
+	unrecorded := usageWindow(timestamps, outputs)
+	unrecorded.OutputTokens[2] = nil
+	store.window = unrecorded
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.TokensPerSecond != nil {
+		t.Fatalf("tokensPerSecond = %v, want nil with an unrecorded output", *got.TokensPerSecond)
+	}
+
+	// Non-monotonic pairs (unreachable via the sorted store read) contribute
+	// neither time nor tokens.
+	reversed := []time.Time{timestamps[2], timestamps[1]}
+	if rate := usageTokensPerSecond(usageWindow(reversed, []int64{30, 20})); rate != nil {
+		t.Fatalf("tokensPerSecond = %v, want nil for a non-monotonic pair", *rate)
+	}
+}
+
+// usageWindow builds a fully-known event window from parallel timestamp and
+// output-token slices, mirroring the store read's pairing.
+func usageWindow(timestamps []time.Time, outputs []int64) domain.UsageEventWindow {
+	window := domain.UsageEventWindow{
+		EventCount: int64(len(timestamps)), KnownCreatedAtCount: int64(len(timestamps)),
+		Timestamps: timestamps,
+	}
+	for _, output := range outputs {
+		window.OutputTokens = append(window.OutputTokens, &output)
+	}
+	return window
 }
 
 func completeCostAggregate(events, total, input, cachedInput, output int64) domain.UsageCostAggregate {
