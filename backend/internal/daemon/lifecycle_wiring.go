@@ -308,17 +308,16 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		githubIdentity = scmProvider
 	}
 	sessionSvc := sessionsvc.NewWithDeps(sessionsvc.Deps{
-		Manager:           mgr,
-		Store:             store,
-		PRClaimer:         store,
-		SCM:               scmProvider,
-		DataDir:           cfg.DataDir,
-		Tracker:           tracker,
-		Telemetry:         telemetry,
-		Logger:            log,
-		BackgroundContext: ctx,
-		AgentReadiness:    agentReadiness,
-		GithubIdentity:    githubIdentity,
+		Manager:        mgr,
+		Store:          store,
+		PRClaimer:      store,
+		SCM:            scmProvider,
+		DataDir:        cfg.DataDir,
+		Tracker:        tracker,
+		Telemetry:      telemetry,
+		Logger:         log,
+		AgentReadiness: agentReadiness,
+		GithubIdentity: githubIdentity,
 		// no_signal only makes sense for harnesses with complete lifecycle signal
 		// coverage; partial callbacks cannot prove that silence is abnormal.
 		SignalCapable: activitydispatch.FullySupportsHarness,

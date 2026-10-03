@@ -184,9 +184,7 @@ type Service struct {
 	dataDir             string
 	telemetry           ports.EventSink
 	logger              *slog.Logger
-	backgroundContext   context.Context
 	agentReadiness      ports.AgentReadinessProvider
-	runBackground       func(func())
 	orchestratorLocksMu sync.Mutex
 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
 	workspaceCache      *workspaceCache
@@ -205,10 +203,7 @@ type Service struct {
 	// githubIdentity optionally resolves the operator's authenticated GitHub
 	// account so the handle rides along with product telemetry. Nil disables it
 	// and the emitter degrades to anonymous.
-	githubIdentity         ports.ScopedIdentityResolver
-	titleRefinementSlots   chan struct{}
-	titleRefinementMu      sync.Mutex
-	titleRefinementCancels map[domain.SessionID]context.CancelFunc
+	githubIdentity ports.ScopedIdentityResolver
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -237,10 +232,6 @@ type Deps struct {
 	Logger    *slog.Logger
 	// AgentReadiness coordinates advisory native harness checks before launch.
 	AgentReadiness ports.AgentReadinessProvider
-	// BackgroundContext owns best-effort work that must survive an HTTP request
-	// returning but stop with the daemon. It defaults to context.Background for
-	// focused service tests and non-daemon callers.
-	BackgroundContext context.Context
 	// SignalCapable gates the no_signal status downgrade per harness; daemon
 	// wiring passes activitydispatch.SupportsHarness. Left nil, no session is
 	// ever downgraded to no_signal.
@@ -252,11 +243,7 @@ type Deps struct {
 
 // NewWithDeps wires a session service with optional PR-claim dependencies.
 func NewWithDeps(d Deps) *Service {
-	backgroundContext := d.BackgroundContext
-	if backgroundContext == nil {
-		backgroundContext = context.Background()
-	}
-	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, backgroundContext: backgroundContext, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity, titleRefinementSlots: make(chan struct{}, delegatedTaskTitleConcurrency), titleRefinementCancels: map[domain.SessionID]context.CancelFunc{}}
+	s := &Service{manager: d.Manager, store: d.Store, prClaimer: d.PRClaimer, scm: d.SCM, tracker: d.Tracker, clock: d.Clock, dataDir: d.DataDir, signalCapable: d.SignalCapable, telemetry: d.Telemetry, logger: d.Logger, agentReadiness: d.AgentReadiness, githubIdentity: d.GithubIdentity}
 	if s.prClaimer == nil {
 		if w, ok := d.Store.(ports.PRClaimer); ok {
 			s.prClaimer = w
@@ -787,7 +774,6 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
-	s.cancelTitleRefinement(id)
 	freed, err := s.manager.Kill(ctx, id)
 	return freed, toAPIError(err)
 }
@@ -797,7 +783,6 @@ func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 // when the claim step fails, avoiding the orphan terminated row that a plain
 // Kill would leave behind.
 func (s *Service) RollbackSpawn(ctx context.Context, id domain.SessionID) (RollbackOutcome, error) {
-	s.cancelTitleRefinement(id)
 	deleted, killed, err := s.manager.RollbackSpawn(ctx, id)
 	if err != nil {
 		return RollbackOutcome{}, toAPIError(err)
