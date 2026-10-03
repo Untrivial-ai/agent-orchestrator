@@ -42,6 +42,7 @@ func (r *SummaryReader) ListCompact(ctx context.Context, projectID domain.Projec
 		out = append(out, domain.CompactSessionUsage{
 			SessionID: row.SessionID, ProcessedTokens: row.ProcessedTokens,
 			Incomplete: row.Incomplete, EstimatedCost: estimatedCost,
+			UnpricedReason: unpricedReason(estimatedCost, row.Cost),
 		})
 	}
 	return out, nil
@@ -109,14 +110,35 @@ func usageTotals(models []domain.UsageModelAggregate) (domain.UsageMetricTotals,
 		UncachedInputTokens: aggregateMetric(models, func(model domain.UsageModelAggregate) *int64 {
 			return model.Tokens.UncachedInputTokens
 		}),
-		OutputTokens:  output,
-		EstimatedCost: estimate,
+		OutputTokens:   output,
+		EstimatedCost:  estimate,
+		UnpricedReason: unpricedReason(estimate, costs),
 	}
 	if input != nil && output != nil {
 		processed := *input + *output
 		totals.ProcessedTokens = &processed
 	}
 	return totals, nil
+}
+
+// unpricedReason explains an absent estimate so the product can distinguish a
+// price that has not arrived yet from one that is never coming. A scope that is
+// priced, or that has no usage at all, has nothing to explain.
+//
+// Order matters: a route the hook could not name is terminal even while other
+// events in the same scope are still unattributed, so it outranks pending.
+func unpricedReason(estimate *domain.EstimatedCost, costs domain.UsageCostAggregate) domain.UnpricedReason {
+	if estimate != nil || costs.EventCount == 0 {
+		return ""
+	}
+	switch {
+	case costs.UnidentifiedRouteEventCount > 0:
+		return domain.UnpricedReasonUnidentifiedRoute
+	case costs.UnattributedEventCount > 0:
+		return domain.UnpricedReasonPendingAttribution
+	default:
+		return domain.UnpricedReasonNoCatalogRates
+	}
 }
 
 // aggregateMetric sums one metric across models. One uncollected counter makes
@@ -250,6 +272,8 @@ func mergeUsageCostAggregate(dst *domain.UsageCostAggregate, src domain.UsageCos
 		{"known output count", &dst.KnownOutputCount, src.KnownOutputCount},
 		{"known output cost", &dst.KnownOutputNanos, src.KnownOutputNanos},
 		{"unpriced known output cost", &dst.UnpricedKnownOutputNanos, src.UnpricedKnownOutputNanos},
+		{"unattributed event count", &dst.UnattributedEventCount, src.UnattributedEventCount},
+		{"unidentified route event count", &dst.UnidentifiedRouteEventCount, src.UnidentifiedRouteEventCount},
 	}
 	for _, field := range fields {
 		value, err := checkedUsageAdd(field.name, *field.dst, field.src)
@@ -271,6 +295,7 @@ func validateUsageCostAggregate(raw domain.UsageCostAggregate) error {
 		{"known input count", raw.KnownInputCount}, {"known input cost", raw.KnownInputNanos}, {"unpriced known input cost", raw.UnpricedKnownInputNanos},
 		{"known cached input count", raw.KnownCachedInputCount}, {"known cached input cost", raw.KnownCachedInputNanos}, {"unpriced known cached input cost", raw.UnpricedKnownCachedInputNanos},
 		{"known output count", raw.KnownOutputCount}, {"known output cost", raw.KnownOutputNanos}, {"unpriced known output cost", raw.UnpricedKnownOutputNanos},
+		{"unattributed event count", raw.UnattributedEventCount}, {"unidentified route event count", raw.UnidentifiedRouteEventCount},
 	}
 	for _, item := range values {
 		if item.value < 0 {
@@ -280,7 +305,8 @@ func validateUsageCostAggregate(raw domain.UsageCostAggregate) error {
 	if raw.PricedEventCount > raw.EventCount || raw.KnownInputCount > raw.EventCount ||
 		raw.KnownCachedInputCount > raw.EventCount || raw.KnownOutputCount > raw.EventCount ||
 		raw.ObservedCostEventCount > raw.EventCount || raw.InferredCostEventCount > raw.EventCount ||
-		raw.InferredCostEventCount > raw.EventCount-raw.ObservedCostEventCount {
+		raw.InferredCostEventCount > raw.EventCount-raw.ObservedCostEventCount ||
+		raw.UnattributedEventCount > raw.EventCount || raw.UnidentifiedRouteEventCount > raw.EventCount {
 		return fmt.Errorf("usage cost coverage count exceeds event count")
 	}
 	if raw.UnpricedKnownInputNanos > raw.KnownInputNanos ||

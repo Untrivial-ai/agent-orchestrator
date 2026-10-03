@@ -293,6 +293,35 @@ func (s *Snapshot) ProviderVersion(providerID string) string {
 	return provider.version
 }
 
+// datedModelSuffix matches the trailing dated-snapshot component providers append
+// to a released model name, as in "claude-opus-5-20260115".
+var datedModelSuffix = regexp.MustCompile(`-\d{8}$`)
+
+// lookupRates resolves one model against one provider catalog, exactly first and
+// then without a trailing dated-snapshot suffix.
+//
+// The exact attempt has to win outright: catalogs list dated entries of their own
+// — claude-haiku-4-5-20251001 alongside claude-haiku-4-5 — and those carry their
+// own rates, so collapsing the date before looking would silently price a dated
+// model at its undated sibling's rates. The fallback only runs when the catalog
+// has no entry for the dated name at all, which is the released-but-not-yet-in-
+// catalog case: the current family (claude-opus-5, claude-sonnet-5, claude-fable-5,
+// claude-opus-4-8) is listed undated only, so a dated id from the provider would
+// otherwise miss the catalog entirely and land unpriced under a model name the UI
+// renders as perfectly ordinary.
+func lookupRates(provider providerSnapshot, providerID, modelID string) (exactRates, bool) {
+	canonical := CanonicalModelID(providerID, modelID)
+	if rates, ok := provider.models[canonical]; ok {
+		return rates, true
+	}
+	undated := datedModelSuffix.ReplaceAllString(canonical, "")
+	if undated == canonical {
+		return exactRates{}, false
+	}
+	rates, ok := provider.models[undated]
+	return rates, ok
+}
+
 // ProviderForModel returns the one catalog provider that lists modelID, or ""
 // when no provider does or more than one does.
 //
@@ -313,7 +342,7 @@ func (s *Snapshot) ProviderForModel(modelID string) string {
 	for providerID, provider := range s.providers {
 		// CanonicalModelID strips this provider's own prefix, so a stored
 		// "anthropic/claude-opus-5" still matches its unprefixed catalog entry.
-		if _, ok := provider.models[CanonicalModelID(providerID, modelID)]; !ok {
+		if _, ok := lookupRates(provider, providerID, modelID); !ok {
 			continue
 		}
 		if found != "" {
@@ -351,13 +380,12 @@ type cacheWriteSplit struct {
 // Estimate prices one normalized usage event against this immutable snapshot.
 func (s *Snapshot) Estimate(event domain.ModelUsageEvent) (Estimate, error) {
 	providerID := CanonicalProviderID(event.BillingProviderID)
-	modelID := CanonicalModelID(providerID, event.ModelID)
 	var rates exactRates
 	version := ""
 	if s != nil {
 		if provider, ok := s.providers[providerID]; ok {
 			version = provider.version
-			rates = provider.models[modelID]
+			rates, _ = lookupRates(provider, providerID, event.ModelID)
 		}
 	}
 	for _, value := range []*int64{
