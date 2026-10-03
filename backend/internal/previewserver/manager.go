@@ -37,6 +37,7 @@ const (
 	statusLogLines          = 40
 	maxBufferedLogLines     = 200
 	maxBufferedPartialBytes = 16 * 1024
+	maxBufferedLogBytes     = 256 * 1024
 	failedStatusRetention   = 5 * time.Minute
 	processRegistryFile     = "preview-processes.json"
 )
@@ -973,48 +974,103 @@ func serviceError(code, message string) Error {
 	return Error{Code: code, Message: message}
 }
 
+// lineBuffer retains at most maxBufferedLogBytes of text. Each line keeps its
+// newest maxBufferedPartialBytes, and growing partial text evicts older lines.
 type lineBuffer struct {
-	mu      sync.Mutex
-	max     int
-	lines   []string
-	partial string
+	mu             sync.Mutex
+	lines          []string
+	start          int
+	count          int
+	completedBytes int
+	partial        []byte
 }
 
 func newLineBuffer(capacity int) *lineBuffer {
-	return &lineBuffer{max: capacity}
+	return &lineBuffer{lines: make([]string, max(0, capacity))}
 }
 
 func (b *lineBuffer) Write(data []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	text := b.partial + string(data)
-	parts := strings.Split(text, "\n")
-	b.partial = parts[len(parts)-1]
-	if len(b.partial) > maxBufferedPartialBytes {
-		b.partial = b.partial[len(b.partial)-maxBufferedPartialBytes:]
+	written := len(data)
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		if end < 0 {
+			b.appendPartialLocked(data)
+			break
+		}
+		b.appendPartialLocked(data[:end])
+		line := bytes.TrimSuffix(b.partial, []byte{'\r'})
+		b.partial = b.partial[:0]
+		b.appendLocked(string(line))
+		data = data[end+1:]
 	}
-	for _, line := range parts[:len(parts)-1] {
-		b.appendLocked(strings.TrimSuffix(line, "\r"))
-	}
-	return len(data), nil
+	return written, nil
 }
 
 func (b *lineBuffer) Last(limit int) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	lines := append([]string{}, b.lines...)
-	if b.partial != "" {
-		lines = append(lines, b.partial)
+	if limit <= 0 {
+		return []string{}
 	}
-	if len(lines) > limit {
-		lines = lines[len(lines)-limit:]
+	total := b.count
+	if len(b.partial) > 0 {
+		total++
+	}
+	count := min(limit, total)
+	lines := make([]string, count)
+	completed := count
+	if len(b.partial) > 0 && count > 0 {
+		lines[count-1] = string(b.partial)
+		completed--
+	}
+	if completed > 0 {
+		first := (b.start + b.count - completed) % len(b.lines)
+		beforeWrap := min(completed, len(b.lines)-first)
+		copy(lines, b.lines[first:first+beforeWrap])
+		copy(lines[beforeWrap:completed], b.lines[:completed-beforeWrap])
 	}
 	return lines
 }
 
-func (b *lineBuffer) appendLocked(line string) {
-	b.lines = append(b.lines, line)
-	if len(b.lines) > b.max {
-		b.lines = append([]string{}, b.lines[len(b.lines)-b.max:]...)
+// Keep a line's newest bytes before removing the CR in a completed CRLF. The
+// same limit applies before and after LF, independent of Write chunk boundaries.
+func (b *lineBuffer) appendPartialLocked(data []byte) {
+	if len(data) >= maxBufferedPartialBytes {
+		b.partial = append(b.partial[:0], data[len(data)-maxBufferedPartialBytes:]...)
+	} else {
+		if discard := len(b.partial) + len(data) - maxBufferedPartialBytes; discard > 0 {
+			copy(b.partial, b.partial[discard:])
+			b.partial = b.partial[:len(b.partial)-discard]
+		}
+		b.partial = append(b.partial, data...)
 	}
+	b.trimBytesLocked()
+}
+
+func (b *lineBuffer) appendLocked(line string) {
+	if len(b.lines) == 0 {
+		return
+	}
+	if b.count == len(b.lines) {
+		b.evictLocked()
+	}
+	b.lines[(b.start+b.count)%len(b.lines)] = line
+	b.count++
+	b.completedBytes += len(line)
+	b.trimBytesLocked()
+}
+
+func (b *lineBuffer) trimBytesLocked() {
+	for b.count > 0 && b.completedBytes+len(b.partial) > maxBufferedLogBytes {
+		b.evictLocked()
+	}
+}
+
+func (b *lineBuffer) evictLocked() {
+	b.completedBytes -= len(b.lines[b.start])
+	b.lines[b.start] = ""
+	b.start = (b.start + 1) % len(b.lines)
+	b.count--
 }
