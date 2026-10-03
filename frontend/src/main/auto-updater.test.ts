@@ -1981,6 +1981,42 @@ describe("startAutoUpdates", () => {
     });
   });
 
+  it("nudges a restart after three consecutive automatic-check timeouts", async () => {
+    // A hang and a net::ERR_FAILED are the same wedged network stack (#3526);
+    // checkForUpdatesWithDeadline exists specifically to turn the hang into a
+    // terminal failure after 60s once nothing has answered. That failure must
+    // count toward the same restart nudge a fail-fast net:: error would,
+    // rather than resetting the streak as if a server had actually answered.
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
+    autoUpdater.httpExecutor.request.mockImplementation(async (_options, token) => {
+      return await token!.createPromise<string>(() => {});
+    });
+    autoUpdater.checkForUpdates.mockImplementation(async () => {
+      updaterEvents.get("checking-for-update")?.();
+      await autoUpdater.httpExecutor.request({});
+    });
+    const runTimedOutCheck = async () => {
+      const run = module.startAutoUpdates(stateDir);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await run;
+    };
+
+    await runTimedOutCheck();
+    await runTimedOutCheck();
+    // Below the threshold the suppressed automatic failure stays fully silent.
+    expect(module.getUpdateStatus()).toMatchObject({ state: "idle" });
+
+    await runTimedOutCheck();
+
+    expect(module.getUpdateStatus()).toMatchObject({
+      state: "idle",
+      staleCheckNudge: true,
+      checksFailing: true,
+    });
+  });
+
   it("does not nudge for non-net automatic-check failures", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
@@ -2696,7 +2732,10 @@ describe("startAutoUpdates", () => {
       // in the UI; it stays "checking" until it settles, then restores quietly.
       expect(h.module.getUpdateStatus().state).toBe("checking");
     } else {
-      expect(h.module.getUpdateStatus()).toMatchObject({ state: "error", message: expect.stringContaining("timed out") });
+      // The timeout is a stand-in for a wedged network stack (#3526), so it
+      // must carry the same netError flag a net::ERR_* failure would, or the
+      // renderer tells the user to "Try again" when only a restart can help.
+      expect(h.module.getUpdateStatus()).toMatchObject({ state: "error", message: expect.stringContaining("timed out"), netError: true });
     }
     expect(h.autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     finishAborting();

@@ -1177,7 +1177,10 @@ async function checkForUpdatesWithDeadline(): Promise<UpdateCheckOutcome> {
     // nudge path. Manual and return-home checks are user-initiated, so they still
     // get the error immediately at the deadline.
     if (activeUpdaterOperation !== "automatic-check") {
-      broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+      // Carries netError like every other wedged-network-stack failure (#3526),
+      // so the renderer offers restart guidance instead of "Try again" — a
+      // retry fails the same way until the app restarts.
+      broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE, netError: true }));
     }
     // Cancellation aborts the request AND rejects its promise. Do not race the
     // check: electron-updater must clear its cached promise before AO retries.
@@ -1408,12 +1411,19 @@ async function runRetirementPoll(stateDir: string): Promise<void> {
 }
 
 // isNetError checks whether the error is a Chromium network-stack failure
-// (net::ERR_*). When the network stack wedges, every updater request fails
-// this way until the app restarts (#3526).
+// (net::ERR_*), OR the AO-authored deadline that stands in for one. When the
+// network stack wedges, every updater request fails this way until the app
+// restarts (#3526) — but a wedged stack does not always fail fast enough to
+// produce a net:: string. checkForUpdatesWithDeadline exists precisely because
+// the same wedge can leave a request hanging instead, and that hang throws
+// UPDATE_CHECK_TIMEOUT_MESSAGE, not a Chromium error. Treating it as anything
+// other than a network failure here breaks the restart guidance this exists to
+// give: recordAutomaticCheckFailure would reset the net-failure streak on every
+// timeout instead of extending it, and a manual check would tell the user to
+// "Try again" when only a restart can succeed.
 function isNetError(err: unknown): boolean {
-  return isNetErrorMessage(
-    err instanceof Error ? err.message : err === undefined ? undefined : String(err),
-  );
+  const message = err instanceof Error ? err.message : err === undefined ? undefined : String(err);
+  return isNetErrorMessage(message) || message === UPDATE_CHECK_TIMEOUT_MESSAGE;
 }
 
 // recordAutomaticNetFailure counts one net-level automatic-check failure,
