@@ -1626,3 +1626,148 @@ func (l *deadlineConsumingChatLauncher) QueueChatPrompt(_ context.Context, _ dom
 func (l *deadlineConsumingChatLauncher) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
 	return nil
 }
+
+// lostConversationLauncher rejects every resume of a stored provider id, as a
+// provider does for an id it reserved but never persisted, and accepts fresh
+// starts.
+type lostConversationLauncher struct {
+	recordingLauncher
+}
+
+func (l *lostConversationLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
+	if cfg.ProviderConversationID != "" {
+		l.started = append(l.started, cfg)
+		return ChatStarted{}, fmt.Errorf("%w: ACP session/load: Resource not found", ports.ErrChatResumeFailed)
+	}
+	return l.recordingLauncher.StartChat(ctx, cfg)
+}
+
+type conversationProbeAgent struct {
+	fakeAgent
+	exists bool
+	probed []string
+}
+
+func (a *conversationProbeAgent) NativeConversationExists(
+	_ context.Context, _ ports.SessionRef, nativeConversationID string, _ map[string]string,
+) (bool, error) {
+	a.probed = append(a.probed, nativeConversationID)
+	return a.exists, nil
+}
+
+type conversationProbeAgents struct{ agent ports.Agent }
+
+func (a conversationProbeAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return a.agent, true }
+
+func newLostConversationManager(t *testing.T, launcher ChatLauncher, probe *conversationProbeAgent, kind domain.SessionKind) (*Manager, *fakeStore) {
+	t.Helper()
+	mgr, store, _ := newChatManager(launcher)
+	mgr.agents = conversationProbeAgents{agent: probe}
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Kind = kind
+	rec.Harness = domain.HarnessClaudeCode
+	rec.Metadata.ProviderConversationID = "reserved-never-used"
+	store.sessions["mer-1"] = rec
+	return mgr, store
+}
+
+func TestResumeChatStartsFreshWhenOrchestratorConversationWasNeverPersisted(t *testing.T) {
+	launcher := &lostConversationLauncher{}
+	probe := &conversationProbeAgent{exists: false}
+	mgr, _ := newLostConversationManager(t, launcher, probe, domain.KindOrchestrator)
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(launcher.started) != 2 {
+		t.Fatalf("started %d chat controllers, want resume then fresh start", len(launcher.started))
+	}
+	if got := launcher.started[0].ProviderConversationID; got != "reserved-never-used" {
+		t.Fatalf("first attempt provider id = %q, want the stored id resumed first", got)
+	}
+	fresh := launcher.started[1]
+	if fresh.ProviderConversationID != "" {
+		t.Fatalf("fallback provider id = %q, want a fresh thread", fresh.ProviderConversationID)
+	}
+	// The row still holds the stored id, so the fresh launch must fence on it.
+	if got := fresh.ExpectedControllerOwner.ProviderConversationID; got != "reserved-never-used" {
+		t.Fatalf("fallback expected owner provider id = %q, want the stored id", got)
+	}
+	if len(probe.probed) != 1 || probe.probed[0] != "reserved-never-used" {
+		t.Fatalf("probed = %v, want the stored id once", probe.probed)
+	}
+	if result.Mode != RestoreModeFresh {
+		t.Fatalf("mode = %q, want %q", result.Mode, RestoreModeFresh)
+	}
+	if got := result.Session.Metadata.ProviderConversationID; got != "thread-1" {
+		t.Fatalf("persisted provider id = %q, want the fresh thread", got)
+	}
+}
+
+func TestResumeChatStartsFreshForWorkerWithoutHistory(t *testing.T) {
+	launcher := &lostConversationLauncher{}
+	probe := &conversationProbeAgent{exists: false}
+	mgr, store := newLostConversationManager(t, launcher, probe, domain.KindWorker)
+	store.conversations["mer-1"] = domain.ConversationRecord{ID: "conv-1", SessionID: "mer-1"}
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if result.Mode != RestoreModeFresh || len(launcher.started) != 2 {
+		t.Fatalf("mode = %q after %d starts, want a fresh fallback", result.Mode, len(launcher.started))
+	}
+}
+
+func TestResumeChatKeepsFailureWhenFreshThreadWouldDropHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		exists  bool
+		history bool
+	}{
+		{name: "provider still has the conversation", exists: true},
+		{name: "worker transcript shows history", history: true},
+		{name: "worker conversation unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launcher := &lostConversationLauncher{}
+			probe := &conversationProbeAgent{exists: tc.exists}
+			mgr, store := newLostConversationManager(t, launcher, probe, domain.KindWorker)
+			if tc.history {
+				store.conversations["mer-1"] = domain.ConversationRecord{ID: "conv-1", SessionID: "mer-1", LatestSequence: 4}
+			}
+
+			_, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+			if !errors.Is(err, ports.ErrChatResumeFailed) {
+				t.Fatalf("err = %v, want ErrChatResumeFailed", err)
+			}
+			if len(launcher.started) != 1 {
+				t.Fatalf("started %d chat controllers, want only the failed resume", len(launcher.started))
+			}
+		})
+	}
+}
+
+func TestResumeChatDoesNotProbeWhenResumeSucceeds(t *testing.T) {
+	// A surviving provider host can own a thread with no transcript on disk yet.
+	// Resume reconnects to it, so a missing transcript alone must not replace it.
+	launcher := &recordingLauncher{liveReconnect: true}
+	probe := &conversationProbeAgent{exists: false}
+	mgr, _ := newLostConversationManager(t, launcher, probe, domain.KindOrchestrator)
+
+	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(probe.probed) != 0 {
+		t.Fatalf("probed = %v, want no probe after a successful resume", probe.probed)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].ProviderConversationID != "reserved-never-used" {
+		t.Fatalf("started = %+v, want one resume of the stored id", launcher.started)
+	}
+	if result.Mode != RestoreModeNative {
+		t.Fatalf("mode = %q, want %q", result.Mode, RestoreModeNative)
+	}
+}

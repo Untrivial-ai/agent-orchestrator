@@ -159,8 +159,12 @@ type ChatControllerCommit = ports.ChatControllerCommit
 // facts. Embedders without these reads retain strict ordinary-resume behavior.
 type chatProviderOwnershipStore interface {
 	GetLatestSessionInterfaceTransition(context.Context, domain.SessionID) (domain.SessionInterfaceTransition, bool, error)
-	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
+	chatConversationReader
 	ConversationBranch(context.Context, string, string) (domain.ConversationBranch, error)
+}
+
+type chatConversationReader interface {
+	ConversationForSession(context.Context, domain.SessionID) (domain.ConversationRecord, error)
 }
 
 func interfaceTransitionProviderBoundaryID(transitionID string) string {
@@ -407,6 +411,12 @@ func (m *Manager) resolveSessionMode(ctx context.Context, requested domain.Sessi
 // that fails is reported, not silently replaced with a fresh conversation:
 // presenting unrelated history as continuous is worse than an error the user can
 // act on, and it would strand the work the old conversation was holding.
+//
+// The one exception is a stored id the provider never persisted: an id reserved
+// at spawn whose session was torn down before its first turn. Resuming it fails
+// on every attempt, so after the resume is rejected and the agent confirms the
+// conversation does not exist, the session starts a fresh provider thread (see
+// canStartFreshAfterLostChat for when that is allowed).
 func (m *Manager) resumeChatController(
 	ctx context.Context,
 	operation string,
@@ -447,7 +457,8 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: workspace roots: %w", operation, rec.ID, err)
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
-	if agent, ok := m.agents.Agent(rec.Harness); ok {
+	agent, hasAgent := m.agents.Agent(rec.Harness)
+	if hasAgent {
 		m.augmentAgentRuntimeEnv(agent, env)
 	}
 	historyMode := ports.ChatHistoryImport
@@ -462,7 +473,7 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, fmt.Errorf("%s %s: recover provider ownership: %w", operation, rec.ID, err)
 	}
 	var completionErr error
-	_, err = m.chat.StartChat(ctx, ChatStart{
+	start := ChatStart{
 		SessionID:               rec.ID,
 		ProjectID:               rec.ProjectID,
 		Kind:                    rec.Kind,
@@ -527,7 +538,27 @@ func (m *Manager) resumeChatController(
 				),
 			}, completionErr
 		},
-	})
+	}
+	mode := RestoreModeNative
+	_, err = m.chat.StartChat(ctx, start)
+	// Resume first, and only then ask whether the conversation exists: a
+	// surviving provider host can still own a thread that has no transcript on
+	// disk yet, and resume reconnects to it where a fresh start would refuse.
+	if err != nil && completionErr == nil && errors.Is(err, ports.ErrChatResumeFailed) &&
+		hasAgent && !requireNativeHistory && providerHandoff == nil && controllerGeneration == "" &&
+		start.ProviderConversationID != "" &&
+		nativeConversationMissing(ctx, agent, chatSessionRef(rec, ws), start.ProviderConversationID, env) &&
+		m.canStartFreshAfterLostChat(ctx, rec) {
+		m.logger.Warn("chat resume: provider has no stored conversation; starting a fresh thread",
+			"sessionID", rec.ID, "harness", rec.Harness, "error", err)
+		start.ProviderConversationID = ""
+		// The failed attempt may have rotated launch state on rec. The row still
+		// holds the original provider id, so fence against the current owner
+		// rather than one with the id cleared.
+		start.ExpectedControllerOwner = rec.ControllerOwner()
+		mode = RestoreModeFresh
+		_, err = m.chat.StartChat(ctx, start)
+	}
 	if err != nil {
 		if completionErr != nil {
 			m.stopChatBestEffort(ctx, rec.ID)
@@ -541,8 +572,34 @@ func (m *Manager) resumeChatController(
 		return RestoreResult{}, err
 	}
 	// Native continuity: the provider still holds the conversation, so the agent
-	// resumes with its own history rather than a replayed prompt.
-	return RestoreResult{Session: restored, Mode: RestoreModeNative}, nil
+	// resumes with its own history rather than a replayed prompt. Fresh means the
+	// stored id was never materialized and a new provider thread replaced it.
+	return RestoreResult{Session: restored, Mode: mode}, nil
+}
+
+func chatSessionRef(rec domain.SessionRecord, ws ports.WorkspaceInfo) ports.SessionRef {
+	return ports.SessionRef{
+		ID:            string(rec.ID),
+		WorkspacePath: ws.Path,
+		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: rec.Metadata.AgentSessionID},
+	}
+}
+
+// canStartFreshAfterLostChat decides whether a chat session whose provider
+// conversation is gone may continue on a fresh provider thread. An orchestrator
+// may: its project narrative records a visible context-reset boundary. A worker
+// may only when its own conversation holds no history yet, because a fresh
+// thread would otherwise silently drop context the transcript still shows.
+func (m *Manager) canStartFreshAfterLostChat(ctx context.Context, rec domain.SessionRecord) bool {
+	if rec.Kind == domain.KindOrchestrator {
+		return true
+	}
+	store, ok := m.store.(chatConversationReader)
+	if !ok {
+		return false
+	}
+	conversation, err := store.ConversationForSession(ctx, rec.ID)
+	return err == nil && conversation.LatestSequence == 0
 }
 
 func (m *Manager) markChatControllerSpawned(
