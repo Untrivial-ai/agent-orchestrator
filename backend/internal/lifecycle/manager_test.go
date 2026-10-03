@@ -5103,6 +5103,127 @@ func TestRuntimeObservation_WorkloadDeathAloneDoesNotReap(t *testing.T) {
 	}
 }
 
+// fakeReviewerTeardown records ReviewerTeardown calls for the #5948 tests.
+type fakeReviewerTeardown struct {
+	calls  []domain.SessionID
+	bodies []string
+	err    error
+}
+
+func (f *fakeReviewerTeardown) TerminateReviewer(_ context.Context, id domain.SessionID, body string) error {
+	f.calls = append(f.calls, id)
+	f.bodies = append(f.bodies, body)
+	return f.err
+}
+
+// TestMarkTerminated_TearsDownReviewer is the #5948 regression: a worker
+// terminated by any path must take its reviewer pane down with it. Reviewer
+// panes are runtime handles ("review-<worker>") with no sessions row, so a
+// flag-only termination that skips session_manager.Kill used to leave the
+// pane's pty-host + agent running forever (observed: 8+ hours at ~300MB).
+func TestMarkTerminated_TearsDownReviewer(t *testing.T) {
+	rt := &fakeReviewerTeardown{}
+	m, st, _ := newManager()
+	m.SetReviewerTeardown(rt)
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.calls) != 1 || rt.calls[0] != "mer-1" {
+		t.Fatalf("expected reviewer teardown for mer-1, got %v", rt.calls)
+	}
+	if rt.bodies[0] != "cancelled by worker session termination" {
+		t.Fatalf("body = %q, want the same body session_manager.Kill passes", rt.bodies[0])
+	}
+}
+
+// TestRuntimeObservation_ConfirmedDeathTearsDownReviewer reproduces the #5948
+// incident path: the reaper's terminal transition bypasses MarkTerminated, so
+// it must still destroy the worker's reviewer pane instead of leaving an
+// orphaned pty-host + agent behind a terminated session.
+func TestRuntimeObservation_ConfirmedDeathTearsDownReviewer(t *testing.T) {
+	rt := &fakeReviewerTeardown{}
+	m, st, _ := newManager()
+	m.SetReviewerTeardown(rt)
+	rec := working("mer-1")
+	rec.Activity.LastActivityAt = time.Now().Add(-2 * time.Minute)
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, "mer-1", ports.RuntimeFacts{Runtime: ports.ProbeDead, Workload: ports.ProbeFailed}); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be terminated")
+	}
+	if len(rt.calls) != 1 || rt.calls[0] != "mer-1" {
+		t.Fatalf("expected reviewer teardown for mer-1 on reaper-observed death, got %v", rt.calls)
+	}
+}
+
+// TestMarkTerminated_ReviewerTeardownFailureDoesNotFailTermination pins the
+// best-effort contract, matching the container reap: a reviewer teardown error
+// must never fail or block the termination itself.
+func TestMarkTerminated_ReviewerTeardownFailureDoesNotFailTermination(t *testing.T) {
+	rt := &fakeReviewerTeardown{err: errors.New("pane destroy: connection refused")}
+	m, st, _ := newManager()
+	m.SetReviewerTeardown(rt)
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatalf("a reviewer teardown failure must not fail MarkTerminated: %v", err)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must still be marked terminated despite the teardown failure")
+	}
+	if len(rt.calls) != 1 {
+		t.Fatalf("expected the teardown to still be attempted, got %v", rt.calls)
+	}
+}
+
+// TestMarkTerminated_TearsDownReviewerAgainWhenAlreadyTerminated pins the
+// fire-on-repeat decision: Engine.TerminateReviewer is idempotent, so a repeat
+// MarkTerminated re-runs the teardown as a cheap self-healing no-op, mirroring
+// the container reap.
+func TestMarkTerminated_TearsDownReviewerAgainWhenAlreadyTerminated(t *testing.T) {
+	rt := &fakeReviewerTeardown{}
+	m, st, _ := newManager()
+	m.SetReviewerTeardown(rt)
+	st.sessions["mer-1"] = working("mer-1")
+
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MarkTerminated(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.calls) != 2 {
+		t.Fatalf("reviewer teardown calls = %v, want retry on repeated termination", rt.calls)
+	}
+}
+
+// TestRuntimeObservation_WorkloadDeathAloneDoesNotTearDownReviewer confirms
+// the non-terminal workload-dead branch (runtime alive, workload dead) does
+// NOT destroy the reviewer pane — only a confirmed termination should.
+func TestRuntimeObservation_WorkloadDeathAloneDoesNotTearDownReviewer(t *testing.T) {
+	rt := &fakeReviewerTeardown{}
+	m, st, _ := newManager()
+	m.SetReviewerTeardown(rt)
+	rec := working("mer-1")
+	rec.Metadata.RuntimeLaunchID = "launch-1"
+	st.sessions["mer-1"] = rec
+
+	if err := m.ApplyRuntimeObservation(ctx, "mer-1", ports.RuntimeFacts{LaunchID: "launch-1", Runtime: ports.ProbeAlive, Workload: ports.ProbeDead}); err != nil {
+		t.Fatal(err)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("workload death alone must not terminate the session")
+	}
+	if len(rt.calls) != 0 {
+		t.Fatalf("expected no reviewer teardown for a non-terminal transition, got %v", rt.calls)
+	}
+}
+
 // mergeMetadata is an explicit allowlist, so a field added to SessionMetadata
 // without a line here is silently dropped on every spawn and restore. That
 // happened to the chat resume handle: the provider still held the conversation,

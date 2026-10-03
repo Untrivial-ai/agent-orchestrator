@@ -137,6 +137,14 @@ type sessionTerminator interface {
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 }
 
+// ReviewerTeardown destroys a terminated worker's reviewer pane and cancels its
+// running review runs. Late-bound like sessionTerminator: the review service is
+// assembled after this reducer during daemon boot, and lifecycle cannot import
+// the review package.
+type ReviewerTeardown interface {
+	TerminateReviewer(ctx context.Context, sessionID domain.SessionID, body string) error
+}
+
 type sessionUsageFinalizer interface {
 	FinalizeSession(
 		ctx context.Context,
@@ -229,6 +237,9 @@ type Manager struct {
 	// completionTerminator is late-bound because Session Manager itself depends
 	// on this lifecycle reducer. It is required before the SCM observer starts.
 	completionTerminator sessionTerminator
+	// reviewerTeardown is late-bound like completionTerminator (construction
+	// cycle). Nil means no reviewer support wired: teardown is a no-op.
+	reviewerTeardown ReviewerTeardown
 	// usageFinalizer is late-bound because the usage pipeline is optional. It
 	// receives terminal intent before is_terminated makes the session ineligible
 	// for normal source discovery.
@@ -303,6 +314,14 @@ func (m *Manager) SetCompletionTerminator(terminator sessionTerminator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completionTerminator = terminator
+}
+
+// SetReviewerTeardown wires reviewer-pane destruction into every terminal-state
+// write, the reviewer counterpart to the #2652 container reap (#5948).
+func (m *Manager) SetReviewerTeardown(teardown ReviewerTeardown) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reviewerTeardown = teardown
 }
 
 // SetUsageFinalizer wires termination and relaunches to usage collection.
@@ -505,6 +524,10 @@ func (m *Manager) ApplyRuntimeObservation(ctx context.Context, id domain.Session
 		// runtime reaper must not leave the session's Docker containers behind
 		// just because it never called MarkTerminated directly.
 		m.reapSessionContainers(ctx, id)
+		// Same for the reviewer pane (#5948): a flag-only termination here used
+		// to leave the pane's pty-host + agent orphaned behind the terminated
+		// session.
+		m.teardownReviewer(ctx, id)
 	}
 	return nil
 }
@@ -1761,6 +1784,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		}
 		if rec.IsTerminated {
 			m.reapSessionContainers(ctx, id)
+			m.teardownReviewer(ctx, id)
 			return nil
 		}
 
@@ -1802,6 +1826,7 @@ func (m *Manager) MarkTerminated(ctx context.Context, id domain.SessionID) error
 		switch outcome {
 		case terminationApplied, terminationAlreadyApplied:
 			m.reapSessionContainers(ctx, id)
+			m.teardownReviewer(ctx, id)
 			return nil
 		case terminationLaunchChanged:
 			return fmt.Errorf("lifecycle: runtime launch changed while terminating session %q", id)
@@ -1853,6 +1878,27 @@ func (m *Manager) reapSessionContainers(ctx context.Context, id domain.SessionID
 	}
 	if removed > 0 {
 		slog.Default().Info("lifecycle: reaped session containers", "session", id, "removed", removed)
+	}
+}
+
+// teardownReviewer is the reviewer-pane leg of #5948 (the lifecycle-side
+// counterpart to session_manager.Manager.terminateReviewer): every
+// MarkTerminated call and ApplyRuntimeObservation's reaper-driven terminal
+// transition funnels through here, so a worker terminated by any path - not
+// only explicit ao session kill - takes its reviewer pane down with it.
+// Reviewer panes have no sessions row, so nothing else would ever reap them.
+// Best-effort: logged on failure, never returned, matching the rest of AO's
+// terminal-state teardown. Engine.TerminateReviewer is idempotent, so the
+// duplicate call after session_manager.Kill's own teardown is a cheap no-op.
+func (m *Manager) teardownReviewer(ctx context.Context, id domain.SessionID) {
+	m.mu.Lock()
+	teardown := m.reviewerTeardown
+	m.mu.Unlock()
+	if teardown == nil {
+		return
+	}
+	if err := teardown.TerminateReviewer(ctx, id, "cancelled by worker session termination"); err != nil {
+		slog.Default().Warn("lifecycle: reviewer teardown failed", "session", id, "err", err)
 	}
 }
 
