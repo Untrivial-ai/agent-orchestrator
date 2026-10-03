@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -63,7 +62,11 @@ func (c *SystemInstallController) startAgent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var request StartAgentInstallRequest
-	if err := decodeJSONStrict(r, &request); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeRequestJSON(w, r, &request, decodePolicy{
+		MaxBytes:              defaultMaxBodyBytes,
+		DisallowUnknownFields: true,
+		AllowEmpty:            true,
+	}); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_INSTALL_REQUEST", "invalid install request", nil)
 		return
 	}
