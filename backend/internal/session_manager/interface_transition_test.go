@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1206,7 +1207,7 @@ func TestInterfaceTransitionRollbackRejectsOwnerlessTUIHooksBeforeRelaunch(t *te
 	}); err != nil {
 		t.Fatalf("apply delayed ownerless hook: %v", err)
 	}
-	if after := store.sessions["session-1"]; after != before {
+	if after := store.sessions["session-1"]; !reflect.DeepEqual(after, before) {
 		t.Fatalf("ownerless rollback hook mutated session: got %+v, want %+v", after, before)
 	}
 
