@@ -14,7 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
-import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
+import { defaultShortcutBindings, effectiveShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
 import type { FileOpenOptions, FileViewMode } from "./FileContentPane";
@@ -86,7 +86,7 @@ import { useShell } from "../lib/shell-context";
 import { cn } from "../lib/utils";
 import { isOrchestratorSession, sessionIsActive } from "../types/workspace";
 import { terminalTargetBelongsToSession, type TerminalTarget } from "../types/terminal";
-import { matchesRendererShortcut } from "../stores/keybindings-store";
+import { matchesRendererShortcut, useKeybindingsStore } from "../stores/keybindings-store";
 import { inspectorIsOpen, useResolvedTheme, useUiStore, type InspectorView } from "../stores/ui-store";
 import {
 	INSPECTOR_SEPARATOR_RESERVE_PX,
@@ -430,6 +430,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const theme = useResolvedTheme();
 	const browserOnly = Boolean(session && isOrchestratorSession(session));
 	const isInspectorOpen = useUiStore((state) => inspectorIsOpen(state.inspectorSessions, uiSessionId));
+	const shortcutOverrides = useKeybindingsStore((state) => state.overrides);
+	const inspectorShortcut = effectiveShortcutBindings("toggle-inspector", isMac, shortcutOverrides)[0];
+	const inspectorShortcutLabel = inspectorShortcut
+		? shortcutBindingLabel(inspectorShortcut, isMac).replace("Shift", isMac ? "⇧" : "Shift")
+		: "";
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[uiSessionId]?.view ?? "summary");
 	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[uiSessionId]?.browserUnseen));
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
@@ -1756,7 +1761,9 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 						<TooltipContent side="bottom">
 							{browserOnly
 								? `${isInspectorOpen ? t("common.close") : t("inspector.open")} ${t("inspector.browser")}`
-								: isInspectorOpen ? t("shell.closeInspectorTitle") : t("shell.openInspectorTitle")}
+								: isInspectorOpen
+									? t("shell.closeInspectorTitle", { shortcut: inspectorShortcutLabel })
+									: t("shell.openInspectorTitle", { shortcut: inspectorShortcutLabel })}
 						</TooltipContent>
 					</Tooltip>
 					{/* Keep the global notification action trailing at the window edge. */}

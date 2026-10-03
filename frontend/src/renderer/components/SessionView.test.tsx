@@ -14,6 +14,7 @@ import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
 import { chatDraftScopeKey } from "../lib/chat-drafts";
+import { useKeybindingsStore } from "../stores/keybindings-store";
 import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachments";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -786,6 +787,7 @@ describe("SessionView", () => {
 	}
 
 	beforeEach(() => {
+		useKeybindingsStore.setState({ overrides: {} });
 		cloudGateState.cloudEnabled = true;
 		for (const sessionId of ["sess-1", "sess-2", "sess-orch", "sess-cross-project"]) {
 			setChatDraftBoundary(sessionId, "composer", undefined);
@@ -3639,6 +3641,22 @@ describe("SessionView", () => {
 		expect(inspectorOpen("sess-1")).toBe(true);
 		expect(screen.getByTestId("panel-inspector")).toHaveAttribute("data-state", "expanded");
 		expect(inspectorButton()).toHaveAttribute("data-view", "summary");
+	});
+
+	it("shows the active Windows inspector shortcut in the tooltip", async () => {
+		useUiStore.setState({ inspectorSessions: {} });
+		render(<SessionView sessionId="sess-1" />);
+
+		const button = screen.getByRole("button", { name: "Open inspector panel" });
+		await userEvent.setup().hover(button);
+		expect(await screen.findByRole("tooltip", { name: "Open inspector · Ctrl+Shift+B" })).toBeInTheDocument();
+
+		act(() => {
+			useKeybindingsStore.setState({ overrides: {
+				"toggle-inspector": [{ key: "i", ctrl: true, meta: false, shift: true, alt: false }],
+			} });
+		});
+		expect(await screen.findByRole("tooltip", { name: "Open inspector · Ctrl+Shift+I" })).toBeInTheDocument();
 	});
 
 	it("treats a merged terminated session as terminated for Browser preview", () => {
