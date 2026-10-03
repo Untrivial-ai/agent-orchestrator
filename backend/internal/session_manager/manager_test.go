@@ -3469,6 +3469,40 @@ func TestKill_TearsDownRuntimeAndWorkspace(t *testing.T) {
 	requireNoPromptDir(t, dataDir, "mer-1")
 }
 
+func TestKillCleanupScriptFailurePreservesWorkspaceForRetry(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.dataDir = t.TempDir()
+	workspace := filepath.Join(m.dataDir, "worktrees", "mer", "mer-1")
+	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rec := mkLive("mer-1")
+	rec.Metadata.WorkspacePath = workspace
+	st.sessions[rec.ID] = rec
+	project := st.projects["mer"]
+	project.Path = t.TempDir()
+	project.Config.PreRemove = []string{"echo project-secret && exit 7"}
+	project.Config.Env = map[string]string{"PROJECT_TOKEN": "project-secret"}
+	st.projects["mer"] = project
+
+	freed, err := m.Kill(ctx, rec.ID)
+	if freed || !errors.Is(err, ErrCleanupScript) || strings.Contains(err.Error(), "project-secret") {
+		t.Fatalf("kill freed=%v err=%v", freed, err)
+	}
+	if rt.destroyed != 1 || ws.destroyed != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("failed cleanup must stop runtime, preserve workspace, and terminate session: runtime=%d workspace=%d rec=%+v", rt.destroyed, ws.destroyed, st.sessions[rec.ID])
+	}
+	project.Config.PreRemove = []string{"echo cleaned > cleanup-marker"}
+	st.projects["mer"] = project
+	result, err := m.Cleanup(ctx, "mer")
+	if err != nil || len(result.Cleaned) != 1 || ws.destroyed != 1 {
+		t.Fatalf("retry cleanup result=%+v err=%v destroyed=%d", result, err, ws.destroyed)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "cleanup-marker")); err != nil {
+		t.Fatalf("cleanup script did not run in workspace: %v", err)
+	}
+}
+
 // A caller that gives up must not take the teardown down with it. The REST
 // layer caps a request at cfg.RequestTimeout, and a session whose worktree
 // carries a large ignored tree used to run past that: the request context was

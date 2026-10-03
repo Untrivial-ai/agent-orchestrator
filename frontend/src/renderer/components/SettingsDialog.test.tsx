@@ -136,6 +136,14 @@ describe("SettingsDialog", () => {
 		expect(screen.getByRole("button", { name: "Cues" })).toHaveAttribute("aria-current", "page");
 	});
 
+	it("does not offer local workspace cleanup for a remote project", async () => {
+		useUiStore.getState().openProjectSettings("proj-1", "box-a");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Agents" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Workspace cleanup" })).not.toBeInTheDocument();
+	});
+
 	it("opens the requested global settings page", async () => {
 		useUiStore.getState().openGlobalSettings("mobile");
 		renderSettingsDialog();

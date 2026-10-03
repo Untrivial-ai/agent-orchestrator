@@ -34,6 +34,8 @@ type ProjectConfig struct {
 	Symlinks []string `json:"symlinks,omitempty"`
 	// PostCreate are shell commands run in the workspace after it is created.
 	PostCreate []string `json:"postCreate,omitempty"`
+	// PreRemove are shell commands run before an AO-managed Git worktree is permanently removed.
+	PreRemove []string `json:"preRemove,omitempty"`
 
 	// AgentRules are project-specific standing instructions for worker sessions.
 	AgentRules string `json:"agentRules,omitempty"`
