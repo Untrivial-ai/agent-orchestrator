@@ -70,6 +70,31 @@ func TestGetLaunchCommandAppendsModelFlagWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestSessionSkillsDirIsolatesKimiSkillsOnLaunchAndRestore(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionID := "session-1"
+	skillsDir := filepath.Join(dataDir, "runtime", "session-home", sessionID, ".agents", "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "using-ao"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "using-ao", "SKILL.md"), []byte("AO skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &Plugin{resolvedBinary: "kimi"}
+	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{DataDir: dataDir, SessionID: sessionID})
+	if err != nil || !reflect.DeepEqual(cmd, []string{"kimi", "--skills-dir", skillsDir}) {
+		t.Fatalf("isolated launch = %v, %v", cmd, err)
+	}
+	cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{DataDir: dataDir, Session: ports.SessionRef{ID: sessionID, Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "native-1"}}})
+	if err != nil || !ok || !reflect.DeepEqual(cmd, []string{"kimi", "--session", "native-1", "--skills-dir", skillsDir}) {
+		t.Fatalf("isolated restore = %v, %v, %v", cmd, ok, err)
+	}
+	t.Setenv("AO_SESSION_HOME_MODE", "inherit")
+	if dir := SessionSkillsDir(dataDir, sessionID); dir != "" {
+		t.Fatalf("inherit mode used isolated skills: %q", dir)
+	}
+}
+
 func TestGetLaunchCommandOmitsModelFlagWhenBlank(t *testing.T) {
 	p := &Plugin{resolvedBinary: "kimi"}
 	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{

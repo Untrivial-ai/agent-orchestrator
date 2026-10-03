@@ -51,6 +51,7 @@ func withFreshChatHistory(manager *Manager, store *transitionStore) *freshChatTr
 }
 
 func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
+	t.Setenv(EnvSessionHomeMode, sessionHomeModeInherit)
 	// Keep production argv generation without requiring installed providers.
 	// The fake runtime records these paths but never executes the files.
 	binDir := t.TempDir()

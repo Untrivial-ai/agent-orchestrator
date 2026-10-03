@@ -90,6 +90,22 @@ func TestConfigureLaunchesNativeACPSubcommand(t *testing.T) {
 	}
 }
 
+func TestConfigureUsesIsolatedKimiSkills(t *testing.T) {
+	dataDir := t.TempDir()
+	sessionID := domain.SessionID("session-1")
+	skillsDir := filepath.Join(dataDir, "runtime", "session-home", string(sessionID), ".agents", "skills")
+	if err := os.MkdirAll(filepath.Join(skillsDir, "using-ao"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "using-ao", "SKILL.md"), []byte("AO skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args, _, err := configure(context.Background(), acpdriver.LaunchConfig{DataDir: dataDir, SessionID: sessionID, WorkspacePath: t.TempDir()})
+	if err != nil || !reflect.DeepEqual(args, []string{"--skills-dir", skillsDir, "acp"}) {
+		t.Fatalf("isolated ACP args = %v, %v", args, err)
+	}
+}
+
 func TestConfigureRejectsUnsupportedPermissionModes(t *testing.T) {
 	for _, mode := range []ports.PermissionMode{
 		ports.PermissionModeAcceptEdits,

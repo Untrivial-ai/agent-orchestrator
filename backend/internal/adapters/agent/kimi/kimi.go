@@ -18,6 +18,7 @@ package kimi
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -109,6 +110,9 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	}
 
 	cmd = []string{binary}
+	if skillsDir := SessionSkillsDir(cfg.DataDir, cfg.SessionID); skillsDir != "" {
+		cmd = append(cmd, "--skills-dir", skillsDir)
+	}
 	appendApprovalFlags(&cmd, cfg.Permissions)
 	appendModelFlag(&cmd, cfg.Config)
 	return cmd, nil
@@ -166,7 +170,24 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	cmd = []string{binary, "--session", agentSessionID}
+	if skillsDir := SessionSkillsDir(cfg.DataDir, cfg.Session.ID); skillsDir != "" {
+		cmd = append(cmd, "--skills-dir", skillsDir)
+	}
 	return cmd, true, nil
+}
+
+// SessionSkillsDir makes Kimi use only the skills provisioned for this AO
+// session. Kimi can scan the real OS home for shared skills despite HOME being
+// overridden, so its documented --skills-dir flag is needed in isolated mode.
+func SessionSkillsDir(dataDir, sessionID string) string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AO_SESSION_HOME_MODE")), "inherit") || dataDir == "" || sessionID == "" {
+		return ""
+	}
+	dir := filepath.Join(dataDir, "runtime", "session-home", sessionID, ".agents", "skills")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return ""
+	}
+	return dir
 }
 
 // appendApprovalFlags maps AO's permission modes onto Kimi's approval flags

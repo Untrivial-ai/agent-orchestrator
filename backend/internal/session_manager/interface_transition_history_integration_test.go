@@ -22,6 +22,7 @@ import (
 // Exercise production launch selection, lifecycle, Chat and SQLite together.
 // Only external runtime and provider I/O are controlled.
 func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
+	t.Setenv(EnvSessionHomeMode, sessionHomeModeInherit)
 	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessQwen} {
 		t.Run(string(harness), func(t *testing.T) {
 			for _, tc := range []struct {

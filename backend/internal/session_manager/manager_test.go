@@ -5478,8 +5478,12 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 		"`ao session get <worker-session-id>`",
 		"Delegate implementation, fixes, tests, and PR ownership to worker sessions",
 		filepath.ToSlash(filepath.Join("skills", "using-ao", "SKILL.md")),
+		"High priority: AO browser, preview, spawning, control, and communication use `ao`",
+		"Superset, Wmux, etc.",
+		"Unrelated tools allowed",
 		"AO desktop Browser panel",
 		"agent.browsers.get(\"iab\")",
+		"Do not use browser connectors or MCPs",
 		"same live page the user sees",
 		"Browser network capture is optional and off by default",
 		"never enable it for routine browser actions",
@@ -5491,7 +5495,7 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 			t.Fatalf("system prompt missing %q:\n%s", want, systemPrompt)
 		}
 	}
-	if words := len(strings.Fields(m.aoSkillPointer())); words > 220 {
+	if words := len(strings.Fields(m.aoSkillPointer())); words > 225 {
 		t.Fatalf("always-on AO skill pointer grew to %d words; keep details in routed command guides:\n%s", words, m.aoSkillPointer())
 	}
 	if strings.Contains(agent.lastLaunch.Prompt, "You are the human-facing orchestrator") {
@@ -5638,7 +5642,14 @@ func TestSystemPrompt_AppendsConfidentialityGuard(t *testing.T) {
 			if !strings.Contains(sp, filepath.ToSlash(filepath.Join("skills", "using-ao", "SKILL.md"))) {
 				t.Fatalf("%s: system prompt missing using-ao skill pointer:\n%s", tc.name, sp)
 			}
-			if !strings.Contains(sp, "AO desktop Browser panel") || !strings.Contains(sp, "agent.browsers.get(\"iab\")") {
+			if !strings.Contains(sp, "High priority: AO browser, preview, spawning, control, and communication use `ao`") ||
+				!strings.Contains(sp, "Superset, Wmux, etc.") ||
+				!strings.Contains(sp, "Unrelated tools allowed") {
+				t.Fatalf("%s: system prompt missing scoped AO operation routing contract:\n%s", tc.name, sp)
+			}
+			if !strings.Contains(sp, "AO desktop Browser panel") ||
+				!strings.Contains(sp, "agent.browsers.get(\"iab\")") ||
+				!strings.Contains(sp, "Do not use browser connectors or MCPs") {
 				t.Fatalf("%s: system prompt missing AO browser routing guidance:\n%s", tc.name, sp)
 			}
 			if !strings.Contains(sp, "Static file targets passed to `ao preview`") ||

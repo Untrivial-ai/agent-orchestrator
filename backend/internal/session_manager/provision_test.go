@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -527,5 +528,129 @@ func TestSpawnPermissionPrecedence(t *testing.T) {
 	}
 	if got := effectiveAgentConfig(domain.HarnessCodex, domain.KindWorker, domain.ProjectConfig{}); got.Permissions != "" {
 		t.Fatalf("non-spawn resolution changed: %q", got.Permissions)
+	}
+}
+
+func TestRuntimeEnvIsolatesSessionHomeAndMaterializesUsingAO(t *testing.T) {
+	dataDir := t.TempDir()
+	realHome := filepath.Join(t.TempDir(), "real-home")
+	foreignSkill := filepath.Join(realHome, ".agents", "skills", "superset-browser")
+	if err := os.MkdirAll(foreignSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreignSkill, "SKILL.md"), []byte("name: superset-browser\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", realHome)
+	t.Setenv(EnvSessionHomeMode, sessionHomeModeIsolated)
+
+	manager := &Manager{
+		dataDir:    dataDir,
+		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+		"HOME":              filepath.Join(t.TempDir(), "project-home"),
+		"XDG_CONFIG_HOME":   filepath.Join(t.TempDir(), "project-config"),
+		"CODEX_HOME":        filepath.Join(realHome, ".codex"),
+		"CLAUDE_CONFIG_DIR": filepath.Join(realHome, ".claude"),
+		"GEMINI_CLI_HOME":   filepath.Join(realHome, ".gemini"),
+		"QWEN_HOME":         filepath.Join(realHome, ".qwen"),
+	})
+
+	wantRoot := filepath.Join(dataDir, "runtime", "session-home", "mer-1")
+	if got := env["HOME"]; got != wantRoot {
+		t.Fatalf("HOME = %q, want isolated session home %q", got, wantRoot)
+	}
+	if got := env["XDG_CONFIG_HOME"]; got != filepath.Join(wantRoot, ".config") {
+		t.Fatalf("XDG_CONFIG_HOME = %q", got)
+	}
+	for key, dir := range map[string]string{
+		"CODEX_HOME":        filepath.Join(wantRoot, ".codex"),
+		"CLAUDE_CONFIG_DIR": filepath.Join(wantRoot, ".claude"),
+		"GEMINI_CLI_HOME":   filepath.Join(wantRoot, ".gemini"),
+		"QWEN_HOME":         filepath.Join(wantRoot, ".qwen"),
+	} {
+		if got := env[key]; got != dir {
+			t.Errorf("%s = %q, want %q", key, got, dir)
+		}
+	}
+	skillPath := filepath.Join(wantRoot, ".agents", "skills", "using-ao", "SKILL.md")
+	body, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("using-ao skill missing from isolated home: %v", err)
+	}
+	if !strings.Contains(string(body), "name: using-ao") {
+		t.Fatalf("isolated using-ao skill has unexpected body:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(wantRoot, ".agents", "skills", "superset-browser", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("foreign user skill leaked into isolated session home: %v", err)
+	}
+}
+
+func TestRuntimeEnvCanInheritUserHomeWhenExplicitlyRequested(t *testing.T) {
+	t.Setenv(EnvSessionHomeMode, sessionHomeModeInherit)
+	manager := &Manager{
+		dataDir:    t.TempDir(),
+		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", nil)
+	if _, ok := env["HOME"]; ok {
+		t.Fatalf("HOME was set despite %s=inherit: %v", EnvSessionHomeMode, env)
+	}
+	if _, ok := env["XDG_CONFIG_HOME"]; ok {
+		t.Fatalf("XDG_CONFIG_HOME was set despite %s=inherit: %v", EnvSessionHomeMode, env)
+	}
+	if _, err := os.Stat(filepath.Join(manager.dataDir, "runtime", "session-home", "mer-1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session home was provisioned despite inherit mode: %v", err)
+	}
+}
+
+func TestRuntimeEnvKeepsIsolatedProfileWhenSkillProvisioningFails(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv(EnvSessionHomeMode, sessionHomeModeIsolated)
+	root := filepath.Join(dataDir, "runtime", "session-home", "mer-1")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agents"), []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		dataDir:    dataDir,
+		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	env := manager.runtimeEnv("mer-1", "mer", "", nil)
+	if env["HOME"] != root {
+		t.Fatalf("failed provisioning exposed inherited HOME: %q", env["HOME"])
+	}
+}
+
+func TestPrepareSessionHomeWindowsProfileDirs(t *testing.T) {
+	dataDir := t.TempDir()
+	spec, err := prepareSessionHome(dataDir, "mer-1", "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"userprofile": `C:\Users\real`,
+		"AppData":     `C:\Users\real\AppData\Roaming`,
+	}
+	applySessionHomeEnv(env, spec, "windows", true)
+	for _, key := range []string{"userprofile", "AppData"} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("case variant %s survived: %v", key, env)
+		}
+	}
+	if env["USERPROFILE"] != spec.Root || env["HOME"] != spec.Root {
+		t.Fatalf("profile roots not isolated: %v", env)
+	}
+	if env["APPDATA"] != spec.AppData || env["LOCALAPPDATA"] != spec.LocalAppData {
+		t.Fatalf("windows app data roots not isolated: %v", env)
+	}
+	if _, err := os.Stat(filepath.Join(spec.Root, ".agents", "skills", "using-ao", "SKILL.md")); err != nil {
+		t.Fatalf("using-ao skill missing from windows session home: %v", err)
 	}
 }

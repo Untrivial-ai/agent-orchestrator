@@ -4944,11 +4944,11 @@ func (m *Manager) aoSkillPointer() string {
 	browserFile := filepath.ToSlash(filepath.Join(dir, "commands", "browser.md"))
 	previewFile := filepath.ToSlash(filepath.Join(dir, "commands", "preview.md"))
 	return "\n\n" + "## Using the ao CLI\n\n" +
-		"When using `ao`, read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides.\n\n" +
+		"When using `ao`, read `" + skillFile + "` and only the relevant file under `" + commandsGlob + "`; do not load unrelated command guides. High priority: AO browser, preview, spawning, control, and communication use `ao`, never sibling CLIs/skills/MCPs (Superset, Wmux, etc.). Unrelated tools allowed.\n\n" +
 		"## AO desktop Browser panel\n\n" +
 		"For frontend work, read `" + previewFile + "` before previewing or starting an app. Static file targets passed to `ao preview` are relative to the session workspace root, regardless of the shell's current directory: use `ao preview README.md`, not `../README.md`. AO serves workspace files through its existing confined loopback preview; do not use `file://` or start a server just to display static files. Never create or modify `package.json` or install dependencies solely to display static files. Do not create `.ao/launch.json` unless the user asks. Automatically open the primary requested browser-displayable artifact immediately after creating or materially updating it, but do not replace an active application preview with a supporting asset. " +
 		"For page inspection or interaction, read `" + browserFile + "` and use `ao browser` from this AO session. Browser network capture is optional and off by default; follow that guide and never enable it for routine browser actions. " +
-		"Do not use Codex/host in-app browser connectors, `agent.browsers.get(\"iab\")`, or a browser MCP for the AO Browser panel: those are separate browser runtimes and cannot see or control AO's session-owned page. " +
+		"Do not use browser connectors or MCPs (Codex/host, `agent.browsers.get(\"iab\")`, etc.) for the AO Browser panel; they cannot control AO's page. " +
 		"`ao browser` operates the same live page the user sees in that panel."
 }
 
@@ -5117,6 +5117,17 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
+	if shouldIsolateSessionHome(os.Getenv) && sessionHomeDataDirReady(m.dataDir) {
+		spec, err := prepareSessionHome(m.dataDir, id, runtime.GOOS)
+		if err != nil {
+			logger := m.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("session home provisioning failed; keeping isolated profile", "session", id, "error", err)
+		}
+		applySessionHomeEnv(env, spec, runtime.GOOS, caseInsensitive)
+	}
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.

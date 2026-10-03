@@ -2445,7 +2445,7 @@ func TestSwitchAgentWithRealFXAdapterInBothDirections(t *testing.T) {
 		if sw.State != domain.AgentSwitchCompleted || sw.TargetNativeSessionRef == nil {
 			t.Fatalf("switch = %+v, want completed real fx target", sw)
 		}
-		if got, want := store.native[*sw.TargetNativeSessionRef].ConfigDir, filepath.Join(fxHome, ".fx"); got != want {
+		if got, want := store.native[*sw.TargetNativeSessionRef].ConfigDir, filepath.Join(manager.dataDir, "runtime", "session-home", "proj-1", ".fx"); got != want {
 			t.Fatalf("fx target config dir = %q, want %q", got, want)
 		}
 	})

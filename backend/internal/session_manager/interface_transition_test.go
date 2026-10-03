@@ -2414,6 +2414,10 @@ func TestInterfaceTransitionTUIToChatRebuildsOrchestratorStandingContext(t *test
 	if !strings.Contains(chat.start.SystemPrompt, "human-facing orchestrator") {
 		t.Fatalf("Chat target did not receive orchestrator standing context: %q", chat.start.SystemPrompt)
 	}
+	if !strings.Contains(chat.start.SystemPrompt, "High priority: AO browser, preview, spawning, control, and communication use `ao`") ||
+		!strings.Contains(chat.start.SystemPrompt, "Superset, Wmux, etc.") {
+		t.Fatalf("Chat target did not receive AO operation routing context: %q", chat.start.SystemPrompt)
+	}
 }
 
 func TestInterfaceTransitionTUIToChatRejectsReservedIDWhenHistoryIsMissing(t *testing.T) {

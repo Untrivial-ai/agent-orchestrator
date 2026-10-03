@@ -37,6 +37,9 @@ func configure(ctx context.Context, cfg acpdriver.LaunchConfig) ([]string, map[s
 	if err := kimi.PrepareACPInstructions(ctx, cfg.WorkspacePath, cfg.SystemPrompt); err != nil {
 		return nil, nil, err
 	}
+	if skillsDir := kimi.SessionSkillsDir(cfg.DataDir, string(cfg.SessionID)); skillsDir != "" {
+		return []string{"--skills-dir", skillsDir, "acp"}, nil, nil
+	}
 	return []string{"acp"}, nil, nil
 }
 
