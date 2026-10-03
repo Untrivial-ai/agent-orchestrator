@@ -270,4 +270,32 @@ describe("MobileDevicesSection", () => {
 		await waitFor(() => expect(iPhone).toBeEnabled());
 		await waitFor(() => expect(m31s).toBeEnabled());
 	});
+
+	it("surfaces a failed mute even while another row's toggle is still in flight", async () => {
+		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
+		const pending: Array<{ resolve: (value: unknown) => void; reject: (err: unknown) => void }> = [];
+		vi.spyOn(apiClient, "PATCH").mockImplementation(
+			() => new Promise((resolve, reject) => void pending.push({ resolve, reject })),
+		);
+		renderSection();
+
+		const iPhone = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		const m31s = await screen.findByRole("switch", { name: /notifications for M31s/i });
+
+		fireEvent.click(iPhone);
+		await waitFor(() => expect(iPhone).toHaveAttribute("data-state", "unchecked"));
+		fireEvent.click(m31s);
+		await waitFor(() => expect(m31s).toBeDisabled());
+
+		// The first PATCH fails while the second is still pending.
+		pending[0].reject(new Error("Device not found"));
+		expect(await screen.findByText(/Device not found/i)).toBeInTheDocument();
+		await waitFor(() => expect(iPhone).toHaveAttribute("data-state", "checked"));
+		await waitFor(() => expect(iPhone).toBeEnabled());
+
+		// The other row settling successfully doesn't clear the first row's error.
+		pending[1].resolve({ data: { muted: false } });
+		await waitFor(() => expect(m31s).toBeEnabled());
+		expect(screen.getByText(/Device not found/i)).toBeInTheDocument();
+	});
 });

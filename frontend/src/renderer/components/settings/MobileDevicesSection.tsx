@@ -56,6 +56,10 @@ export function MobileDevicesSection() {
 	// while its first request is still out — out-of-order completions would
 	// otherwise leave the switch disagreeing with the server.
 	const [mutingIds, setMutingIds] = useState<ReadonlySet<string>>(new Set());
+	// Mute failures by installId, for the same reason: the mutation's own
+	// `error` only reflects the latest call, so a row whose PATCH fails while
+	// another row's toggle is in flight would roll back with no explanation.
+	const [muteErrors, setMuteErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
 	const query = useQuery({
 		queryKey: mobileDevicesQueryKey,
@@ -85,9 +89,19 @@ export function MobileDevicesSection() {
 				);
 			}
 			setMutingIds((ids) => new Set(ids).add(installId));
+			setMuteErrors((errors) => {
+				if (!errors.has(installId)) return errors;
+				const next = new Map(errors);
+				next.delete(installId);
+				return next;
+			});
 			return { installId, prevMuted };
 		},
-		onError: (_err, _vars, context) => {
+		onError: (err, { installId: failedId }, context) => {
+			// onMutate cleared this row's entry, so the newest failure is last.
+			setMuteErrors((errors) =>
+				new Map(errors).set(failedId, err instanceof Error ? err.message : String(err)),
+			);
 			// Restore only this device's preference onto the current list: a
 			// 3s poll may have landed fresher data for other rows between the
 			// optimistic flip and the failure, and wholesale restoring the
@@ -144,8 +158,12 @@ export function MobileDevicesSection() {
 	// No paired devices (or still loading with nothing cached) → no section at
 	// all. Errors and an unreadable registry still render so they stay visible.
 	if (!registryUnavailable && !queryError && devices.length === 0) return null;
+	// Newest mute failure for a device still on the roster.
+	const muteError = [...muteErrors]
+		.reverse()
+		.find(([installId]) => devices.some((d) => d.installId === installId))?.[1];
 	const mutationError =
-		(mute.error instanceof Error && mute.error.message) ||
+		muteError ||
 		(remove.error instanceof Error && remove.error.message) ||
 		null;
 
