@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +44,7 @@ var (
 
 // RateLimitError is an alias for httpkit.RateLimitError so existing callers
 // that use errors.As with *RateLimitError continue to work. The sentinel
-// field is set to ErrRateLimited by the adapter's classifyError.
+// field is set to ErrRateLimited by the adapter's classifyHTTPError.
 type RateLimitError = httpkit.RateLimitError
 
 // Options configures a Tracker. All fields except Token are optional —
@@ -79,7 +78,8 @@ type hostEntry struct {
 	tokens  scmgitlab.TokenSource
 }
 
-// Tracker implements ports.Tracker against the GitLab REST API v4.
+// Tracker implements ports.Tracker against the GitLab API. List and Get use
+// GraphQL Work Items; Preflight uses REST.
 //
 // Construction performs a fail-fast token presence check (no network call).
 // The first Preflight call validates the token against GitLab itself; a
@@ -184,25 +184,82 @@ func (t *Tracker) ConfigForHost(host string) error {
 var _ ports.Tracker = (*Tracker)(nil)
 
 // ---------------------------------------------------------------------------
+// GraphQL types
+// ---------------------------------------------------------------------------
+
+// gqlRequest is the envelope for a GitLab GraphQL POST body.
+type gqlRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables"`
+}
+
+// gqlResponse is the envelope for a GitLab GraphQL response. The Data
+// field is a generic json.RawMessage so callers can decode into the
+// specific shape they expect.
+type gqlResponse struct {
+	Data   json.RawMessage `json:"data"`
+	Errors []gqlError      `json:"errors"`
+}
+
+type gqlError struct {
+	Message    string `json:"message"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+// gqlWorkItem is the subset of fields we read off a GraphQL Work Item node.
+// Work item details (assignees, labels) are exposed as typed widgets in the
+// GraphQL response. The ID field (global GraphQL ID) is fetched for future
+// use but not currently surfaced to the domain.
+type gqlWorkItem struct {
+	ID          string `json:"id"` // global GraphQL ID; not yet surfaced to domain
+	IID         string `json:"iid"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	State       string `json:"state"`
+	WebURL      string `json:"webUrl"`
+	Widgets     []struct {
+		Type string `json:"type"`
+		// Assignees widget
+		Assignees struct {
+			Nodes []struct {
+				Username string `json:"username"`
+			} `json:"nodes"`
+		} `json:"assignees"`
+		// Labels widget
+		Labels struct {
+			Nodes []struct {
+				Title string `json:"title"`
+			} `json:"nodes"`
+		} `json:"labels"`
+	} `json:"widgets"`
+}
+
+// gqlWorkItemsData is the decoded shape of the project.workItems query.
+type gqlWorkItemsData struct {
+	Project *struct {
+		WorkItems struct {
+			PageInfo struct {
+				EndCursor   string `json:"endCursor"`
+				HasNextPage bool   `json:"hasNextPage"`
+			} `json:"pageInfo"`
+			Nodes []gqlWorkItem `json:"nodes"`
+		} `json:"workItems"`
+	} `json:"project"`
+}
+
+// gqlWorkItemData is the decoded shape for a single work item query.
+type gqlWorkItemData struct {
+	WorkItem *gqlWorkItem `json:"workItem"`
+}
+
+// ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
 
-// glIssue is the subset of fields we read off the GitLab issue payload.
-type glIssue struct {
-	IID         int      `json:"iid"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	State       string   `json:"state"`
-	WebURL      string   `json:"web_url"`
-	Labels      []string `json:"labels"`
-	Assignees   []glUser `json:"assignees"`
-}
-
-type glUser struct {
-	Username string `json:"username"`
-}
-
-// Get fetches a single issue by id and maps it onto the normalized domain.Issue.
+// Get fetches a single work item by id via GraphQL and maps it onto the
+// normalized domain.Issue.
 func (t *Tracker) Get(ctx context.Context, id domain.TrackerID) (domain.Issue, error) {
 	projectPath, iid, err := t.parseID(id)
 	if err != nil {
@@ -212,41 +269,82 @@ func (t *Tracker) Get(ctx context.Context, id domain.TrackerID) (domain.Issue, e
 	if err != nil {
 		return domain.Issue{}, err
 	}
-	path := fmt.Sprintf("/projects/%s/issues/%d", url.PathEscape(projectPath), iid)
 
-	resp, err := t.do(ctx, he, http.MethodGet, path, nil)
+	query := `query($fullPath: ID!, $iid: ID!) {
+  workItem(fullPath: $fullPath, iid: $iid) {
+    iid
+    title
+    description
+    state
+    webUrl
+    widgets {
+      type
+      ... on WorkItemWidgetAssignees { assignees { nodes { username } } }
+      ... on WorkItemWidgetLabels { labels { nodes { title } } }
+    }
+  }
+}`
+	vars := map[string]any{
+		"fullPath": projectPath,
+		"iid":      strconv.Itoa(iid),
+	}
+
+	resp, err := t.graphql(ctx, he, query, vars)
 	if err != nil {
 		return domain.Issue{}, err
 	}
-	var raw glIssue
-	if err := json.Unmarshal(resp, &raw); err != nil {
-		return domain.Issue{}, fmt.Errorf("gitlab tracker: decode issue: %w", err)
+
+	var data gqlWorkItemData
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return domain.Issue{}, fmt.Errorf("gitlab tracker: decode work item: %w", err)
 	}
-	issue := issueFromGitLab(projectPath, raw)
+	if data.WorkItem == nil {
+		return domain.Issue{}, fmt.Errorf("%w: work item %s#%d not found", ErrNotFound, projectPath, iid)
+	}
+
+	issue := issueFromGraphQL(projectPath, *data.WorkItem)
 	issue.ID.Host = id.Host // preserve host for round-trip
 	return issue, nil
 }
 
-// issueFromGitLab projects a raw GitLab issue payload into the normalized
-// domain.Issue. projectPath is passed in because the TrackerID.Native
-// shape is "path/to/project#iid" and we want the returned ID to round-trip
-// through the same adapter. The caller sets Host on the returned Issue after
-// this function returns.
-func issueFromGitLab(projectPath string, raw glIssue) domain.Issue {
-	assignees := make([]string, 0, len(raw.Assignees))
-	for _, a := range raw.Assignees {
-		assignees = append(assignees, a.Username)
+// issueFromGraphQL projects a GraphQL Work Item node into the normalized
+// domain.Issue. projectPath is passed in because the TrackerID.Native shape
+// is "path/to/project#iid" and we want the returned ID to round-trip through
+// the same adapter. The caller sets Host on the returned Issue after this
+// function returns.
+func issueFromGraphQL(projectPath string, wi gqlWorkItem) domain.Issue {
+	var assignees []string
+	var labels []string
+	for _, w := range wi.Widgets {
+		switch w.Type {
+		case "ASSIGNEES":
+			for _, n := range w.Assignees.Nodes {
+				assignees = append(assignees, n.Username)
+			}
+		case "LABELS":
+			for _, n := range w.Labels.Nodes {
+				labels = append(labels, n.Title)
+			}
+		}
+	}
+	// IID is typed as ID! in the GraphQL schema but is always numeric in
+	// practice. If parsing fails, fall back to the raw string so the ID
+	// is still useful for debugging rather than silently becoming #0.
+	iid, err := strconv.Atoi(wi.IID)
+	nativeIID := wi.IID
+	if err == nil {
+		nativeIID = strconv.Itoa(iid)
 	}
 	out := domain.Issue{
 		ID: domain.TrackerID{
 			Provider: domain.TrackerProviderGitLab,
-			Native:   fmt.Sprintf("%s#%d", projectPath, raw.IID),
+			Native:   fmt.Sprintf("%s#%s", projectPath, nativeIID),
 		},
-		Title:     raw.Title,
-		Body:      raw.Description,
-		State:     mapStateFromGitLab(raw.State),
-		URL:       raw.WebURL,
-		Labels:    raw.Labels,
+		Title:     wi.Title,
+		Body:      wi.Description,
+		State:     mapStateFromGitLab(wi.State),
+		URL:       wi.WebURL,
+		Labels:    labels,
 		Assignees: assignees,
 	}
 	if len(out.Labels) == 0 {
@@ -271,9 +369,9 @@ func mapStateFromGitLab(state string) domain.NormalizedIssueState {
 // List
 // ---------------------------------------------------------------------------
 
-// List returns issues for a project, filtered by state/labels/assignee.
-// Pagination is followed via GitLab's Link-header (rel="next") until no next
-// link remains; ListFilter.Limit, when set, caps the total accumulated
+// List returns work items for a project, filtered by state/labels/assignee.
+// Pagination is cursor-based (first/after with pageInfo.endCursor/
+// hasNextPage); ListFilter.Limit, when set, caps the total accumulated
 // issue count.
 func (t *Tracker) List(ctx context.Context, repo domain.TrackerRepo, filter domain.ListFilter) ([]domain.Issue, error) {
 	if repo.Provider != domain.TrackerProviderGitLab {
@@ -288,52 +386,86 @@ func (t *Tracker) List(ctx context.Context, repo domain.TrackerRepo, filter doma
 		return nil, err
 	}
 
-	q := url.Values{}
+	var stateFilter string
 	switch filter.State {
 	case domain.ListOpen:
-		q.Set("state", "opened")
+		stateFilter = "opened"
 	case domain.ListClosed:
-		q.Set("state", "closed")
+		stateFilter = "closed"
 	default:
-		q.Set("state", "all")
+		stateFilter = "all"
 	}
-	if len(filter.Labels) > 0 {
-		q.Set("labels", strings.Join(filter.Labels, ","))
+
+	query := `query($fullPath: ID!, $state: WorkItemState, $assigneeUsernames: [String!], $labelName: [String!], $first: Int, $after: String) {
+  project(fullPath: $fullPath) {
+    workItems(state: $state, assigneeUsernames: $assigneeUsernames, labelName: $labelName, first: $first, after: $after) {
+      pageInfo { endCursor hasNextPage }
+      nodes {
+        iid
+        title
+        description
+        state
+        webUrl
+        widgets {
+          type
+          ... on WorkItemWidgetAssignees { assignees { nodes { username } } }
+          ... on WorkItemWidgetLabels { labels { nodes { title } } }
+        }
+      }
+    }
+  }
+}`
+
+	vars := map[string]any{
+		"fullPath": projectPath,
+		"first":    listPageSize,
+	}
+	if stateFilter != "all" {
+		vars["state"] = stateFilter
 	}
 	if filter.Assignee != "" {
-		q.Set("assignee_username", filter.Assignee)
+		vars["assigneeUsernames"] = []string{filter.Assignee}
 	}
-	q.Set("per_page", strconv.Itoa(listPageSize))
+	if len(filter.Labels) > 0 {
+		vars["labelName"] = filter.Labels
+	}
 
-	path := fmt.Sprintf("/projects/%s/issues?%s", url.PathEscape(projectPath), q.Encode())
 	out := make([]domain.Issue, 0)
 	if filter.Limit > 0 {
 		out = make([]domain.Issue, 0, filter.Limit)
 	}
-	for page := 0; path != ""; page++ {
+
+	for page := 0; ; page++ {
 		if page >= maxListPages {
 			return nil, fmt.Errorf("gitlab tracker: list pagination exceeded %d pages", maxListPages)
 		}
-		respBody, nextPath, err := t.roundTrip(ctx, he, http.MethodGet, path, nil)
+
+		resp, err := t.graphql(ctx, he, query, vars)
 		if err != nil {
 			return nil, err
 		}
-		var raw []glIssue
-		if err := json.Unmarshal(respBody, &raw); err != nil {
+
+		var data gqlWorkItemsData
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
 			return nil, fmt.Errorf("gitlab tracker: decode list: %w", err)
 		}
-		pageIssues := make([]domain.Issue, 0, len(raw))
-		for _, r := range raw {
-			issue := issueFromGitLab(projectPath, r)
+		if data.Project == nil {
+			return nil, fmt.Errorf("%w: project %q not found", ErrNotFound, projectPath)
+		}
+
+		nodes := data.Project.WorkItems.Nodes
+		pageIssues := make([]domain.Issue, 0, len(nodes))
+		for _, n := range nodes {
+			issue := issueFromGraphQL(projectPath, n)
 			issue.ID.Host = repo.Host // preserve host for round-trip
 			pageIssues = append(pageIssues, issue)
 		}
 		var done bool
 		out, done = httpkit.AppendIssuesWithLimit(out, pageIssues, filter.Limit)
-		if done {
+		if done || !data.Project.WorkItems.PageInfo.HasNextPage {
 			break
 		}
-		path = nextPath
+		vars["after"] = data.Project.WorkItems.PageInfo.EndCursor
 	}
 	return out, nil
 }
@@ -363,23 +495,19 @@ func (t *Tracker) Preflight(ctx context.Context) error {
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
+// do performs a REST request (used by Preflight). Returns the raw response body.
 func (t *Tracker) do(ctx context.Context, he hostEntry, method, path string, body any) ([]byte, error) {
-	respBody, _, err := t.roundTrip(ctx, he, method, path, body)
-	return respBody, err
-}
-
-func (t *Tracker) roundTrip(ctx context.Context, he hostEntry, method, path string, body any) ([]byte, string, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, "", fmt.Errorf("gitlab tracker: encode body: %w", err)
+			return nil, fmt.Errorf("gitlab tracker: encode body: %w", err)
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, he.baseURL+path, rdr)
 	if err != nil {
-		return nil, "", fmt.Errorf("gitlab tracker: build request: %w", err)
+		return nil, fmt.Errorf("gitlab tracker: build request: %w", err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -388,27 +516,81 @@ func (t *Tracker) roundTrip(ctx context.Context, he hostEntry, method, path stri
 	req.Header.Set("User-Agent", t.userAgent)
 	tok, err := he.tokens.Token(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 
 	resp, err := t.http.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("gitlab tracker: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("gitlab tracker: %s %s: %w", method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	nextPath := httpkit.ParseLinkNext(resp.Header.Get("Link"), he.baseURL)
 	respBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, "", fmt.Errorf("gitlab tracker: read response body: %w", readErr)
+		return nil, fmt.Errorf("gitlab tracker: read response body: %w", readErr)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return respBody, nextPath, nil
+		return respBody, nil
 	}
-	return respBody, nextPath, classifyError(resp, respBody)
+	return respBody, classifyHTTPError(resp, respBody)
 }
 
-func classifyError(resp *http.Response, body []byte) error {
+// graphql sends a GraphQL POST to /api/v4/graphql and returns the decoded
+// response envelope. GraphQL returns HTTP 200 even on query-level errors;
+// those are classified by inspecting the errors array.
+func (t *Tracker) graphql(ctx context.Context, he hostEntry, query string, variables map[string]any) (*gqlResponse, error) {
+	reqBody, err := json.Marshal(gqlRequest{Query: query, Variables: variables})
+	if err != nil {
+		return nil, fmt.Errorf("gitlab tracker: encode graphql body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, he.baseURL+"/graphql", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab tracker: build graphql request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", t.userAgent)
+	tok, err := he.tokens.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+
+	resp, err := t.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab tracker: graphql request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("gitlab tracker: read graphql response: %w", readErr)
+	}
+
+	// HTTP-level errors (non-200) are classified by status code.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, classifyHTTPError(resp, respBody)
+	}
+
+	var gqlResp gqlResponse
+	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
+		return nil, fmt.Errorf("gitlab tracker: decode graphql response: %w", err)
+	}
+
+	// GraphQL query-level errors: inspect extensions.code for classification.
+	if len(gqlResp.Errors) > 0 {
+		code := gqlResp.Errors[0].Extensions.Code
+		msg := gqlResp.Errors[0].Message
+		if strings.EqualFold(code, "NOT_FOUND") {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, msg)
+		}
+		return nil, fmt.Errorf("gitlab tracker: graphql error: %s", msg)
+	}
+
+	return &gqlResp, nil
+}
+
+// classifyHTTPError maps an HTTP error response to a sentinel error.
+func classifyHTTPError(resp *http.Response, body []byte) error {
 	msg := httpkit.Message(body)
 	switch resp.StatusCode {
 	case http.StatusNotFound:
