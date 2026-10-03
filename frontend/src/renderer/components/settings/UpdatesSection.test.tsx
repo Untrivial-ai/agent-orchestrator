@@ -88,3 +88,38 @@ it("renders the installed nightly build time as the device-local instant", async
 	);
 	expect(await screen.findByText(`Built ${builtAt}`)).toBeVisible();
 });
+
+// The main process rewrites most dumps, but it pushes statuses over IPC without
+// going through the check/install rejections, so anything it misses must be
+// caught where it renders (issue #5755).
+const RAW_DUMP =
+	"Cannot parse releases feed: Unable to find latest version on GitHub:\n" +
+	'HttpError: 504 "method: GET"\n<html><body><h1>504 Gateway Time-out</h1></body></html>\n' +
+	'Headers: {"content-type":"text/html"}';
+
+it("hides a raw dump arriving as the pushed status message", async () => {
+	updGetStatus.mockResolvedValue({ state: "error", message: RAW_DUMP } satisfies UpdateStatus);
+	renderUpdates();
+
+	expect(await screen.findByText("Update failed.")).toBeVisible();
+	expect(screen.queryByText(/Gateway Time-out/)).not.toBeInTheDocument();
+});
+
+it("hides a raw dump arriving as status.checkError", async () => {
+	updGetStatus.mockResolvedValue({
+		state: "downloaded",
+		version: "2.1.0",
+		checkError: RAW_DUMP,
+	} satisfies UpdateStatus);
+	renderUpdates();
+
+	expect(await screen.findByText("Update failed.")).toBeVisible();
+	expect(screen.queryByText(/Gateway Time-out/)).not.toBeInTheDocument();
+});
+
+it("leaves a short real updater message untouched", async () => {
+	updGetStatus.mockResolvedValue({ state: "error", message: "Couldn't check for updates. Try again." } satisfies UpdateStatus);
+	renderUpdates();
+
+	expect(await screen.findByText("Couldn't check for updates. Try again.")).toBeVisible();
+});

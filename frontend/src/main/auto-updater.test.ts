@@ -1822,7 +1822,9 @@ describe("startAutoUpdates", () => {
     const checkedAt = module.getUpdateStatus().checkedAt;
     updaterEvents.get("error")?.(err);
     expect(module.getUpdateStatus().checkedAt).toBe(checkedAt);
-    expect(module.getUpdateStatus().checkError).toBe(err.message);
+    expect(module.getUpdateStatus().checkError).toBe(
+      "Couldn't check for updates — the update information was not found on the server.",
+    );
 
     expect(module.getUpdateStatus()).toEqual(
       expect.objectContaining({
@@ -1885,7 +1887,7 @@ describe("startAutoUpdates", () => {
     ]);
   });
 
-  it("still surfaces non-manifest 404 errors", async () => {
+  it("rewrites non-manifest HttpError dumps to a short server-error line", async () => {
     const { module, updaterEvents } = await importAutoUpdater();
     const err = new Error(
       'HttpError: 404 "method: GET url: https://github.com/AgentWrapper/agent-orchestrator/releases/download/v0.10.1/some-file.png"',
@@ -1896,8 +1898,79 @@ describe("startAutoUpdates", () => {
 
     expect(module.getUpdateStatus()).toEqual({
       state: "error",
-      message: err.message,
+      message:
+        "Couldn't check for updates — the update server returned an error. Try again later.",
       checkedAt: expect.any(Number),
+    });
+  });
+
+  it("rewrites GitHub releases-feed 504 dumps to a short unavailable line", async () => {
+    const { module, updaterEvents } = await importAutoUpdater();
+    const err = new Error(
+      [
+        "Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/Untrivial-ai/agent-orchestrator/releases/latest), please ensure a production release exists:",
+        'HttpError: 504 "method: GET url: https://github.com/Untrivial-ai/agent-orchestrator/releases/latest',
+        "Data:",
+        "<html><body><h1>504 Gateway Time-out</h1>",
+        "The server didn't respond in time.",
+        "</body></html>",
+        'Headers: {"cache-control":"no-cache","content-type":"text/html","set-cookie":["_octo=GH1.1;"]}',
+        "    at e.GitHubProvider.getLatestTagName (C:\\Users\\Lenovo\\AppData\\Local\\Programs\\agent-orchestrator\\resources\\app.asar\\.vite\\build\\main.js:1:1)",
+        "    at e.NsisUpdater.doCheckForUpdates (C:\\Users\\Lenovo\\AppData\\Local\\Programs\\agent-orchestrator\\resources\\app.asar\\.vite\\build\\main.js:1:1)",
+      ].join("\n"),
+    );
+
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("error")?.(err);
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message:
+        "Couldn't check for updates — the update server is temporarily unavailable. Try again in a few minutes.",
+      checkedAt: expect.any(Number),
+    });
+  });
+
+  it("uses download copy for a download-phase dump, not the check copy", async () => {
+    // The rejected operation has already left the queue by the time this catch
+    // runs, so activeUpdaterPhase has been cleared and a queued write can reset
+    // it. Reading module state here used to attribute the failure to a check and
+    // show "Couldn't check for updates…".
+    const { module, autoUpdater } = await importAutoUpdater();
+    autoUpdater.downloadUpdate.mockRejectedValueOnce(
+      new Error(
+        [
+          "Cannot parse releases feed: Error: Unable to find latest version on GitHub:",
+          'HttpError: 504 "method: GET url: https://github.com/Untrivial-ai/agent-orchestrator/releases/latest',
+          "<html><body><h1>504 Gateway Time-out</h1></body></html>",
+          'Headers: {"content-type":"text/html"}',
+        ].join("\n"),
+      ),
+    );
+
+    await module.downloadUpdateNow("download-failed");
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message:
+        "Download failed — the update server is temporarily unavailable. Try again in a few minutes.",
+      requestId: "download-failed",
+    });
+  });
+
+  it("shows a return-specific fallback for a non-Error return-home rejection", async () => {
+    // The old `(err as Error)?.message ?? "Return failed"` handled a non-Error
+    // rejection; a non-Error carries no usable text, so it still must, rather
+    // than leaking the stringified value.
+    const { module, autoUpdater } = await importAutoUpdater();
+    autoUpdater.checkForUpdates.mockRejectedValueOnce("feed exploded");
+
+    await module.returnToHome(stateDir, "return-failed");
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message: "Return failed",
+      requestId: "return-failed",
     });
   });
 
@@ -4056,6 +4129,30 @@ describe("staged install rejection", () => {
       state: "error",
       message: expect.stringContaining("prepare it again"),
     });
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("still classifies a rejection whose Squirrel text runs past the dump cap", async () => {
+    // The classifier must read err.message directly: display rewriting turns any
+    // message over the 280-char cap into the generic line, which would erase the
+    // "did not pass validation" wording and silently disable the #4254 recovery.
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { module, updaterEvents } = await importAutoUpdater();
+    const longRejection = new Error(
+      "Code signature at URL file:///Users/someone/Library/Caches/dev.agent-orchestrator.desktop.ShipIt/" +
+        `update.${'A'.repeat(120)}/Agent%20Orchestrator.app/ did not pass validation: ` +
+        `${'code object is not signed at all; '.repeat(12)}`,
+    );
+    expect(longRejection.message.length).toBeGreaterThan(280);
+
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    updaterEvents.get("error")?.(longRejection);
+
+    expect(module.getUpdateStatus().staged).toBeUndefined();
+    expect(module.getUpdateStatus().message).toContain("prepare it again");
     consoleErrorSpy.mockRestore();
   });
 

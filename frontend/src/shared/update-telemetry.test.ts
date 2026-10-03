@@ -1,5 +1,10 @@
 import { expect, test } from "vitest";
-import { isNetErrorMessage, updateFailureCategory, updateFailureOutcome } from "./update-telemetry";
+import {
+	looksLikeTechnicalUpdateDump,
+	isNetErrorMessage,
+	updateFailureCategory,
+	updateFailureOutcome,
+} from "./update-telemetry";
 
 test("detects Chromium network-stack errors", () => {
 	expect(isNetErrorMessage("net::ERR_FAILED")).toBe(true);
@@ -38,6 +43,24 @@ test("never forwards the raw updater message", () => {
 		to_version: "0.11.3",
 	});
 	expect(JSON.stringify(outcome)).not.toContain("someone");
+});
+
+// The shared classifier is the main process's rewrite precondition and the
+// renderer's last-resort guard, so it must recognise every dump shape the
+// GitHub feed has actually produced (issue #5755) and nothing shorter.
+test("recognises raw updater dumps by shape, not by known phrases", () => {
+	expect(looksLikeTechnicalUpdateDump("Couldn't check for updates. Try again.")).toBe(false);
+	expect(looksLikeTechnicalUpdateDump("net::ERR_CONNECTION_RESET")).toBe(false);
+	expect(looksLikeTechnicalUpdateDump("Download failed. Try again.")).toBe(false);
+
+	expect(looksLikeTechnicalUpdateDump('HttpError: 503 "method: GET"')).toBe(true);
+	expect(looksLikeTechnicalUpdateDump("<html><body>Gateway Time-out</body></html>")).toBe(true);
+	expect(looksLikeTechnicalUpdateDump('Headers: {"content-type":"text/html"}')).toBe(true);
+	expect(looksLikeTechnicalUpdateDump("at GitHubProvider.getLatestTagName (app.asar:1:1)")).toBe(true);
+
+	// Length alone is enough: our own lines are all short, a body dump is not.
+	expect(looksLikeTechnicalUpdateDump("x".repeat(281))).toBe(true);
+	expect(looksLikeTechnicalUpdateDump("x".repeat(280))).toBe(false);
 });
 
 // phase and trigger come from the main process, which is the only place that

@@ -9,6 +9,7 @@ import { useUiStore } from "../../stores/ui-store";
 import { useRequestUpdateInstall } from "../../hooks/useRequestUpdateInstall";
 import { useUpdateStatus, requestUpdateDownload } from "../../hooks/useUpdateStatus";
 import type { UpdateChannel, UpdateSettings, UpdateState, UpdateStatus } from "../../../main/update-settings";
+import { looksLikeTechnicalUpdateDump } from "../../../shared/update-telemetry";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -71,7 +72,13 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	};
 
 	const finishManualCheck = (requestId: string, error?: unknown) => {
-		if (error) setManualCheckFailure(error instanceof Error ? error.message : t("settings.updates.updateFailed"));
+		if (error) {
+			// A non-Error rejection carries no usable text, and the render-side
+			// guard below cannot recover the generic once it has been stringified
+			// (e.g. "[object Object]"), so fall back here. Error messages are
+			// guarded where they render, alongside status.message / checkError.
+			setManualCheckFailure(error instanceof Error ? error.message : t("settings.updates.updateFailed"));
+		}
 		clearManualCheckWatchdog();
 		if (manualCheckFinishTimerRef.current !== null) clearTimeout(manualCheckFinishTimerRef.current);
 		const elapsed = manualCheckStartedAtRef.current === null ? MIN_MANUAL_CHECK_VISIBLE_MS : Date.now() - manualCheckStartedAtRef.current;
@@ -252,11 +259,30 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 	// Show the escape hatch whenever a feature build is running or pinned.
 	const featurePr = activeBuild?.pr ?? (developerMode ? null : (form.feature?.pr ?? null));
 
+	// Last-resort guard over everything Settings renders as updater error text,
+	// not just IPC rejections: the main process rewrites most dumps, but a raw
+	// one that slips through status.message or status.checkError must never reach
+	// the UI. Guarding here (rather than in finishManualCheck) also covers the
+	// pushed statuses, which updates:check never rejects with.
+	const guardUpdateText = (text: string | undefined): string | undefined =>
+		text !== undefined && looksLikeTechnicalUpdateDump(text) ? t("settings.updates.updateFailed") : text;
+	const effectiveStatus: UpdateStatus = manualCheckFailure
+		? { ...status, state: "error", message: manualCheckFailure }
+		: status;
+	// Sanitize before the render so status.message and status.checkError compare
+	// by what is actually shown: comparing the raw values would let two different
+	// dumps both rewrite to the same generic line and render twice.
+	const displayStatus: UpdateStatus = {
+		...effectiveStatus,
+		message: guardUpdateText(effectiveStatus.message),
+		checkError: guardUpdateText(effectiveStatus.checkError),
+	};
+
 	return (
 		<>
 			<SettingsSection title={t("settings.updates")} sectionId="updates" titleHidden={titleHidden} grouped>
 				<UpdateActions
-					status={manualCheckFailure ? { ...status, state: "error", message: manualCheckFailure } : status}
+					status={displayStatus}
 					manualCheckRequestId={manualCheckRequestId}
 					startManualCheck={startManualCheck}
 					finishManualCheck={finishManualCheck}

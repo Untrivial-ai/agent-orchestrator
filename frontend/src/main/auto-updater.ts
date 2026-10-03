@@ -29,6 +29,7 @@ import { evaluateEscalation } from "./escalation-evaluator";
 import {
   boundPlainReleaseNotes,
   isNetErrorMessage,
+  looksLikeTechnicalUpdateDump,
   normalizeReleaseNotes,
   updateFailureOutcome,
   updateFailureCategory,
@@ -1432,7 +1433,9 @@ function recordAutomaticNetFailure(): void {
 // server and so breaks the streak — otherwise a single interleaving non-net
 // error would let a stale streak still trip the nudge (#3526).
 function recordAutomaticCheckFailure(err: unknown): void {
-  lastCheckError = errorMessage(err);
+  // Automatic failures only ever reach here from the check phase; a download
+  // failure is recorded on its own path above.
+  lastCheckError = errorMessage(err, "check");
   if (isNetError(err)) recordAutomaticNetFailure();
   else consecutiveAutomaticNetFailures = 0;
   // Guarded like the net streak: one check can surface as both an "error" event
@@ -1487,16 +1490,116 @@ function clearUnrecoverableRememberedBuild(): void {
   stopEscalationTimer();
 }
 
-// errorMessage extracts the user-facing message for an update error status,
-// defaulting null/undefined to a generic label. Net-error restart guidance is
-// localized in the renderer from the netError flag instead of being built here
-// (#3526).
-function errorMessage(err: unknown): string {
-  return err instanceof Error
-    ? err.message
-    : err == null
-      ? "Update check failed"
-      : String(err);
+const UPDATE_CHECK_SERVER_UNAVAILABLE =
+  "Couldn't check for updates — the update server is temporarily unavailable. Try again in a few minutes.";
+const UPDATE_DOWNLOAD_SERVER_UNAVAILABLE =
+  "Download failed — the update server is temporarily unavailable. Try again in a few minutes.";
+const UPDATE_CHECK_SERVER_ERROR =
+  "Couldn't check for updates — the update server returned an error. Try again later.";
+const UPDATE_DOWNLOAD_SERVER_ERROR =
+  "Download failed — the update server returned an error. Try again later.";
+const UPDATE_CHECK_FAILED_GENERIC = "Couldn't check for updates. Try again.";
+const UPDATE_DOWNLOAD_FAILED_GENERIC = "Download failed. Try again.";
+const UPDATE_INSTALL_FAILED_GENERIC = "Update failed. Try again.";
+
+// The operation context an updater error's user-facing copy is chosen from.
+// "install" is distinct from check/download because a failed native install is
+// neither: feed- or server-specific copy would be a lie there.
+type UpdateErrorPhase = UpdatePhase | "install";
+
+/** Whether the failing operation was a download, from live module state. */
+function updateErrorIsForDownload(): boolean {
+  return activeUpdaterPhase === "download" || activeUpdaterOperation === "manual-download";
+}
+
+/**
+ * The current phase, for the updater "error" handler only.
+ *
+ * That handler runs synchronously while its operation is still on the stack, so
+ * module state is authoritative. Every other caller must pass the phase it
+ * captured: runSerializedUpdaterOperation's finally clears activeUpdaterOperation
+ * before an outer catch runs, and an operation queued behind the failure can
+ * reset activeUpdaterPhase first.
+ */
+function liveUpdatePhase(): UpdatePhase {
+  return updateErrorIsForDownload() ? "download" : "check";
+}
+
+/**
+ * Raw message text of an updater error, with no rewriting. Only Error instances
+ * carry one: a non-Error rejection used to be stringified, which can leak
+ * "[object Object]" to the user. Those fall back to the phase-generic line.
+ */
+function updateErrorText(err: unknown): string {
+  return err instanceof Error ? err.message : "";
+}
+
+/** The generic line for a phase; used when there is no raw text to rewrite. */
+function genericUpdateFailure(phase: UpdateErrorPhase): string {
+  if (phase === "download") return UPDATE_DOWNLOAD_FAILED_GENERIC;
+  if (phase === "install") return UPDATE_INSTALL_FAILED_GENERIC;
+  return UPDATE_CHECK_FAILED_GENERIC;
+}
+
+/**
+ * Rewrites electron-updater's verbose Error.message (HTML bodies, response
+ * headers, stacks, asar paths) into a short line for UpdateStatus.message /
+ * checkError. Known GitHub feed / HTTP failures get specific copy; anything
+ * else that still looks like a dump falls back to a generic line. Short plain
+ * messages (and net:: strings, which the renderer replaces via netError) pass
+ * through unchanged.
+ */
+function userFacingUpdateError(raw: string, phase: UpdateErrorPhase): string {
+  if (
+    /HttpError:\s*5\d\d/i.test(raw) ||
+    /Gateway Time-?out/i.test(raw) ||
+    /Unable to find latest version on GitHub/i.test(raw) ||
+    /Cannot parse releases feed/i.test(raw)
+  ) {
+    if (phase === "download") return UPDATE_DOWNLOAD_SERVER_UNAVAILABLE;
+    if (phase === "check") return UPDATE_CHECK_SERVER_UNAVAILABLE;
+    return genericUpdateFailure(phase);
+  }
+  if (/HttpError:\s*\d{3}/i.test(raw)) {
+    if (phase === "download") return UPDATE_DOWNLOAD_SERVER_ERROR;
+    if (phase === "check") return UPDATE_CHECK_SERVER_ERROR;
+    return genericUpdateFailure(phase);
+  }
+  if (looksLikeTechnicalUpdateDump(raw)) {
+    return genericUpdateFailure(phase);
+  }
+  return raw;
+}
+
+// errorMessage extracts the user-facing message for an update error status.
+// Net-error restart guidance is localized in the renderer from the netError flag
+// instead of being built here (#3526). electron-updater HttpError dumps are
+// rewritten here so Settings never shows HTML bodies, headers, or stacks.
+//
+// `phase` is the operation that actually failed. Only the live "error" handler
+// may use liveUpdatePhase(); a caller catching after
+// runSerializedUpdaterOperation must pass the phase it captured, or the queue's
+// cleared / overwritten module state will attribute the failure to the wrong
+// operation. `fallback` overrides the phase-generic line when there is no raw
+// text at all.
+function errorMessage(
+  err: unknown,
+  phase: UpdateErrorPhase,
+  fallback?: string,
+): string {
+  const raw = updateErrorText(err);
+  if (raw === "") return fallback ?? genericUpdateFailure(phase);
+  return userFacingUpdateError(raw, phase);
+}
+
+// manifest404Message is the specific user-facing copy for a manifest 404.
+// errorMessage() rewrites any HttpError dump — including manifest 404s — into
+// the generic "server returned an error" line, so the staged-restore paths
+// must use this instead to keep checkError consistent with the broadcast copy.
+function manifest404Message(phase: UpdatePhase): string {
+  return phase === "download"
+    ? "Download failed — the update file was not found on the server."
+    : "Couldn't check for updates — the update information was not found on the server.";
 }
 
 // isManifest404Error checks whether the error is a 404 on a release
@@ -1586,7 +1689,10 @@ function settleWithoutFailure(): void {
 }
 
 function isStagedInstallRejection(err: unknown): boolean {
-  return STAGED_INSTALL_REJECTION_PATTERN.test(errorMessage(err));
+  // Read err.message directly, not errorMessage(): errorMessage() is
+  // display-only and rewrites long dumps, which would erase the Squirrel
+  // wording this classifier matches on and silently disable the #4254 recovery.
+  return STAGED_INSTALL_REJECTION_PATTERN.test(updateErrorText(err));
 }
 
 /**
@@ -2058,18 +2164,16 @@ function wireUpdaterEvents(): void {
         broadcast(
           withActiveRequest({
             state: "error",
-            message:
-              "Download failed — the update file was not found on the server.",
+            message: manifest404Message("download"),
           }),
         );
       } else if (stagedAtMs !== undefined) {
-        lastCheckError = errorMessage(err);
+        lastCheckError = manifest404Message(liveUpdatePhase());
         broadcastUpdaterStatus(stagedDownloadedStatus());
       } else {
         broadcastCompletedCheck({
           state: "error",
-          message:
-            "Couldn't check for updates — the update information was not found on the server.",
+          message: manifest404Message("check"),
         });
       }
       return;
@@ -2079,7 +2183,7 @@ function wireUpdaterEvents(): void {
     // localize restart guidance instead of showing the raw net:: string (#3526).
     const status: UpdateStatus = {
       state: "error",
-      message: errorMessage(err),
+      message: errorMessage(err, liveUpdatePhase()),
       ...(isNetError(err) ? { netError: true } : {}),
     };
     if (activeUpdaterPhase === "check") broadcastCompletedCheck(status);
@@ -2233,7 +2337,7 @@ async function runAutomaticUpdateCheck(
         // (#3526). Record before restoring so the restore broadcast is stamped.
         if (handleMacStagingFailure(err)) return;
         if (activeUpdaterPhase === "download") {
-          if (!downloadStalled && lastStatus.state !== "error") broadcast(withActiveRequest({ state: "error", message: errorMessage(err), version: pendingUpdateVersion }));
+          if (!downloadStalled && lastStatus.state !== "error") broadcast(withActiveRequest({ state: "error", message: errorMessage(err, "download"), version: pendingUpdateVersion }));
         } else {
           recordAutomaticCheckFailure(err);
           restoreAutomaticCheckPreviousStatus();
@@ -2444,20 +2548,17 @@ export async function checkForUpdatesNow(
       console.info(`manual update ${failed.phase} failed:`, err);
       broadcastCompletedCheck({
         state: "error",
-        message:
-          failed.phase === "download"
-            ? "Download failed — the update file was not found on the server."
-            : "Couldn't check for updates — the update information was not found on the server.",
+        message: manifest404Message(failed.phase),
         ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
       });
       if (stagedAtMs !== undefined) {
-        lastCheckError = errorMessage(err);
+        lastCheckError = manifest404Message(failed.phase);
         broadcast(stagedDownloadedStatus());
       }
     } else {
       broadcastCompletedCheck({
         state: "error",
-        message: errorMessage(err),
+        message: errorMessage(err, failed.phase),
         ...(isNetError(err) ? { netError: true } : {}),
         ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
       });
@@ -2528,9 +2629,11 @@ export async function returnToHome(
     }
     broadcast({
       state: "error",
-      message:
-        (err as Error)?.message ??
-        (failed.phase === "download" ? "Download failed" : "Return failed"),
+      message: errorMessage(
+        err,
+        failed.phase,
+        failed.phase === "download" ? "Download failed" : "Return failed",
+      ),
       ...(requestId === undefined ? {} : { requestId }),
     });
   }
@@ -2587,14 +2690,13 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
       console.error("update download failed:", err);
       broadcast({
         state: "error",
-        message:
-          "Download failed — the update file was not found on the server.",
+        message: manifest404Message("download"),
         requestId,
       });
     } else {
       broadcast({
         state: "error",
-        message: (err as Error)?.message ?? "Download failed",
+        message: errorMessage(err, "download"),
         requestId,
       });
     }
@@ -2797,8 +2899,8 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
       stagedInCurrentProcess = false;
       nativeReadyVersion = undefined;
       console.error("failed to prepare update for restart:", err);
-      await progress?.fail(errorMessage(err)).catch(() => undefined);
-      broadcast({ state: "error", message: errorMessage(err) });
+      await progress?.fail(errorMessage(err, "install")).catch(() => undefined);
+      broadcast({ state: "error", message: errorMessage(err, "install") });
       throw err;
     }
   }).then(() => confirmation).finally(() => { if (!macRestartRequested) macRestartPreparation = undefined; });

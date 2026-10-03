@@ -59,6 +59,34 @@ export function isNetErrorMessage(message: string | undefined): boolean {
 }
 
 /**
+ * Longest string that can still be one of our own short recovery lines rather
+ * than a technical dump. A typical electron-updater HttpError (body + headers +
+ * stack) is far longer; the hand-written messages the updater broadcasts are
+ * comfortably shorter.
+ */
+export const USER_FACING_UPDATE_ERROR_MAX_CHARS = 280;
+
+/**
+ * True when a string looks like an electron-updater / Electron dump (HTML body,
+ * response headers, stack frames, asar paths) rather than a short recovery line
+ * we wrote ourselves.
+ *
+ * Matching on shape rather than known phrases so a new provider wording still
+ * cannot fill Settings. Shared by the main process (which rewrites these before
+ * broadcasting) and the renderer (which keeps a last-resort guard over any
+ * status text that reaches it unrewritten).
+ */
+export function looksLikeTechnicalUpdateDump(raw: string): boolean {
+	if (raw.length > USER_FACING_UPDATE_ERROR_MAX_CHARS) return true;
+	if (/\n\s*at\s+/.test(raw)) return true;
+	if (/Headers:\s*\{/i.test(raw)) return true;
+	if (/<html[\s>]/i.test(raw)) return true;
+	if (/app\.asar/i.test(raw)) return true;
+	if (/HttpError:\s*\d{3}/i.test(raw)) return true;
+	return false;
+}
+
+/**
  * Buckets an updater error into a safe category.
  *
  * electron-updater surfaces failures as free-text, so this matches on
