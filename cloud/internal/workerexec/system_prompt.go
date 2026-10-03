@@ -2,11 +2,93 @@ package workerexec
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// The pinned Cursor ACP ignores plugins, but loads .cursor/rules from cwd and
+// its ancestors. Keep this session rule outside the checkout so Git cannot
+// include it in the agent's commits.
+func cursorACPStandingRulePath(workspace, sessionID string) (string, error) {
+	if !filepath.IsAbs(workspace) || filepath.Dir(filepath.Clean(workspace)) == filepath.Clean(workspace) {
+		return "", errors.New("Cursor ACP requires a workspace with a sandbox parent directory")
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(workspace)), ".cursor", "rules", "ao-cloud-"+sessionKey(sessionID)+".mdc"), nil
+}
+
+const cursorACPRuleMarker = "---\ndescription: AO-managed Cloud Cursor Chat instructions\nalwaysApply: true\n---\n\n"
+
+func checkCursorRuleDirectories(path string) error {
+	for _, dir := range []string{filepath.Dir(filepath.Dir(path)), filepath.Dir(path)} {
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("Cursor ACP rule path is not a directory: %s", dir)
+		}
+	}
+	return nil
+}
+
+func checkCursorStandingRule(path string) error {
+	if err := checkCursorRuleDirectories(path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("Cursor ACP standing rule is not a regular file: %s", path)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(string(contents), cursorACPRuleMarker) {
+		return fmt.Errorf("refusing to overwrite an unmanaged Cursor rule: %s", path)
+	}
+	return nil
+}
+
+func writeCursorACPStandingRule(workspace, sessionID, prompt string) error {
+	path, err := cursorACPStandingRulePath(workspace, sessionID)
+	if err != nil {
+		return err
+	}
+	if err := checkCursorStandingRule(path); err != nil {
+		return err
+	}
+	return writePrivateFile(path, []byte(cursorACPRuleMarker+strings.TrimRight(prompt, "\n")+"\n"))
+}
+
+func removeCursorACPStandingRule(workspace, sessionID string) error {
+	path, err := cursorACPStandingRulePath(workspace, sessionID)
+	if err != nil {
+		return err
+	}
+	// Existing Terminal-only workspaces have no managed Chat rule to clear.
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	}
+	if err := checkCursorStandingRule(path); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
 
 func (b HarnessBuilder) writeSystemPromptFile(sessionID, prompt string) (string, error) {
 	if strings.TrimSpace(b.DataDir) == "" {

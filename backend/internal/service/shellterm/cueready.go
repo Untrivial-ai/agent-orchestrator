@@ -162,6 +162,7 @@ func (s *Service) waitForCueShellReady(ctx context.Context, handle ports.Runtime
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-waitCtx.Done():
+			// Parent cancellation also closes waitCtx; preserve the caller's error.
 			if err := ctx.Err(); err != nil {
 				return err
 			}

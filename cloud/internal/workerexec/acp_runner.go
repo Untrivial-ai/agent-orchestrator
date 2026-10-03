@@ -113,11 +113,17 @@ func (s *Supervisor) runACP(ctx context.Context, turn worker.Turn, command Comma
 	if err != nil {
 		return fmt.Errorf("initialize ACP agent: %w: %s", err, boundedError(stderr.String()))
 	}
+	var meta map[string]any
+	if turn.Harness == "claude-code" && command.SystemPrompt != "" {
+		meta = map[string]any{"systemPrompt": map[string]any{
+			"type": "preset", "preset": "claude_code", "append": command.SystemPrompt,
+		}}
+	}
 	var sessionID acp.SessionId
 	var configOptions []acp.SessionConfigOption
 	var modes *acp.SessionModeState
 	if turn.AgentSessionID != "" {
-		loaded, loadErr := conn.LoadSession(handshakeCtx, acp.LoadSessionRequest{Cwd: command.Dir, McpServers: []acp.McpServer{}, SessionId: acp.SessionId(turn.AgentSessionID)})
+		loaded, loadErr := conn.LoadSession(handshakeCtx, acp.LoadSessionRequest{Meta: meta, Cwd: command.Dir, McpServers: []acp.McpServer{}, SessionId: acp.SessionId(turn.AgentSessionID)})
 		err = loadErr
 		if err != nil {
 			return fmt.Errorf("restore ACP session: %w", err)
@@ -125,7 +131,7 @@ func (s *Supervisor) runACP(ctx context.Context, turn worker.Turn, command Comma
 		sessionID = acp.SessionId(turn.AgentSessionID)
 		configOptions, modes = loaded.ConfigOptions, loaded.Modes
 	} else {
-		created, createErr := conn.NewSession(handshakeCtx, acp.NewSessionRequest{Cwd: command.Dir, McpServers: []acp.McpServer{}})
+		created, createErr := conn.NewSession(handshakeCtx, acp.NewSessionRequest{Meta: meta, Cwd: command.Dir, McpServers: []acp.McpServer{}})
 		if createErr != nil {
 			return fmt.Errorf("create ACP session: %w: %s", createErr, boundedError(stderr.String()))
 		}

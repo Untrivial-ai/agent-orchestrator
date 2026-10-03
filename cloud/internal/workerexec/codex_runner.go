@@ -236,6 +236,9 @@ func (s *Supervisor) runCodex(ctx context.Context, turn worker.Turn, command Com
 	threadParams := map[string]any{
 		"cwd": command.Dir, "approvalPolicy": policy, "approvalsReviewer": reviewer, "sandbox": sandbox,
 	}
+	if command.SystemPrompt != "" {
+		threadParams["developerInstructions"] = command.SystemPrompt
+	}
 	if turn.Model != "" {
 		threadParams["model"] = turn.Model
 	}

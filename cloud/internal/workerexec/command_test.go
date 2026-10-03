@@ -199,7 +199,7 @@ func TestBuildRejectsMismatchedCredential(t *testing.T) {
 
 func TestBuildHeadlessDropsUnverifiableClaudeResume(t *testing.T) {
 	dataDir := t.TempDir()
-	builder := HarnessBuilder{Binaries: map[string]string{"claude-code": "/bin/echo"}, DataDir: dataDir}
+	builder := HarnessBuilder{Binaries: map[string]string{"claude-code": "/bin/echo"}, DataDir: dataDir, Launch: worker.LaunchContext{SessionID: "session-1", Kind: "worker", Harness: "claude-code"}}
 	// The control plane can hold a stale native id after a worker is
 	// reprovisioned; without the JSONL transcript on disk, Claude must start
 	// fresh rather than --resume a conversation that does not exist.

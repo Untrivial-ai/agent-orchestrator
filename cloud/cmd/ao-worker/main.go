@@ -182,7 +182,22 @@ func run(logger *slog.Logger) error {
 		// selected harness instead of making the whole sandbox unreachable.
 		logger.Warn("coding-agent harness unavailable; continuing with workspace transport", "error", err)
 	} else {
-		b := workerexec.HarnessBuilder{DataDir: dataDir}
+		b := workerexec.HarnessBuilder{DataDir: dataDir, Launch: bootstrap.Launch, Env: map[string]string{}}
+		b.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
+		b.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
+		b.Env["AO_SESSION_ID"] = bootstrap.SessionID
+		b.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
+		b.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
+		b.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
+		b.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
+			`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
+			`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
+			"to push the current branch and open a pull request against the repository's default branch."
+		b.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
+		b.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
+			`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
+			`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
+			"to submit an AO-triggered review verdict."
 		agentCommandFactory = func(buildCtx context.Context, nativeConversationID string) (workerexec.Command, error) {
 			credential, err := client.Credential(buildCtx)
 			if err != nil {
@@ -195,22 +210,7 @@ func run(logger *slog.Logger) error {
 			if err != nil {
 				return workerexec.Command{}, fmt.Errorf("build interactive coding-agent command: %w", err)
 			}
-			command.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
-			command.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
-			command.Env["AO_SESSION_ID"] = bootstrap.SessionID
-			command.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
-			command.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
 			command.Env["AO_CHECKPOINT_SOCKET"] = checkpointSocketPath
-			command.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
-			command.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
-				`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
-				`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
-				"to push the current branch and open a pull request against the repository's default branch."
-			command.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
-			command.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
-				`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
-				`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
-				"to submit an AO-triggered review verdict."
 			return command, nil
 		}
 		chatRunner = &workerexec.Supervisor{
