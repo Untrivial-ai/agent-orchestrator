@@ -307,6 +307,12 @@ const api = {
 		},
 	},
 	window: {
+		getZoomFactor: () => ipcRenderer.invoke("window:getZoomFactor") as Promise<number>,
+		onZoomFactor: (listener: (zoomFactor: number) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, zoomFactor: number) => listener(zoomFactor);
+			ipcRenderer.on("window:zoom", wrapped);
+			return () => { ipcRenderer.off("window:zoom", wrapped); };
+		},
 		isMaximized: () => ipcRenderer.invoke("window:isMaximized") as Promise<boolean>,
 		onMaximized: (listener: (maximized: boolean) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, maximized: boolean) => listener(maximized);

@@ -1,5 +1,7 @@
 "use client";
 
+import { useSidebarChromeGeometry } from "../../hooks/useSidebarChromeGeometry";
+
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftIcon } from "lucide-react";
@@ -165,6 +167,9 @@ function Sidebar({
 	const { t } = useTranslation();
 	const prefersReducedMotion = useReducedMotion();
 	const { isMobile, state, openMobile, setOpenMobile, isReady } = useSidebar();
+	const gapRef = React.useRef<HTMLDivElement>(null);
+	const containerRef = React.useRef<HTMLDivElement>(null);
+	useSidebarChromeGeometry(!isMobile && side === "left" && collapsible !== "none", gapRef, containerRef);
 
 	if (collapsible === "none") {
 		return (
@@ -239,6 +244,7 @@ function Sidebar({
 			    smoothly with the shell instead of snapping on a separate CSS timer. */}
 			<motion.div
 				data-slot="sidebar-gap"
+				ref={gapRef}
 				initial={false}
 				animate={{ width: gapTargetWidth }}
 				transition={activeTransition}
@@ -248,6 +254,7 @@ function Sidebar({
 			    uses the same curve as the section animations. */}
 			<motion.div
 				data-slot="sidebar-container"
+				ref={containerRef}
 				initial={false}
 				animate={{ x: containerX }}
 				transition={activeTransition}

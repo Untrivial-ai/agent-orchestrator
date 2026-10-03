@@ -1775,7 +1775,7 @@ function ChatHeader({
 				<div
 					className={cn(
 						"flex min-w-0 shrink items-stretch",
-						!isSidebarOpen && isMac && "session-topbar-titlebar-clearance-mac",
+						isMac && "session-topbar-titlebar-clearance-mac",
 						!isSidebarOpen && isLinux && "session-topbar-titlebar-clearance-linux",
 					)}
 					data-testid="session-terminal-region"

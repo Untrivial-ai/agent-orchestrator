@@ -41,6 +41,8 @@ export const aoBridge: AoBridge =
 			onFontSizeShortcut: () => () => undefined,
 		},
 		window: {
+			getZoomFactor: async () => 1,
+			onZoomFactor: () => () => undefined,
 			isMaximized: async () => false,
 			onMaximized: () => () => undefined,
 			isFullScreen: async () => false,

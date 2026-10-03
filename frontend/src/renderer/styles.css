@@ -509,10 +509,25 @@
 
 /* macOS + Linux: inset on all sides except left (flush with sidebar). */
 .center-panel-shell.center-panel-shell--mac {
-	padding-top: var(--size-center-panel-inset-mac);
+	padding-top: 0;
 	padding-right: var(--size-center-panel-inset-mac);
 	padding-bottom: var(--size-center-panel-inset-mac);
 	padding-left: 0;
+}
+
+/* The native buttons, fixed navigation and route headers share one row.
+ * Insets and the extra session drag strip must not displace that row. */
+.center-panel-shell--mac > .center-panel-surface {
+	border-top-width: 0;
+}
+
+/* Keep empty header space draggable while tabs and actions remain interactive.
+ * Linux retains its separate strip; macOS uses the actual shared header. */
+html[data-ao-platform="darwin"] [data-testid="session-topbar-host"] {
+	-webkit-app-region: drag;
+}
+html[data-ao-platform="darwin"] [data-testid="session-topbar-host"] :is(button, a, input, [role="tab"], [role="menuitem"]) {
+	-webkit-app-region: no-drag;
 }
 
 .center-panel-shell.center-panel-shell--mac.center-panel-shell--fullscreen {
@@ -611,8 +626,20 @@
 /* When the sidebar is off-canvas, clear only the fixed navigation cluster.
  * Native macOS fullscreen removes the traffic lights, so the cluster moves to
  * the compact panel inset instead of retaining the windowed 79px reserve. */
+.app-shell-root {
+	--ao-titlebar-content-left: var(--size-titlebar-content-offset);
+}
+.native-fullscreen {
+	--ao-titlebar-content-left: calc(var(--space-2) + var(--size-titlebar-cluster-width) + var(--size-titlebar-content-gap));
+}
 .session-topbar-titlebar-clearance-mac {
-	padding-left: var(--size-titlebar-content-offset);
+	/* Follow the actual sidebar animation, never snap to the collapsed inset.
+	 * The width floor also keeps controls clear at small renderer zoom factors. */
+	padding-left: max(
+		0px,
+		calc(var(--ao-titlebar-content-left) - var(--ao-sidebar-layout-width, 0px)),
+		calc(var(--ao-titlebar-content-left) * var(--ao-sidebar-collapse-progress, 0))
+	);
 }
 
 /* Browser pressure keeps a 48px navigation rail in layout. Native macOS
@@ -648,12 +675,6 @@
 	.session-topbar-terminal-region {
 		transition-duration: 0ms;
 	}
-}
-
-.native-fullscreen .session-topbar-titlebar-clearance-mac {
-	padding-left: calc(
-		var(--space-2) + var(--size-titlebar-cluster-width) + var(--size-titlebar-content-gap)
-	);
 }
 
 .session-topbar-titlebar-clearance-linux {
@@ -718,7 +739,7 @@
  * Pad the title past that cluster so it sits next to the buttons. Fullscreen
  * drops the traffic-light reserve so title sits next to the left-edge buttons. */
 .center-panel-shell--titlebar-clearance .center-panel-titlebar {
-	padding-left: calc(var(--size-titlebar-content-offset) - var(--size-center-panel-inset-mac));
+	padding-left: var(--size-titlebar-content-offset);
 }
 
 /* Linux: same cluster clearance without the traffic-light reserve. Keep the

@@ -1,3 +1,4 @@
+import { useWindowZoomFactor } from "../hooks/useWindowZoomFactor";
 import { AppBrowserLinkContext } from "../components/AppLink";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { createFileRoute, Outlet, useMatchRoute, useNavigate, useParams } from "@tanstack/react-router";
@@ -135,12 +136,10 @@ const ShellCenter = memo(function ShellCenter({
 	selfFramedCenterPanel: boolean;
 }) {
 	const panelClassName = isSessionRoute ? "center-panel-shell--session" : undefined;
-	// Only frameless session chrome needs this strip. On macOS and Linux the
-	// session tabs sit flush against the top edge with no OS titlebar, so without
-	// it there is no window-drag target. Windows must stay excluded: WindowTitlebar
-	// already paints a full-width drag region above every route, and adding the
-	// strip there would duplicate that region and leave a dead 8px band below it.
-	const draggableSessionFrame = isSessionRoute && !isWindows;
+	// Linux retains an outer drag strip. macOS uses the shared header itself;
+	// an extra strip there would displace session tabs from the native controls.
+	// Windows already owns a separate WindowTitlebar.
+	const draggableSessionFrame = isSessionRoute && isLinux;
 	if (hideShellTopbar) {
 		return selfFramedCenterPanel ? (
 			<Outlet />
@@ -218,6 +217,7 @@ function ShellLayout() {
 	const openShellTerminal = useOpenShellTerminal();
 	// Single subscription for sidebar clearance + drag strip (macOS no-ops inside the hook).
 	const isFullScreen = useWindowFullScreen();
+	useWindowZoomFactor();
 	// Drag is on immediately for a normal windowed launch. After leaving fullscreen,
 	// wait for the pad/height transition so the growing strip cannot steal clicks.
 	const [trafficLightDragActive, setTrafficLightDragActive] = useState(isMac);
@@ -1232,8 +1232,10 @@ function ShellLayout() {
 					{hideShellTopbar && isMac ? (
 						<div
 							aria-hidden="true"
+							data-slot="titlebar-drag-region"
 							className={cn(
-								"fixed top-0 left-0 z-chrome w-(--ao-sidebar-w,var(--size-sidebar-default)) transition-[height] duration-200 ease-out motion-reduce:transition-none",
+								"fixed top-0 left-0 z-chrome transition-[height] duration-200 ease-out motion-reduce:transition-none",
+								sidebarHasLayout ? "w-(--ao-sidebar-w,var(--size-sidebar-default))" : "w-titlebar-content-offset",
 								isFullScreen ? "pointer-events-none h-0" : "h-traffic-light-clearance",
 							)}
 							ref={sidebarDragStripRef}
@@ -1251,7 +1253,6 @@ function ShellLayout() {
               Rendered first, real clicks get swallowed by window-drag even
               though DOM hit-testing looks correct. */}
 					<TitlebarNav
-						hasSessionTopbar={Boolean(routeParams.sessionId)}
 						historyLocked={isHomeRoute}
 						isFullScreen={isFullScreen}
 					/>

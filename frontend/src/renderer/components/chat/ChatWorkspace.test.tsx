@@ -600,7 +600,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(onSessionRenamed).toHaveBeenCalledOnce();
 	});
 
-	it("clears the fixed titlebar nav when the sidebar is collapsed, like the terminal session", () => {
+	it("keeps titlebar clearance attached throughout sidebar expansion and collapse", () => {
 		useUiStore.setState({ isSidebarOpen: false });
 		const { rerender } = render(<ChatWorkspace snapshot={chatFixture} />);
 
@@ -611,7 +611,7 @@ describe("ChatWorkspace timeline", () => {
 		useUiStore.setState({ isSidebarOpen: true });
 		rerender(<ChatWorkspace snapshot={chatFixture} />);
 
-		expect(screen.getByTestId("session-terminal-region")).not.toHaveClass(
+		expect(screen.getByTestId("session-terminal-region")).toHaveClass(
 			"session-topbar-titlebar-clearance-mac",
 		);
 	});

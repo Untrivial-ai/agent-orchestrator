@@ -304,7 +304,7 @@
 	--size-sidebar-icon: 48px;
 	--size-sidebar-default: 240px;
 	--size-sidebar-mobile: 288px;
-	--size-titlebar-cluster-left: 72px;
+	--size-titlebar-cluster-left: calc(72px / var(--ao-window-zoom, 1));
 	/* Linux has no traffic lights: with the sidebar open the cluster sits at the
 	 * sidebar's own left inset (TitlebarNav `left-titlebar-cluster-left-linux`). */
 	--size-titlebar-cluster-left-linux: 6px;
@@ -328,9 +328,8 @@
 
 	/* Keep macOS traffic-light chrome aligned with the shared route topbar. */
 	--size-traffic-light-clearance: var(--size-toolbar);
-	/* Fullscreen has no traffic lights, but the left navigation still needs one
-	 * compact row before sidebar content begins. */
-	--size-traffic-light-clearance-fullscreen: calc(var(--size-control-md) + var(--space-1));
+	/* Fullscreen removes native controls, not the shared header row. */
+	--size-traffic-light-clearance-fullscreen: var(--size-traffic-light-clearance);
 	/* Resize handle straddles the sidebar-panel boundary: offset = half the width
 	 * so the hairline lands exactly at the junction and the drag zone covers 6px
 	 * on each side of it. */

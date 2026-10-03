@@ -632,7 +632,7 @@ export function CenterPane({
 				<div
 					className={cn(
 						"flex min-w-0 shrink items-stretch",
-						!isFullscreen && !isSidebarOpen && isMac && "session-topbar-titlebar-clearance-mac",
+						!isFullscreen && isMac && "session-topbar-titlebar-clearance-mac",
 						!isFullscreen && !isSidebarOpen && isLinux && "session-topbar-titlebar-clearance-linux",
 					)}
 					data-testid="session-terminal-region"

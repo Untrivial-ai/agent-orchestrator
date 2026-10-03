@@ -1,3 +1,5 @@
+import { syncMacWindowButtons } from "./main/window-chrome";
+import { MAC_TITLEBAR_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
 import { acknowledgeMacUpdateRestart } from "./main/mac-update-progress";
 import { consumeUpdateRelaunchFlag } from "./main/update-relaunch-flag";
@@ -359,11 +361,6 @@ const isDev = !app.isPackaged;
 const DEV_DAEMON_PORT = 3002;
 const DEV_STATE_SUBDIR = "dev"; // ~/.ao/dev/
 
-// Traffic lights stay fixed across sidebar expand/collapse. Y matches the
-// natural macOS titlebar band (TitlebarNav is h-traffic-light-clearance).
-const MAC_WINDOW_BUTTON_X = 14;
-const MAC_WINDOW_BUTTON_Y = 12;
-
 const RENDERER_SCHEME = "app";
 const RENDERER_HOST = "renderer";
 const RENDERER_ORIGIN = `${RENDERER_SCHEME}://${RENDERER_HOST}`;
@@ -640,8 +637,8 @@ async function createWindowInternal(): Promise<void> {
 					}
 				: {
 						titleBarStyle: "hiddenInset" as const,
-						// Fixed natural titlebar position — never moved on sidebar toggle.
-						trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
+						// Center on the shared header; zoom/resize synchronization follows below.
+						trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_TITLEBAR_HEIGHT / 2 - MAC_WINDOW_BUTTON_RADIUS },
 					}),
 	};
 	mainWindow = new BaseWindow(windowOptions);
@@ -824,9 +821,18 @@ async function createWindowInternal(): Promise<void> {
 		});
 	}
 
-	// macOS: traffic lights vanish in native fullscreen, so the renderer drops
-	// the clearance pad above TitlebarNav. Push state so the sidebar can react
-	// without polling isFullScreen().
+	const syncWindowChrome = () => {
+		if (!mainWindow || shellWebContents.isDestroyed()) return;
+		if (process.platform === "darwin") syncMacWindowButtons(mainWindow, shellWebContents);
+		shellWebContents.send("window:zoom", shellWebContents.getZoomFactor());
+	};
+	// Resize/zoom and fullscreen exit can reset AppKit's button placement.
+	mainWindow.on("resize", syncWindowChrome);
+	shellWebContents.on("did-finish-load", syncWindowChrome);
+	shellWebContents.on("zoom-changed", () => setTimeout(syncWindowChrome, 0));
+
+	// Native fullscreen removes the traffic-light horizontal reserve, while
+	// the renderer keeps the same header height and navigation centerline.
 	const pushFullScreen = () => {
 		if (!mainWindow) return;
 		getShellWebContents()?.send("window:fullscreen", mainWindow.isFullScreen());
@@ -836,7 +842,10 @@ async function createWindowInternal(): Promise<void> {
 		getShellWebContents()?.send("window:maximized", mainWindow.isMaximized());
 	};
 	mainWindow.on("enter-full-screen", pushFullScreen);
-	mainWindow.on("leave-full-screen", pushFullScreen);
+	mainWindow.on("leave-full-screen", () => {
+		syncWindowChrome();
+		pushFullScreen();
+	});
 	mainWindow.on("maximize", pushMaximized);
 	mainWindow.on("unmaximize", pushMaximized);
 	mainWindow.on("blur", () => {
@@ -2007,6 +2016,11 @@ ipcMain.handle("app:openExternal", async (_event, url: string) => {
 	await openAllowedAppExternalURL(url, shell);
 });
 
+ipcMain.handle("window:getZoomFactor", () => {
+	const shell = getShellWebContents();
+	if (process.platform === "darwin" && mainWindow && shell) syncMacWindowButtons(mainWindow, shell);
+	return shell?.getZoomFactor() ?? 1;
+});
 ipcMain.handle("window:isFullScreen", () => mainWindow?.isFullScreen() ?? false);
 ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
 
@@ -2102,11 +2116,20 @@ ipcMain.handle("menu:action", (_event, action: string) => {
 			}
 			return wc?.toggleDevTools();
 		case "view.zoomIn":
-			return wc.setZoomLevel(wc.getZoomLevel() + 0.5);
+			wc.setZoomLevel(wc.getZoomLevel() + 0.5);
+			if (process.platform === "darwin" && wc === getShellWebContents()) syncMacWindowButtons(win, wc);
+			wc.send("window:zoom", wc.getZoomFactor());
+			return;
 		case "view.zoomOut":
-			return wc.setZoomLevel(wc.getZoomLevel() - 0.5);
+			wc.setZoomLevel(wc.getZoomLevel() - 0.5);
+			if (process.platform === "darwin" && wc === getShellWebContents()) syncMacWindowButtons(win, wc);
+			wc.send("window:zoom", wc.getZoomFactor());
+			return;
 		case "view.zoomReset":
-			return wc.setZoomLevel(0);
+			wc.setZoomLevel(0);
+			if (process.platform === "darwin" && wc === getShellWebContents()) syncMacWindowButtons(win, wc);
+			wc.send("window:zoom", wc.getZoomFactor());
+			return;
 		case "view.fullscreen":
 			return win.setFullScreen(!win.isFullScreen());
 		case "window.minimize":

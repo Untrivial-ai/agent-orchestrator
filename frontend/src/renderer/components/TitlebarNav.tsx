@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, PanelLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
-import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
+import { sidebarIsVisible, useUiStore } from "../stores/ui-store";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const isMac = isMacPlatform();
@@ -41,29 +41,21 @@ export function useCanGoForward(): boolean {
 
 export function TitlebarNav({
   historyLocked = false,
-  hasSessionTopbar = false,
   isFullScreen = false,
 }: {
   historyLocked?: boolean;
-  hasSessionTopbar?: boolean;
   isFullScreen?: boolean;
 }) {
   const { t } = useTranslation();
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
   const isSidebarOpen = useUiStore(sidebarIsVisible);
-  const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const canGoForward = useCanGoForward();
 
   if (!isMac && !isLinux) return null;
-  // macOS: pinned beside the traffic lights. Native dots sit at y: 12 with a
-  // 12px hit target (centerline 18); the 40px clearance band is items-centered,
-  // so top: -2px puts the toggle/arrows on that same centerline. Linux: no
-  // traffic lights, so it sits at the sidebar's top-left within the reserved
-  // titlebar band (cluster-left-linux, not flush to the window edge) — and when
-  // the sidebar is off-canvas it shifts right to clear the framed centre
-  // panel's left border instead of straddling it.
+  // Native fullscreen changes only the horizontal traffic-light reserve.
+  // Sidebar and route state must never move the navigation centerline.
   const leftClass = !isMac
     ? isSidebarOpen
       ? "left-titlebar-cluster-left-linux"
@@ -71,19 +63,8 @@ export function TitlebarNav({
     : isFullScreen
       ? "left-titlebar-cluster-left-fullscreen"
       : "left-titlebar-cluster-left";
-  // Linux: match the framed board titlebar's y (mac inset 2px + surface border
-  // 1px) so the cluster shares its centerline with the project title.
-  const topClass = !isMac
-    ? "top-0.75"
-    : isFullScreen && hasSessionTopbar && !sidebarHasLayout
-      ? "top-1.5"
-      : isFullScreen
-        ? "top-0"
-        : "-top-0.6";
-  const heightClass =
-    isMac && isFullScreen
-      ? "h-traffic-light-clearance-fullscreen"
-      : "h-traffic-light-clearance";
+  const topClass = isMac ? "top-0" : "top-0.75";
+  const heightClass = "h-traffic-light-clearance";
 
   return (
     <div
