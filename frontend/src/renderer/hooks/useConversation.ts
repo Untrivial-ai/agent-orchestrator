@@ -1475,6 +1475,7 @@ export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 		latestSequence: wire.latestSequence,
 		oldestSequence: wire.oldestSequence ?? wire.latestSequence + 1,
 		hasMoreBefore: wire.hasMoreBefore ?? false,
+		pendingUserInputRequestIds: wire.pendingUserInputRequestIds ?? undefined,
 		nativeForkAvailableAfterSequence: wire.nativeForkAvailableAfterSequence ?? 0,
 		settings: {
 			model: wire.settings?.model || undefined,

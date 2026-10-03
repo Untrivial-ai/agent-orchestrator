@@ -63,7 +63,7 @@ import { purgeFileAttachments, purgeFileAttachmentsForSession } from "../../hook
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
 import { sameContent, useStableList } from "../../lib/stable-list";
 import { useTabScrollEdges } from "../../hooks/useTabScrollEdges";
-import { apiErrorCode, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
+import { apiErrorCode, apiErrorMessage, getApiBaseUrl, subscribeApiBaseUrl } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { isDialogOrMenuOpen } from "../../lib/dom-selectors";
 import { clampTerminalFontSize, initialTerminalFontSize, terminalFontSizeStorageKey } from "../../lib/terminal-font-size";
@@ -112,7 +112,11 @@ import { QueuedMessageDock, type QueuedMessage } from "./QueuedMessageDock";
 import { ActivityRun } from "./ActivityRun";
 import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
-import { ElicitationDock } from "./ElicitationDock";
+import { ElicitationDock, elicitationBoundarySource, forgetUnsavedElicitationDraftsFor } from "./ElicitationDock";
+import {
+	pruneExpiredElicitationDraftsOnce,
+	reconcileElicitationDraftsForConversation,
+} from "../../lib/elicitation-drafts";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBanners";
 import {
 	activeTurn,
@@ -1145,10 +1149,27 @@ function ChatWorkspaceContent({
 		() => latestPendingInteraction(snapshot.items, "user_input", turn),
 		[snapshot.items, turn],
 	);
+	// The dock only ever shows the newest pending question, but the daemon can
+	// have more than one open on a conversation at once (e.g. an MCP
+	// elicitation alongside an AskUserQuestion) — every one of them needs its
+	// draft kept, not only whichever is currently on screen. Resolved ids are
+	// tracked too: on a partial page (more items than what's loaded), only a
+	// request id actually seen — pending or not — is known well enough to
+	// reconcile; see the effect below.
+	const userInputRequestIds = useMemo(() => {
+		const pending: string[] = [];
+		const resolved: string[] = [];
+		for (const item of snapshot.items) {
+			if (item.kind !== "activity" || item.activityKind !== "user_input" || !item.requestId) continue;
+			(item.status === "pending" ? pending : resolved).push(item.requestId);
+		}
+		return { pending, resolved };
+	}, [snapshot.items]);
 	const stableSettings = useStableValue(snapshot.settings);
 	const stableModelReroute = useStableValue(snapshot.modelReroute);
 	const stablePendingApproval = useStableValue(pendingApproval);
 	const stablePendingUserInput = useStableValue(pendingUserInput);
+	const stableUserInputRequestIds = useStableValue(userInputRequestIds);
 	const composerSettings = useMemo(
 		() =>
 			onChooseSettings || onChooseConfigOption ? (
@@ -1206,12 +1227,113 @@ function ChatWorkspaceContent({
 			) : undefined,
 		[busy, onDecide, stablePendingApproval],
 	);
+	// A question can stop being pending without this dock ever resolving it: a
+	// 30-minute approval wait times out, the agent is stopped or interrupted,
+	// another window or mobile answers it, or the controller fails. None of
+	// those paths call onResolve, so the draft this conversation saved for it
+	// would otherwise sit in storage untouched until its 7-day expiry.
+	//
+	// Reconciling against the loaded snapshot — rather than only reacting to a
+	// live change in stablePendingUserInput — also covers the case where this
+	// whole workspace was unmounted (a session switch) while the question was
+	// still open: a plain "did it change since I last saw it" comparison would
+	// start fresh on the next mount and never notice the old request is gone.
+	// The sweep is also called here whenever this effect runs (a mount, or
+	// conversationId/the pending request changing) — not on a real timer, so
+	// its 7-day expiry is opportunistic rather than guaranteed. A conversation
+	// left open for a week straight, with no mount or pending-question change
+	// in between, would not otherwise get swept until one happens; the next
+	// session switch, new question, or app restart is what actually catches
+	// it in practice.
+	//
+	// On a partial page (`hasMoreBefore`), a request id that isn't in
+	// `snapshot.items` at all might just be old enough to sit outside the
+	// loaded window — still genuinely open, not resolved. The daemon's
+	// `pendingUserInputRequestIds` settles that: it lists every open request on
+	// the conversation, so with it, absence from the list is proof of
+	// resolution. Without it (an older daemon), only an id actually seen is
+	// safe to act on: pending ids are kept regardless, and resolved ids (seen,
+	// but not pending) are cleaned up, since those are known for certain. A
+	// fully loaded page can safely clean up everything else too.
+	//
+	// Failed sends are kept here, keyed by request, not only in the dock: the
+	// dock is keyed by request too, so when a newer question replaces it while
+	// an older answer is still in flight, that dock is gone by the time the
+	// send rejects.
+	const [resolveErrors, setResolveErrors] = useState<Record<string, string>>({});
+	const stableOpenUserInputRequestIds = useStableValue(snapshot.pendingUserInputRequestIds);
+	useEffect(() => {
+		const open = stableOpenUserInputRequestIds ?? stableUserInputRequestIds.pending;
+		const complete = stableOpenUserInputRequestIds !== undefined || !snapshot.hasMoreBefore;
+		const isGone = (requestId: string) =>
+			!open.includes(requestId) && (complete || stableUserInputRequestIds.resolved.includes(requestId));
+		pruneExpiredElicitationDraftsOnce();
+		reconcileElicitationDraftsForConversation(
+			snapshot.conversationId,
+			open,
+			stableUserInputRequestIds.resolved,
+			complete,
+		);
+		// A resolved request also clears its own leave/quit-guard slot, if a
+		// prior failed save is still holding one open: this workspace is now
+		// the only place that ever will again. Scoped to this conversation's
+		// requests — ones seen resolved here, or whose unsaved answer this
+		// conversation holds — so the reviewer overlay, which shares the
+		// worker's session but not its conversation, can't reach into the
+		// worker's slots, and vice versa.
+		const finished = new Set([
+			...stableUserInputRequestIds.resolved.filter(isGone),
+			...forgetUnsavedElicitationDraftsFor(snapshot.conversationId, isGone),
+		]);
+		for (const requestId of finished) {
+			setChatDraftBoundary(snapshot.sessionId, elicitationBoundarySource(requestId), undefined);
+		}
+		// A failed send for a question that is no longer open has nothing left to retry.
+		setResolveErrors((current) => {
+			const kept = Object.entries(current).filter(([requestId]) => !isGone(requestId));
+			return kept.length === Object.keys(current).length ? current : Object.fromEntries(kept);
+		});
+	}, [
+		snapshot.conversationId,
+		snapshot.sessionId,
+		snapshot.hasMoreBefore,
+		stableUserInputRequestIds,
+		stableOpenUserInputRequestIds,
+	]);
+	const trackedResolveInput = useCallback(
+		async (requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
+			if (!onResolveInput) return;
+			try {
+				const result = await onResolveInput(requestId, action, content);
+				setResolveErrors((current) => {
+					if (!(requestId in current)) return current;
+					const { [requestId]: _cleared, ...rest } = current;
+					return rest;
+				});
+				return result;
+			} catch (reason) {
+				setResolveErrors((current) => ({ ...current, [requestId]: apiErrorMessage(reason, "The answer could not be sent.") }));
+				throw reason;
+			}
+		},
+		[onResolveInput],
+	);
+	const shownRequestId = stablePendingUserInput?.requestId;
+	const earlierAnswerFailed = Object.keys(resolveErrors).some((requestId) => requestId !== shownRequestId);
 	const composerElicitation = useMemo(
 		() =>
 			stablePendingUserInput ? (
-				<ElicitationDock activity={stablePendingUserInput} onResolve={onResolveInput} />
+				<ElicitationDock
+					key={stablePendingUserInput.requestId ?? stablePendingUserInput.id}
+					activity={stablePendingUserInput}
+					sessionId={snapshot.sessionId}
+					conversationId={snapshot.conversationId}
+					onResolve={onResolveInput ? trackedResolveInput : undefined}
+					initialError={shownRequestId ? resolveErrors[shownRequestId] : undefined}
+					earlierAnswerFailed={earlierAnswerFailed}
+				/>
 			) : undefined,
-		[onResolveInput, stablePendingUserInput],
+		[onResolveInput, trackedResolveInput, snapshot.conversationId, snapshot.sessionId, stablePendingUserInput, shownRequestId, resolveErrors, earlierAnswerFailed],
 	);
 	const canSteerQueuedMessage =
 		Boolean(onSteer) && can(snapshot, "steer") && turn?.state === "running";

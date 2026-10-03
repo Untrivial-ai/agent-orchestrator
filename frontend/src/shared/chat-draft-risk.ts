@@ -3,6 +3,7 @@ export const SET_CHAT_DRAFT_RISK_CHANNEL = "chat-draft:set-risk";
 export const CHAT_DRAFT_BOUNDARY_KINDS = [
 	"persistence-failed",
 	"pending-attachments",
+	"elicitation-persistence-failed",
 ] as const;
 
 export type ChatDraftBoundaryKind = (typeof CHAT_DRAFT_BOUNDARY_KINDS)[number];

@@ -1,13 +1,95 @@
-import { useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ExternalLink, Loader2 } from "lucide-react";
+import { apiErrorMessage } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
+import { getChatDraftSourceBoundaryKinds, setChatDraftBoundary } from "../../lib/chat-draft-boundary";
+import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
+import {
+	clearElicitationDraft,
+	elicitationDraftKey,
+	readElicitationDraft,
+	writeElicitationDraft,
+	type ElicitationDraft,
+	type ElicitationDraftValue,
+} from "../../lib/elicitation-drafts";
+import { sameContent } from "../../lib/stable-list";
 import { cn } from "../../lib/utils";
 import type { ConversationActivity } from "../../types/conversation";
 import { ACCENT_ACTION_PILL, QUIET_ACTION_PILL } from "./action-pill";
 
 type InputAction = "accept" | "decline" | "cancel";
-type InputValue = string | number | boolean | string[];
+type InputValue = ElicitationDraftValue;
 type PropertyEntry = [string, Record<string, unknown>];
+type ElicitationDraftKey = { conversationId: string; requestId: string };
+
+/** Delay before the first retry of a failed draft write; doubles on each further failure, up to the ceiling below. */
+const ELICITATION_DRAFT_RETRY_BASE_MS = 3000;
+const ELICITATION_DRAFT_RETRY_MAX_MS = 60_000;
+
+/** One leave/quit-guard slot per pending request, so two questions on one session don't clear each other's warning. */
+export function elicitationBoundarySource(requestId: string) {
+	return `elicitation:${requestId}` as const;
+}
+
+/**
+ * The most recent answer a write attempt failed to persist, kept in memory
+ * only. A dock unmounting and remounting for an unrelated reason (a queued
+ * edit starting or ending, closing the reviewer overlay) reads storage before
+ * its predecessor's own unmount effect gets a chance to write — React commits
+ * the new instance's render before running the old one's cleanup — so a fresh
+ * instance restoring from storage alone could show an answer already
+ * superseded by one that never made it to disk. This is read first.
+ */
+const unsavedElicitationDrafts = new Map<string, ElicitationDraft>();
+
+function rememberUnsavedElicitationDraft(conversationId: string, requestId: string, draft: ElicitationDraft): void {
+	unsavedElicitationDrafts.set(elicitationDraftKey(conversationId, requestId), draft);
+}
+
+function forgetUnsavedElicitationDraft(conversationId: string, requestId: string): void {
+	unsavedElicitationDrafts.delete(elicitationDraftKey(conversationId, requestId));
+}
+
+function peekUnsavedElicitationDraft(conversationId: string, requestId: string): ElicitationDraft | undefined {
+	return unsavedElicitationDrafts.get(elicitationDraftKey(conversationId, requestId));
+}
+
+/**
+ * Drops the remembered answer for every request on `conversationId` that
+ * `isGone` says is no longer open, and returns those request ids. Without this
+ * an answer that never reached disk would stay in memory until the app quits
+ * whenever its question was answered elsewhere, timed out, or was stopped.
+ */
+export function forgetUnsavedElicitationDraftsFor(
+	conversationId: string,
+	isGone: (requestId: string) => boolean,
+): string[] {
+	const prefix = elicitationDraftKey(conversationId, "");
+	const forgotten: string[] = [];
+	for (const key of unsavedElicitationDrafts.keys()) {
+		if (!key.startsWith(prefix)) continue;
+		const requestId = key.slice(prefix.length);
+		if (!isGone(requestId)) continue;
+		unsavedElicitationDrafts.delete(key);
+		forgotten.push(requestId);
+	}
+	return forgotten;
+}
+
+/** Test seam: drops every draft this renderer remembers failed to save. */
+export function resetUnsavedElicitationDraftMemory(): void {
+	unsavedElicitationDrafts.clear();
+}
+
+/** Keeps a restored question index inside the bounds of the current question set. */
+function clampActiveQuestion(index: number, questionGroups: PropertyEntry[][] | undefined): number {
+	if (!questionGroups || questionGroups.length === 0) return 0;
+	if (!Number.isFinite(index)) return 0;
+	// A corrupted or hand-edited draft can carry a non-integer index; only a
+	// storage bug reaches this, but truncating keeps it from picking a
+	// questionGroups slot that doesn't exist.
+	return Math.min(Math.max(Math.trunc(index), 0), questionGroups.length - 1);
+}
 
 /**
  * A pending question docks above the composer rather than landing in the
@@ -18,19 +100,41 @@ type PropertyEntry = [string, Record<string, unknown>];
  */
 export function ElicitationDock({
 	activity,
+	sessionId,
+	conversationId,
 	onResolve,
+	initialError,
+	earlierAnswerFailed,
 }: {
 	activity: ConversationActivity;
+	/**
+	 * Scopes the "you have unsaved work" leave/quit warning, the same way the
+	 * Chat composer's own draft does — this is the session the human would be
+	 * navigating away from, regardless of which conversation is open on it.
+	 */
+	sessionId?: string;
+	/**
+	 * Scopes the persisted answer itself. The daemon identifies a pending
+	 * input by `(conversation_id, request_id)`, and a reviewer-chat overlay can
+	 * report the same `sessionId` as its underlying worker chat while reading
+	 * a different conversation, so the draft has to key on conversation, not
+	 * session, to land back on the right question.
+	 */
+	conversationId?: string;
 	onResolve?: (
 		requestId: string,
 		action: InputAction,
 		content?: Record<string, unknown>,
 	) => Promise<unknown> | void;
+	/** A send for this question that failed while another question was shown. */
+	initialError?: string;
+	/** A send for a different, still-open question failed; it comes back after this one. */
+	earlierAnswerFailed?: boolean;
 }) {
 	const requestId = activity.requestId;
 	const unavailable = !requestId || !onResolve;
 	const [submitting, setSubmitting] = useState(false);
-	const [error, setError] = useState<string>();
+	const [error, setError] = useState<string | undefined>(initialError);
 
 	async function resolve(action: InputAction, content?: Record<string, unknown>) {
 		if (!requestId || !onResolve || submitting) return;
@@ -38,9 +142,18 @@ export function ElicitationDock({
 		setError(undefined);
 		try {
 			await onResolve(requestId, action, content);
+			if (conversationId) {
+				clearElicitationDraft(conversationId, requestId);
+				forgetUnsavedElicitationDraft(conversationId, requestId);
+			}
+			if (sessionId) setChatDraftBoundary(sessionId, elicitationBoundarySource(requestId), undefined);
+			// Leave the form disabled on success rather than resetting `submitting`
+			// here: `onResolve`'s conversation refetch is fire-and-forget, so this
+			// question can still be on screen for a beat after it resolves. A
+			// re-enabled form invites a stray edit that would recreate the draft
+			// just cleared above.
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : "The answer could not be sent.");
-		} finally {
+			setError(apiErrorMessage(reason, "The answer could not be sent."));
 			setSubmitting(false);
 		}
 	}
@@ -55,12 +168,29 @@ export function ElicitationDock({
 			{activity.detail?.inputMode === "url" ? (
 				<URLRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
 			) : (
-				<FormRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
+				// Keyed by request: a caller that reuses one ElicitationDock element
+				// across requests (this component's own tests do; ChatWorkspace's own
+				// outer key is a separate guarantee, not a substitute for this one)
+				// otherwise keeps FormRequest's state — a typed answer, in particular
+				// — across an unrelated question.
+				<FormRequest
+					key={requestId ?? activity.id}
+					activity={activity}
+					sessionId={sessionId}
+					draftKey={conversationId && requestId ? { conversationId, requestId } : undefined}
+					disabled={submitting || unavailable}
+					onResolve={resolve}
+				/>
 			)}
 
 			{error ? (
 				<p role="alert" className="px-3 pb-2 text-[11px] leading-snug text-destructive">
 					{error}
+				</p>
+			) : null}
+			{earlierAnswerFailed ? (
+				<p role="alert" className="px-3 pb-2 text-[11px] leading-snug text-destructive">
+					Your answer to an earlier question couldn’t be sent. It will come back after this one.
 				</p>
 			) : null}
 		</div>
@@ -166,10 +296,14 @@ function URLRequest({
 
 function FormRequest({
 	activity,
+	sessionId,
+	draftKey,
 	disabled,
 	onResolve,
 }: {
 	activity: ConversationActivity;
+	sessionId?: string;
+	draftKey?: ElicitationDraftKey;
 	disabled: boolean;
 	onResolve: (action: InputAction, content?: Record<string, unknown>) => Promise<void>;
 }) {
@@ -177,9 +311,133 @@ function FormRequest({
 	const properties = useMemo(() => Object.entries(schema?.properties ?? {}), [schema?.properties]);
 	const questionGroups = useMemo(() => claudeQuestionGroups(properties), [properties]);
 	const required = useMemo(() => new Set(schema?.required ?? []), [schema?.required]);
-	const [values, setValues] = useState<Record<string, InputValue>>(() => initialValues(properties));
+
+	// A lazy initializer runs once per mount, before any effect — including a
+	// just-unmounted predecessor's own last-chance write below, which commits
+	// after this render. The in-memory cache is checked first for that reason:
+	// it can hold a newer, not-yet-persisted answer that storage doesn't have
+	// yet.
+	const [draft] = useState(() => {
+		if (!draftKey) return undefined;
+		return (
+			peekUnsavedElicitationDraft(draftKey.conversationId, draftKey.requestId) ??
+			readElicitationDraft(draftKey.conversationId, draftKey.requestId)
+		);
+	});
+	const [values, setValues] = useState<Record<string, InputValue>>(() =>
+		restoreValues(initialValues(properties), draft?.values, properties),
+	);
 	const [missing, setMissing] = useState<Set<string>>(new Set());
-	const [activeQuestion, setActiveQuestion] = useState(0);
+	// A restored question index is clamped to the current question set: the
+	// index came from storage, and an out-of-range value would otherwise fall
+	// back to showing every field at once instead of the step-by-step flow.
+	const [activeQuestion, setActiveQuestion] = useState(() =>
+		clampActiveQuestion(draft?.activeQuestion ?? 0, questionGroups),
+	);
+	const translateDraft = useChatDraftTranslation();
+	// Seeded from the shared boundary rather than always false: a remount that
+	// restored from the in-memory cache above is picking up a still-failing
+	// answer, and needs to know that immediately rather than treating the
+	// restored content as already saved.
+	const initiallyFailing = Boolean(
+		draftKey && sessionId &&
+			getChatDraftSourceBoundaryKinds(sessionId, elicitationBoundarySource(draftKey.requestId)).length > 0,
+	);
+	const [writeError, setWriteError] = useState<string | undefined>(
+		initiallyFailing ? "chat.draft.elicitationSaveFailed" : undefined,
+	);
+	// What was last *successfully* written, so a write only happens when
+	// something actually changed. Comparing against the initial state instead
+	// would miss a real change that happens to loop back to it: restore at
+	// question 0, go Next, then Back lands back on question 0, which looks
+	// unchanged from the start but must still overwrite the draft Next saved
+	// at question 1.
+	const lastWritten = useRef({ values, activeQuestion });
+	// True from a failed write until the next one that succeeds. Content
+	// matching `lastWritten` normally means there's nothing to do, but not
+	// while this is true — an answer can fail, then get edited back to exactly
+	// what was last saved, and that revert still needs to clear the failure.
+	const hasPendingFailure = useRef(initiallyFailing);
+	// How many failures in a row, for the backoff below; and a tick bumped
+	// when a scheduled retry fires, to re-run the write effect even though
+	// nothing else changed — a ref alone can't do that, since writing the same
+	// value back to it doesn't trigger a re-render.
+	const consecutiveFailures = useRef(0);
+	const [retryTick, setRetryTick] = useState(0);
+
+	// The single source of truth for persisting this answer. Depending on
+	// `disabled` and `retryTick` means every reason to write or retry — an
+	// edit, the form disabling, re-enabling after a rejected resolve, or the
+	// backoff timer — is just another run of this effect, and its own cleanup
+	// cancels a stale retry without a hand-tracked timer ref.
+	useEffect(() => {
+		if (!draftKey || disabled) return;
+		const unchanged = sameContent(lastWritten.current, { values, activeQuestion });
+		if (unchanged && !hasPendingFailure.current) return;
+		const result = writeElicitationDraft(draftKey.conversationId, draftKey.requestId, { values, activeQuestion });
+		if (sessionId) {
+			setChatDraftBoundary(
+				sessionId,
+				elicitationBoundarySource(draftKey.requestId),
+				result.ok ? undefined : "elicitation-persistence-failed",
+			);
+		}
+		if (result.ok) {
+			lastWritten.current = { values, activeQuestion };
+			hasPendingFailure.current = false;
+			consecutiveFailures.current = 0;
+			forgetUnsavedElicitationDraft(draftKey.conversationId, draftKey.requestId);
+			setWriteError((current) => (current === undefined ? current : undefined));
+			return;
+		}
+		hasPendingFailure.current = true;
+		rememberUnsavedElicitationDraft(draftKey.conversationId, draftKey.requestId, { values, activeQuestion });
+		setWriteError((current) => (current === "chat.draft.elicitationSaveFailed" ? current : "chat.draft.elicitationSaveFailed"));
+		consecutiveFailures.current += 1;
+		const delay = Math.min(
+			ELICITATION_DRAFT_RETRY_BASE_MS * 2 ** (consecutiveFailures.current - 1),
+			ELICITATION_DRAFT_RETRY_MAX_MS,
+		);
+		const timer = setTimeout(() => setRetryTick((tick) => tick + 1), delay);
+		return () => clearTimeout(timer);
+	}, [draftKey?.conversationId, draftKey?.requestId, sessionId, values, activeQuestion, disabled, retryTick]);
+
+	// Keeps the latest answer reachable from the unmount-only effect below,
+	// whose own closure would otherwise still hold whatever values existed at
+	// its last run.
+	const latest = useRef({ draftKey, values, activeQuestion });
+	useEffect(() => {
+		latest.current = { draftKey, values, activeQuestion };
+	});
+
+	useEffect(
+		() => () => {
+			// The leave/quit guards only cover navigating away or quitting; other
+			// unmounts (ending a queued-message edit, closing the reviewer
+			// overlay, a refetch error swapping the view) don't. If whatever
+			// caused the failure has cleared by now, this saves the answer before
+			// the warning goes away; if it hasn't, the warning stays.
+			const { draftKey: key, values: finalValues, activeQuestion: finalActiveQuestion } = latest.current;
+			if (!key) return;
+			// The cache entry, not `hasPendingFailure`, is the gate: a successful
+			// resolve forgets the entry but never resets this instance's ref, and
+			// writing here after that would resurrect a draft for an answered question.
+			if (!hasPendingFailure.current || !peekUnsavedElicitationDraft(key.conversationId, key.requestId)) return;
+			const result = writeElicitationDraft(key.conversationId, key.requestId, {
+				values: finalValues,
+				activeQuestion: finalActiveQuestion,
+			});
+			if (result.ok) forgetUnsavedElicitationDraft(key.conversationId, key.requestId);
+			if (sessionId) {
+				setChatDraftBoundary(
+					sessionId,
+					elicitationBoundarySource(key.requestId),
+					result.ok ? undefined : "elicitation-persistence-failed",
+				);
+			}
+		},
+		[sessionId],
+	);
 	const visibleProperties = questionGroups?.[activeQuestion] ?? properties;
 	const hasPreviousQuestion = questionGroups !== undefined && activeQuestion > 0;
 	const hasNextQuestion = questionGroups !== undefined && activeQuestion < questionGroups.length - 1;
@@ -242,6 +500,16 @@ function FormRequest({
 					/>
 				))}
 			</div>
+			{writeError && !disabled ? (
+				// Hidden rather than cleared while disabled: a resolve in flight (or
+				// just delivered) makes this stale either way, but the write effect
+				// bails out entirely while disabled, so nothing else would clear the
+				// underlying state — and it's still correct to show again if a
+				// rejected resolve re-enables the form and the save is still failing.
+				<p role="alert" className="px-3 pb-1 text-[11px] leading-snug text-destructive">
+					{translateDraft(writeError)}
+				</p>
+			) : null}
 			<DockFooter>
 				<div className="flex items-center gap-1.5">
 					<button type="button" className={QUIET_ACTION_PILL} disabled={disabled} onClick={() => onResolve("cancel")}>
@@ -526,6 +794,21 @@ function claudeQuestionGroups(properties: PropertyEntry[]): PropertyEntry[][] | 
 		ordered.push(group.custom ? [group.question, group.custom] : [group.question]);
 	}
 	return ordered;
+}
+
+/** Keeps a saved answer only for fields the current schema still declares. */
+function restoreValues(
+	defaults: Record<string, InputValue>,
+	saved: Record<string, InputValue> | undefined,
+	properties: PropertyEntry[],
+): Record<string, InputValue> {
+	if (!saved) return defaults;
+	const known = new Set(properties.map(([name]) => name));
+	const values = { ...defaults };
+	for (const [name, value] of Object.entries(saved)) {
+		if (known.has(name)) values[name] = value;
+	}
+	return values;
 }
 
 function initialValues(properties: PropertyEntry[]): Record<string, InputValue> {

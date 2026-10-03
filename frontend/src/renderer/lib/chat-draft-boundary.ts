@@ -9,7 +9,14 @@ export {
 	type ChatDraftBoundaryKind,
 } from "../../shared/chat-draft-risk";
 
-export type ChatDraftBoundarySource = "composer" | "inline-edit" | "queued-edit";
+/**
+ * One slot per session per source, aggregated for the leave/quit guards below.
+ * An elicitation question is one source per request id (`elicitation:<requestId>`),
+ * not one shared "elicitation" slot: a session can have more than one question
+ * open at once (the worker chat and a reviewer overlay on it, say), and one
+ * question resolving, saving, or closing must not clear another's warning.
+ */
+export type ChatDraftBoundarySource = "composer" | "inline-edit" | "queued-edit" | `elicitation:${string}`;
 
 const EMPTY_BOUNDARIES: readonly ChatDraftBoundaryKind[] = Object.freeze([]);
 const boundaries = new Map<
@@ -79,12 +86,21 @@ export function getChatDraftBoundary(sessionId: string): ChatDraftBoundaryKind |
 	// A known failed write is more serious than an in-flight write and provides
 	// the more accurate discard copy when both composer slices are unsafe.
 	if (active.includes("persistence-failed")) return "persistence-failed";
+	if (active.includes("elicitation-persistence-failed")) return "elicitation-persistence-failed";
 	return active[0];
 }
 
 /** Every distinct risk currently active for one logical Chat session. */
 export function getChatDraftBoundaries(sessionId: string): readonly ChatDraftBoundaryKind[] {
 	return boundarySnapshots.get(sessionId) ?? EMPTY_BOUNDARIES;
+}
+
+/** The risks active for one specific source, e.g. one elicitation request's own slot. */
+export function getChatDraftSourceBoundaryKinds(
+	sessionId: string,
+	source: ChatDraftBoundarySource,
+): readonly ChatDraftBoundaryKind[] {
+	return boundaries.get(sessionId)?.get(source) ?? EMPTY_BOUNDARIES;
 }
 
 export function subscribeChatDraftBoundaries(listener: () => void): () => void {
@@ -116,7 +132,14 @@ export function confirmDiscardChatDrafts(
 }
 
 export function chatDraftBoundaryCopy(kind: ChatDraftBoundaryKind): string {
-	return appI18n.t(kind === "persistence-failed" ? "chat.draftDiscard.persistenceFailed" : "chat.draftDiscard.pendingAttachments");
+	switch (kind) {
+		case "persistence-failed":
+			return appI18n.t("chat.draftDiscard.persistenceFailed");
+		case "elicitation-persistence-failed":
+			return appI18n.t("chat.draftDiscard.elicitationPersistenceFailed");
+		default:
+			return appI18n.t("chat.draftDiscard.pendingAttachments");
+	}
 }
 
 export function chatDraftDialogCopy(kinds: Iterable<ChatDraftBoundaryKind>): ChatDraftDialogCopy {

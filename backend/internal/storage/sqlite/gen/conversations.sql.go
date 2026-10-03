@@ -3172,6 +3172,43 @@ func (q *Queries) SelectNextQueuedConversationTurn(ctx context.Context, conversa
 	return i, err
 }
 
+const selectPendingConversationInputRequestIDs = `-- name: SelectPendingConversationInputRequestIDs :many
+SELECT request_id
+FROM conversation_activities
+WHERE conversation_id = ?
+  AND kind = 'user_input'
+  AND status = 'pending'
+  AND request_id <> ''
+ORDER BY sequence
+`
+
+// Every structured input request still open on the conversation, whether or
+// not its row falls inside the page being read. A client holding a draft for a
+// request outside its loaded page can only tell "answered" from "not loaded"
+// with this full list.
+func (q *Queries) SelectPendingConversationInputRequestIDs(ctx context.Context, conversationID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, selectPendingConversationInputRequestIDs, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var request_id string
+		if err := rows.Scan(&request_id); err != nil {
+			return nil, err
+		}
+		items = append(items, request_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectProjectConversation = `-- name: SelectProjectConversation :one
 SELECT id, scope, project_id, session_id, review_id, current_session_id, current_review_id, latest_sequence, created_at, updated_at, model, reasoning_effort, approval_mode, compacted_at, context_used, context_window, usage_input_tokens, usage_output_tokens, usage_cached_tokens, usage_total_tokens, rate_limit_primary_percent, rate_limit_secondary_percent, rate_limit_primary_resets_in, rate_limit_secondary_resets_in, rate_limit_plan, provider_title, applied_title, model_reroute_json, account_json, thread_state_json, mcp_servers_json, usage_cost, usage_currency, active_branch_id, opencode_mode FROM conversations WHERE project_id = ? AND scope = 'project' LIMIT 1
 `

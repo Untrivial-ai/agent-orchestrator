@@ -1110,6 +1110,19 @@ SELECT EXISTS (
       AND status = 'pending'
 );
 
+-- Every structured input request still open on the conversation, whether or
+-- not its row falls inside the page being read. A client holding a draft for a
+-- request outside its loaded page can only tell "answered" from "not loaded"
+-- with this full list.
+-- name: SelectPendingConversationInputRequestIDs :many
+SELECT request_id
+FROM conversation_activities
+WHERE conversation_id = ?
+  AND kind = 'user_input'
+  AND status = 'pending'
+  AND request_id <> ''
+ORDER BY sequence;
+
 -- Any approval still pending when a controller dies can never be answered: the
 -- provider call it was blocking is gone.
 -- name: FailPendingConversationApprovals :exec

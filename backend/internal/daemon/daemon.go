@@ -443,6 +443,7 @@ func Run() error {
 				BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
 				OldestSequence:                   rows.OldestSequence,
 				HasMoreBefore:                    rows.HasMoreBefore,
+				PendingUserInputRequestIDs:       rows.PendingUserInputRequestIDs,
 			}, nil
 		}),
 		Drivers: chatDrivers,

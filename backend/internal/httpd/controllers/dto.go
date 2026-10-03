@@ -2675,6 +2675,11 @@ type ConversationSnapshotResponse struct {
 	// unstarted session's abilities are not yet known — and a client must treat
 	// absent as "do not offer yet" rather than as "cannot".
 	Capabilities []string `json:"capabilities,omitempty"`
+	// PendingUserInputRequestIDs is every input request still open on the
+	// conversation, including ones older than the loaded page. A client keeping
+	// a draft for a request it cannot see uses this to tell "answered" from
+	// "not loaded". Absent when not known; an empty list means none are open.
+	PendingUserInputRequestIDs *[]string `json:"pendingUserInputRequestIds,omitempty"`
 }
 
 // ConversationBranchMaterializationResponse describes the fidelity of the

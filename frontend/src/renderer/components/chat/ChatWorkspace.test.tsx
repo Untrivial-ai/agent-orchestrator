@@ -4,6 +4,7 @@ import { Activity, Profiler, type ReactElement } from "react";
 import { typeInLexicalEditor } from "../../test/lexical";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace, promptSpacerHeight, promptTopInset } from "./ChatWorkspace";
+import { elicitationBoundarySource, resetUnsavedElicitationDraftMemory } from "./ElicitationDock";
 import { AssistantMessage, HumanMessage, OriginMessage } from "./ChatTimelineItems";
 import {
 	chatFixture,
@@ -14,7 +15,7 @@ import {
 	chatFixtureThreadError,
 } from "../../lib/chat-fixture";
 import { appI18n } from "../../i18n";
-import type { ConversationMessage, ConversationSnapshot } from "../../types/conversation";
+import type { ConversationItem, ConversationMessage, ConversationSnapshot } from "../../types/conversation";
 import { setApiBaseUrl } from "../../lib/api-client";
 import { useUiStore } from "../../stores/ui-store";
 import type { WorkspaceSession } from "../../types/workspace";
@@ -28,7 +29,9 @@ import {
 import {
 	getChatDraftBoundaries,
 	getChatDraftBoundary,
+	setChatDraftBoundary,
 } from "../../lib/chat-draft-boundary";
+import { elicitationDraftKey, readElicitationDraft } from "../../lib/elicitation-drafts";
 import { TooltipProvider } from "../ui/tooltip";
 
 const renameSessionMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -164,6 +167,7 @@ beforeEach(() => {
 	terminalPaneState.props = undefined;
 	renameSessionMock.mockReset().mockResolvedValue(undefined);
 	window.localStorage.clear();
+	resetUnsavedElicitationDraftMemory();
 	setApiBaseUrl("http://127.0.0.1:3001");
 	useUiStore.setState({ isSidebarOpen: true, inspectorSessions: {} });
 });
@@ -836,6 +840,31 @@ describe("ChatWorkspace timeline", () => {
 		return snapshot;
 	}
 
+	function secondQuestion(): ConversationItem {
+		return {
+			kind: "activity",
+			id: "input-2",
+			sequence: 101,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status: "pending",
+			summary: "Choose a language",
+			requestId: "input-2",
+			detail: {
+				inputMode: "form",
+				message: "Choose a language",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: { type: "string", title: "Which language?", oneOf: [{ const: "go", title: "Go" }] },
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:01:00Z",
+		};
+	}
+
 	it("docks a pending question on the composer instead of the transcript", () => {
 		render(<ChatWorkspace snapshot={withUserInput("pending")} onResolveInput={vi.fn()} />);
 
@@ -853,6 +882,416 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.queryByRole("group", { name: "Agent question" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Which harness?")).not.toBeInTheDocument();
 		expect(screen.queryByText("Choose a direction")).not.toBeInTheDocument();
+	});
+
+	it("persists a picked answer under the conversation's own draft and restores it after a remount", async () => {
+		// Nothing else exercises the conversationId prop actually reaching the
+		// dock: it's optional on ElicitationDock, so a dropped wire here would
+		// quietly turn off persistence while every dock-level test still passes,
+		// since those pass conversationId directly. Checking the DOM alone after
+		// a remount is not enough either — the answer would appear to round-trip
+		// even under a wrong key, since both mounts would use that same wrong
+		// key. Asserting the actual storage key catches that a wiring mistake
+		// the DOM-only check would miss.
+		const user = userEvent.setup();
+		const snapshot = withUserInput("pending");
+		const first = render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")?.values.question_0).toBe("acp");
+		first.unmount();
+
+		render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+		expect(screen.getByRole("radio", { name: "ACP" })).toBeChecked();
+	});
+
+	it("keeps a draft intact across a second mount before it is actually resolved", async () => {
+		// A DOM-only check after one remount can pass for the wrong reason: the
+		// lazy useState initializer that seeds the dock's fields reads the draft
+		// during render, before any effect — including the reconcile effect —
+		// has run. So even a reconcile that incorrectly deleted the draft a
+		// moment later would leave the just-rendered DOM looking right. Only a
+		// second remount, reading whatever the first remount's reconcile left
+		// behind, actually proves reconciliation preserved it.
+		const user = userEvent.setup();
+		const snapshot = withUserInput("pending");
+		const first = render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		first.unmount();
+
+		const second = render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+		second.unmount();
+
+		render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+		expect(screen.getByRole("radio", { name: "ACP" })).toBeChecked();
+	});
+
+	it("drops a draft left behind by a question resolved while this workspace was unmounted", async () => {
+		// A live transition (the pending request changing while mounted) is not
+		// the only way a question stops being pending: switching sessions
+		// unmounts this whole workspace, and the question can time out, get
+		// answered elsewhere, or the agent process can restart before the human
+		// switches back. The next mount has to notice this on its own, not only
+		// react to a change it happened to see.
+		const user = userEvent.setup();
+		const pending = withUserInput("pending");
+		const first = render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")).toBeDefined();
+		first.unmount();
+
+		render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")).toBeUndefined();
+	});
+
+	it("on a partial page, leaves a draft alone whose question isn't in the loaded items at all", async () => {
+		// hasMoreBefore is the common state for a real, tool-heavy conversation
+		// (the backend counts messages and activities together against the page
+		// size), so this is the path reconcile actually runs on most of the
+		// time. A question old enough to sit outside the loaded window must not
+		// look resolved just because it's absent.
+		const user = userEvent.setup();
+		const pending = withUserInput("pending");
+		const first = render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		first.unmount();
+
+		const partial = structuredClone(pending);
+		partial.hasMoreBefore = true;
+		partial.items = partial.items.filter((item) => !(item.kind === "activity" && item.activityKind === "user_input"));
+		render(<ChatWorkspace snapshot={partial} onResolveInput={vi.fn()} />);
+
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")?.values.question_0).toBe("acp");
+	});
+
+	it("resets a stuck leave/quit warning once the question shows resolved, even if storage never recovered", async () => {
+		// A save can fail and then the question can end some other way (a
+		// mobile answer, the 30-minute timeout, Stop) while this workspace
+		// isn't even mounted to notice a live transition. Nothing else ever
+		// revisits that specific request's own warning slot once it stops
+		// being pending, so reconcile — which already knows which request ids
+		// just resolved — clears it too, not only the draft.
+		const user = userEvent.setup();
+		const pending = withUserInput("pending");
+		const durableStorage = window.localStorage;
+		const storage = {
+			getItem: durableStorage.getItem.bind(durableStorage),
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (key === elicitationDraftKey(chatFixture.conversationId, "input-1")) {
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+			key: durableStorage.key.bind(durableStorage),
+			get length() {
+				return durableStorage.length;
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+
+		try {
+			const first = render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+			await user.click(screen.getByRole("radio", { name: "ACP" }));
+			await waitFor(() => expect(getChatDraftBoundary(chatFixture.sessionId)).toBe("elicitation-persistence-failed"));
+			first.unmount();
+
+			// Storage is still throwing — the question just isn't pending anymore.
+			render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
+			expect(getChatDraftBoundary(chatFixture.sessionId)).toBeUndefined();
+		} finally {
+			localStorage.mockRestore();
+		}
+	});
+
+	it("reports a failed elicitation draft write through the session's leave/quit boundary", async () => {
+		// Dropping the sessionId prop the dock is given, or always passing it
+		// undefined, keeps every other elicitation test in this file green —
+		// none of them look at the boundary. A failed save then gives no
+		// warning before the human navigates away or quits with an unsent
+		// answer.
+		const user = userEvent.setup();
+		const snapshot = withUserInput("pending");
+		const durableStorage = window.localStorage;
+		const storage = {
+			getItem: durableStorage.getItem.bind(durableStorage),
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (key === elicitationDraftKey(chatFixture.conversationId, "input-1")) {
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+			// Forwarded so ChatWorkspace's own reconcile/sweep calls, which route
+			// through this same mocked storage, actually walk it instead of
+			// silently no-oping on their own key()/length guard.
+			key: durableStorage.key.bind(durableStorage),
+			get length() {
+				return durableStorage.length;
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+		const view = render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+
+		try {
+			await user.click(screen.getByRole("radio", { name: "ACP" }));
+			await waitFor(() => expect(getChatDraftBoundary(chatFixture.sessionId)).toBe("elicitation-persistence-failed"));
+			// Storage is still throwing at this point: an unmount now must not
+			// quietly drop the warning just because the dock is gone. Unmounting
+			// while storage keeps failing is exactly the case the warning exists
+			// to cover.
+			view.unmount();
+			expect(getChatDraftBoundary(chatFixture.sessionId)).toBe("elicitation-persistence-failed");
+		} finally {
+			localStorage.mockRestore();
+			setChatDraftBoundary(chatFixture.sessionId, elicitationBoundarySource("input-1"), undefined);
+		}
+	});
+
+	it("keeps a failed send visible after a newer question replaced its dock mid-flight", async () => {
+		// The dock is keyed by request, so Q1's dock is gone by the time its
+		// send rejects. The failure has to survive somewhere: a note under Q2
+		// while Q2 is shown, then the error itself when Q1 comes back.
+		const user = userEvent.setup();
+		const withQ1 = withUserInput("pending");
+		const withQ1AndQ2 = structuredClone(withQ1);
+		withQ1AndQ2.items.push({
+			kind: "activity",
+			id: "input-2",
+			sequence: 101,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status: "pending",
+			summary: "Choose a language",
+			requestId: "input-2",
+			detail: {
+				inputMode: "form",
+				message: "Choose a language",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: { type: "string", title: "Which language?", oneOf: [{ const: "go", title: "Go" }] },
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:01:00Z",
+		});
+		let rejectQ1!: (reason: unknown) => void;
+		const onResolveInput = vi.fn(
+			(requestId: string) =>
+				requestId === "input-1"
+					? new Promise<void>((_resolve, reject) => {
+							rejectQ1 = reject;
+						})
+					: Promise.resolve(),
+		);
+
+		const view = render(<ChatWorkspace snapshot={withQ1} onResolveInput={onResolveInput} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+
+		view.rerender(<ChatWorkspace snapshot={withQ1AndQ2} onResolveInput={onResolveInput} />);
+		expect(screen.getByRole("radio", { name: "Go" })).toBeInTheDocument();
+
+		await act(async () => {
+			rejectQ1(new Error("daemon unreachable"));
+		});
+		expect(await screen.findByText(/earlier question couldn’t be sent/)).toBeInTheDocument();
+
+		view.rerender(<ChatWorkspace snapshot={withQ1} onResolveInput={onResolveInput} />);
+		expect(screen.getByRole("radio", { name: "ACP" })).toBeInTheDocument();
+		expect(screen.getByText("daemon unreachable")).toBeInTheDocument();
+		expect(screen.queryByText(/earlier question couldn’t be sent/)).not.toBeInTheDocument();
+	});
+
+	it("keeps a failed send's error while its question is only outside the loaded page", async () => {
+		// Absence from a partial page proves nothing: Q1 can still be open,
+		// just older than the loaded window. Its error has to survive that and
+		// come back with Q1, the same way its draft does.
+		const user = userEvent.setup();
+		const withQ1 = withUserInput("pending");
+		const withQ1AndQ2 = structuredClone(withQ1);
+		withQ1AndQ2.items.push(secondQuestion());
+		const q1OutOfPage = structuredClone(withQ1AndQ2);
+		q1OutOfPage.hasMoreBefore = true;
+		q1OutOfPage.items = q1OutOfPage.items.filter((item) => item.id !== "input-1");
+		let rejectQ1!: (reason: unknown) => void;
+		const onResolveInput = vi.fn(
+			(requestId: string) =>
+				requestId === "input-1"
+					? new Promise<void>((_resolve, reject) => {
+							rejectQ1 = reject;
+						})
+					: Promise.resolve(),
+		);
+
+		const view = render(<ChatWorkspace snapshot={withQ1} onResolveInput={onResolveInput} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		view.rerender(<ChatWorkspace snapshot={withQ1AndQ2} onResolveInput={onResolveInput} />);
+		await act(async () => {
+			rejectQ1(new Error("daemon unreachable"));
+		});
+
+		view.rerender(<ChatWorkspace snapshot={q1OutOfPage} onResolveInput={onResolveInput} />);
+		expect(screen.getByText(/earlier question couldn’t be sent/)).toBeInTheDocument();
+
+		view.rerender(<ChatWorkspace snapshot={withQ1} onResolveInput={onResolveInput} />);
+		expect(screen.getByText("daemon unreachable")).toBeInTheDocument();
+	});
+
+	it("drops a failed send's error once the daemon no longer lists its question as open", async () => {
+		const user = userEvent.setup();
+		const withQ1 = withUserInput("pending");
+		const withQ1AndQ2 = structuredClone(withQ1);
+		withQ1AndQ2.items.push(secondQuestion());
+		const q1Answered = structuredClone(withQ1AndQ2);
+		q1Answered.hasMoreBefore = true;
+		q1Answered.items = q1Answered.items.filter((item) => item.id !== "input-1");
+		q1Answered.pendingUserInputRequestIds = ["input-2"];
+		let rejectQ1!: (reason: unknown) => void;
+		const onResolveInput = vi.fn(
+			(requestId: string) =>
+				requestId === "input-1"
+					? new Promise<void>((_resolve, reject) => {
+							rejectQ1 = reject;
+						})
+					: Promise.resolve(),
+		);
+
+		const view = render(<ChatWorkspace snapshot={withQ1} onResolveInput={onResolveInput} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		view.rerender(<ChatWorkspace snapshot={withQ1AndQ2} onResolveInput={onResolveInput} />);
+		await act(async () => {
+			rejectQ1(new Error("daemon unreachable"));
+		});
+		expect(screen.getByText(/earlier question couldn’t be sent/)).toBeInTheDocument();
+
+		view.rerender(<ChatWorkspace snapshot={q1Answered} onResolveInput={onResolveInput} />);
+		expect(screen.queryByText(/earlier question couldn’t be sent/)).not.toBeInTheDocument();
+	});
+
+	it("on a partial page, keeps a listed-open question's draft and drops it once the daemon stops listing it", async () => {
+		const user = userEvent.setup();
+		const pending = withUserInput("pending");
+		const first = render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		first.unmount();
+
+		const outOfPage = structuredClone(pending);
+		outOfPage.hasMoreBefore = true;
+		outOfPage.items = outOfPage.items.filter((item) => item.id !== "input-1");
+		outOfPage.pendingUserInputRequestIds = ["input-1"];
+		const view = render(<ChatWorkspace snapshot={outOfPage} onResolveInput={vi.fn()} />);
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")?.values.question_0).toBe("acp");
+
+		view.rerender(<ChatWorkspace snapshot={{ ...outOfPage, pendingUserInputRequestIds: [] }} onResolveInput={vi.fn()} />);
+		expect(readElicitationDraft(chatFixture.conversationId, "input-1")).toBeUndefined();
+	});
+
+	it("clears a failed save's warning and in-memory answer when a question outside the page stops being open", async () => {
+		// The question can be answered elsewhere, time out, or be stopped while
+		// it sits above the loaded page. Nothing on screen ever shows it
+		// resolved, so only the daemon's open list can release the leave/quit
+		// warning and the answer held in memory.
+		const user = userEvent.setup();
+		const pending = withUserInput("pending");
+		const durableStorage = window.localStorage;
+		const storage = {
+			getItem: durableStorage.getItem.bind(durableStorage),
+			removeItem: durableStorage.removeItem.bind(durableStorage),
+			setItem: (key: string, value: string) => {
+				if (key === elicitationDraftKey(chatFixture.conversationId, "input-1")) {
+					throw new DOMException("full", "QuotaExceededError");
+				}
+				durableStorage.setItem(key, value);
+			},
+			key: durableStorage.key.bind(durableStorage),
+			get length() {
+				return durableStorage.length;
+			},
+		} as Storage;
+		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
+
+		try {
+			const view = render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+			await user.click(screen.getByRole("radio", { name: "ACP" }));
+			await waitFor(() => expect(getChatDraftBoundary(chatFixture.sessionId)).toBe("elicitation-persistence-failed"));
+
+			const outOfPage = structuredClone(pending);
+			outOfPage.hasMoreBefore = true;
+			outOfPage.items = outOfPage.items.filter((item) => item.id !== "input-1");
+			outOfPage.pendingUserInputRequestIds = ["input-1"];
+			view.rerender(<ChatWorkspace snapshot={outOfPage} onResolveInput={vi.fn()} />);
+			expect(getChatDraftBoundary(chatFixture.sessionId)).toBe("elicitation-persistence-failed");
+
+			view.rerender(<ChatWorkspace snapshot={{ ...outOfPage, pendingUserInputRequestIds: [] }} onResolveInput={vi.fn()} />);
+			expect(getChatDraftBoundary(chatFixture.sessionId)).toBeUndefined();
+			view.unmount();
+		} finally {
+			localStorage.mockRestore();
+		}
+
+		// Had the in-memory answer survived, a fresh dock for the same request
+		// would restore it ahead of storage.
+		render(<ChatWorkspace snapshot={pending} onResolveInput={vi.fn()} />);
+		expect(screen.getByRole("radio", { name: "ACP" })).not.toBeChecked();
+	});
+
+	it("resets the dock instead of reusing one still disabled from a different question's in-flight resolve", async () => {
+		// Without a key on ElicitationDock, React would keep reusing the same
+		// component instance across a snapshot swap and carry its `submitting`/
+		// `error` local state along with it. `finally { setSubmitting(false) }`
+		// was removed from `resolve()` deliberately (the form stays disabled
+		// after a success while the answered question can still briefly be on
+		// screen), so only this key resets that state when a different question
+		// takes over — the inner FormRequest key only resets the answers.
+		const user = userEvent.setup();
+		const snapshotA = withUserInput("pending");
+		const onResolveInput = vi.fn(() => new Promise<void>(() => {}));
+		const view = render(<ChatWorkspace snapshot={snapshotA} onResolveInput={onResolveInput} />);
+
+		await user.click(screen.getByRole("radio", { name: "ACP" }));
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		// The submit button's own accessible name becomes "Sending answer" while
+		// disabled (its label swaps for a spinner), so this is A's own way of
+		// showing the request is in flight.
+		expect(screen.getByRole("button", { name: "Sending answer" })).toBeInTheDocument();
+
+		const snapshotB = structuredClone(snapshotA);
+		snapshotB.items = snapshotB.items.filter(
+			(item) => !(item.kind === "activity" && item.activityKind === "user_input"),
+		);
+		snapshotB.items.push({
+			kind: "activity",
+			id: "input-2",
+			sequence: 101,
+			revision: 1,
+			turnId: "turn-1",
+			activityKind: "user_input",
+			status: "pending",
+			summary: "Choose a language",
+			requestId: "input-2",
+			detail: {
+				inputMode: "form",
+				message: "Choose a language",
+				schema: {
+					type: "object",
+					properties: {
+						question_0: { type: "string", title: "Which language?", oneOf: [{ const: "go", title: "Go" }] },
+					},
+				},
+			},
+			createdAt: "2026-08-24T00:01:00Z",
+		});
+
+		view.rerender(<ChatWorkspace snapshot={snapshotB} onResolveInput={onResolveInput} />);
+
+		expect(screen.getByRole("radio", { name: "Go" })).not.toBeDisabled();
+		expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled();
 	});
 
 	it("does not interrupt while an elicitation is open", () => {

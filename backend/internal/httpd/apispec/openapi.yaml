@@ -11064,6 +11064,12 @@ components:
         oldestSequence:
           format: int64
           type: integer
+        pendingUserInputRequestIds:
+          items:
+            type: string
+          type:
+          - "null"
+          - array
         rateLimits:
           $ref: '#/components/schemas/ConversationRateLimitsPayload'
         sessionId:

@@ -505,6 +505,42 @@ func TestConversationSnapshotPagesCombinedTimelineBySequence(t *testing.T) {
 	}
 }
 
+func TestConversationSnapshotPageListsPendingInputsOutsideThePage(t *testing.T) {
+	s, session, conversation := conversationFixture(t)
+	ctx := context.Background()
+	for _, activity := range []domain.ConversationActivity{
+		{ID: "open-input", Kind: domain.ActivityKindUserInput, Status: domain.ActivityStatusPending,
+			Summary: "Choose", RequestID: "open-request", ProviderItemID: "open-item"},
+		{ID: "answered-input", Kind: domain.ActivityKindUserInput, Status: domain.ActivityStatusResolved,
+			Summary: "Choose", RequestID: "answered-request", ProviderItemID: "answered-item"},
+		{ID: "open-approval", Kind: domain.ActivityKindApproval, Status: domain.ActivityStatusPending,
+			Summary: "Run command", RequestID: "approval-request", ProviderItemID: "approval-item"},
+	} {
+		if err := s.UpsertActivity(ctx, conversation, "", activity, histClock); err != nil {
+			t.Fatalf("UpsertActivity(%s): %v", activity.ID, err)
+		}
+	}
+	for i, text := range []string{"one", "two"} {
+		turnID := fmt.Sprintf("turn-pending-%d", i+1)
+		if _, err := s.AppendUserMessage(ctx, conversation, session, "gen-1", domain.ConversationMessage{
+			ID: turnID + "-message", Text: text, Origin: domain.MessageOriginHuman,
+		}, turnID, histClock.Add(time.Duration(i+1)*time.Second)); err != nil {
+			t.Fatalf("append %s: %v", text, err)
+		}
+	}
+
+	page, err := s.LoadConversationSnapshotPage(ctx, conversation, 0, 2)
+	if err != nil {
+		t.Fatalf("newest page: %v", err)
+	}
+	if len(page.Activities) != 0 || !page.HasMoreBefore {
+		t.Fatalf("page activities = %d, hasMoreBefore = %v; want the inputs outside the page", len(page.Activities), page.HasMoreBefore)
+	}
+	if got := page.PendingUserInputRequestIDs; !reflect.DeepEqual(got, []string{"open-request"}) {
+		t.Fatalf("pending input request ids = %v, want [open-request]", got)
+	}
+}
+
 func TestProjectConversationPageStartsAtCurrentContextReset(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

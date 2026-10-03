@@ -80,6 +80,13 @@ if (typeof window !== "undefined") {
 			getItem: (key: string) => values.get(key) ?? null,
 			removeItem: (key: string) => values.delete(key),
 			setItem: (key: string, value: string) => values.set(key, value),
+			// A real Storage also enumerates its keys; some renderer code (elicitation
+			// draft pruning) walks the store this way, so a stub missing these two
+			// would silently skip that code path in every test that renders it.
+			key: (index: number) => [...values.keys()][index] ?? null,
+			get length() {
+				return values.size;
+			},
 		};
 	})();
 

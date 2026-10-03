@@ -735,6 +735,12 @@ export interface ConversationSnapshot {
 	latestSequence: number;
 	oldestSequence: number;
 	hasMoreBefore: boolean;
+	/**
+	 * Every input request still open on the conversation, including ones older
+	 * than the loaded page. Undefined when the daemon did not send it, in which
+	 * case only the loaded items say anything about which requests are open.
+	 */
+	pendingUserInputRequestIds?: string[];
 	/** The first provider-backed prompt in the active provider scope. */
 	nativeForkAvailableAfterSequence?: number;
 	activeBranchId?: string;
