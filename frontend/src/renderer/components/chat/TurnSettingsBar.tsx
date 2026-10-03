@@ -949,6 +949,18 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
 }
 
+// Claude Code names the newest model of a family with the bare family alias
+// ("Opus") and carries the version only in the description ("Opus 5.5 · …"),
+// while older pinned IDs keep versioned names ("Opus 5"). Labelling the merged
+// row with the family name alone therefore makes the newest model read as older
+// than the versioned rows beside it. Prefer the description's leading segment
+// whenever it is a version-qualified form of the same name.
+function concreteChoiceLabel(choice: ChatConfigOption["choices"][number]): string {
+	const name = choice.name.trim();
+	const qualified = (choice.description ?? "").split("·")[0].trim();
+	return qualified.toLowerCase().startsWith(`${name.toLowerCase()} `) ? qualified : name;
+}
+
 // ACP may expose a provider-owned choice whose description names a concrete
 // option. Keep its wire value so users can return to following the provider.
 function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
@@ -972,7 +984,7 @@ function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
 	);
 	const followLabel = isModelOption(mapped) ? "Use agent model" : isEffortOption(mapped) ? "Use agent effort" : "Use agent setting";
 	if (concrete && mapped.currentValue !== concrete.value) {
-		const label = isDefaultPlaceholderLabel(concrete.name) ? concrete.value : concrete.name;
+		const label = isDefaultPlaceholderLabel(concrete.name) ? concrete.value : concreteChoiceLabel(concrete);
 		return {
 			...mapped,
 			choices: mapped.choices.filter((choice) => choice !== concrete).map((choice) =>
@@ -983,7 +995,7 @@ function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
 	return {
 		...mapped,
 		choices: mapped.choices.map((choice) => choice === implicit && isDefaultPlaceholderLabel(choice.name)
-			? { ...choice, name: concrete ? `${followLabel} (${concrete.name})` : followLabel }
+			? { ...choice, name: concrete ? `${followLabel} (${concreteChoiceLabel(concrete)})` : followLabel }
 			: choice),
 	};
 }

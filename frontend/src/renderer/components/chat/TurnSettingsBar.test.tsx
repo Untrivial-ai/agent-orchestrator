@@ -406,6 +406,59 @@ describe("ACP session config options", () => {
 		expect(onChange).toHaveBeenCalledWith("model", { value: "default" });
 	});
 
+	it("labels the merged recommended model with its version, not just the family name", async () => {
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "model", name: "Model", category: "model", type: "select", currentValue: "sonnet",
+			choices: [
+				{ value: "default", name: "Default (recommended)", description: "Opus" },
+				{ value: "opus", name: "Opus", description: "Opus 5.5 · Best for everyday, complex tasks · ~2× usage vs Sonnet" },
+				{ value: "sonnet", name: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks" },
+				{ value: "claude-opus-5", name: "Opus 5", description: "Newer version available · select Opus for Opus 5.5" },
+				{ value: "claude-opus-4-8", name: "Opus 4.8", description: "Newer version available · select Opus for Opus 5.5" },
+			],
+		}]} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "Model" }));
+		// Without the version the row reads "Opus", which looks older than the
+		// "Opus 5" row beside it even though it selects Opus 5.5.
+		expect(screen.getByRole("menuitemradio", { name: "Opus 5.5" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Opus" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Opus 5" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Opus 5.5" }));
+		expect(onChange).toHaveBeenCalledWith("model", { value: "default" });
+	});
+
+	it("names the version when an explicitly pinned recommended model can return to agent control", async () => {
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "model", name: "Model", category: "model", type: "select", currentValue: "opus",
+			choices: [
+				{ value: "default", name: "Default (recommended)", description: "Opus" },
+				{ value: "opus", name: "Opus", description: "Opus 5.5 · Best for everyday, complex tasks · ~2× usage vs Sonnet" },
+				{ value: "sonnet", name: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks" },
+				{ value: "claude-opus-5", name: "Opus 5", description: "Newer version available · select Opus for Opus 5.5" },
+				{ value: "claude-opus-4-8", name: "Opus 4.8", description: "Newer version available · select Opus for Opus 5.5" },
+			],
+		}]} />);
+		await userEvent.click(screen.getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Use agent model (Opus 5.5)" }));
+		expect(onChange).toHaveBeenCalledWith("model", { value: "default" });
+	});
+
+	it("keeps the family name when a description is prose rather than a version", async () => {
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={vi.fn()} configOptions={[{
+			id: "model", name: "Model", category: "model", type: "select", currentValue: "sonnet",
+			choices: [
+				{ value: "default", name: "Default (recommended)", description: "Opus" },
+				{ value: "opus", name: "Opus", description: "Best for everyday, complex tasks" },
+				{ value: "sonnet", name: "Sonnet" },
+			],
+		}]} />);
+		await userEvent.click(screen.getByRole("button", { name: "Model" }));
+		expect(screen.getByRole("menuitemradio", { name: "Opus" })).toBeInTheDocument();
+	});
+
 	it("searches visible model names without matching hidden choice values", async () => {
 		const user = userEvent.setup();
 		const choices = [
