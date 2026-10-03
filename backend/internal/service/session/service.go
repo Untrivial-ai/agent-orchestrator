@@ -1159,11 +1159,13 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 	// persist the backfill.
 	//
 	// The artifact-output poller skips terminated sessions (nothing more can
-	// happen to a session that is done), so a terminated legacy row would
-	// never get durably repaired through that path alone. Trigger the same
-	// reconcile here, on read, unconditionally of IsTerminated: it is a
-	// one-time self-healing write per legacy row (ArtifactDir is only ever
-	// empty once), not a recurring per-read cost once backfilled.
+	// happen to a session that is done), so a terminated row would never get
+	// durably repaired through that path alone. Trigger the same reconcile
+	// here, on read, unconditionally of IsTerminated, in two cases: a legacy
+	// row whose ArtifactDir was empty, and a row whose persisted type does not
+	// yet record artifact files that exist on disk (the agent wrote output and
+	// the session ended before any reconcile ran). Both are one-time
+	// self-healing writes, not a recurring per-read cost.
 	backfilledArtifactDir := false
 	if rec.Metadata.ArtifactDir == "" {
 		if dir := sessionartifacts.Dir(s.dataDir, rec.ID); dir != "" {
@@ -1175,14 +1177,14 @@ func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionReco
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("artifact files %s: %w", rec.ID, err)
 	}
-	if backfilledArtifactDir {
-		// Reflect the backfill in this response's OutputType too, not just
+	if backfilledArtifactDir || (len(artifactFiles) > 0 && !rec.OutputType.HasArtifact()) {
+		// Reflect the repair in this response's OutputType too, not just
 		// future ones: the persisted write below lands asynchronously
 		// relative to this read.
 		rec.OutputType = sessionartifacts.DeriveOutputType(len(prs), len(artifactFiles))
 		if s.outputTypeReconciler != nil {
 			if err := s.outputTypeReconciler.ReconcileSessionOutputType(ctx, rec.ID); err != nil && s.logger != nil {
-				s.logger.Warn("backfill artifact_dir: reconcile output type", "session", rec.ID, "err", err)
+				s.logger.Warn("reconcile output type on read", "session", rec.ID, "err", err)
 			}
 		}
 	}

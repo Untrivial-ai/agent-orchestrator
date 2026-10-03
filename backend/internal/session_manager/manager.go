@@ -1167,6 +1167,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cleanupCtx, cancel := spawnRollbackContext(ctx)
 			m.discardClaimedTaskPreparation(cleanupCtx, prep)
 			cancel()
+			m.cleanupArtifactDir(id)
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 		}
 	}
@@ -1180,6 +1181,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		} else {
 			// No worktree exists, so the seed row can be discarded.
 			m.rollbackSpawnSeedRowAfterFailure(ctx, id)
+			m.cleanupArtifactDir(id)
 		}
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 	}
@@ -1873,6 +1875,7 @@ func (m *Manager) rollbackSeedSpawnWorkspace(ctx context.Context, rec domain.Ses
 			m.clearProvisionedWorkspace(ctx, rec.ID, ws.Path)
 		} else {
 			m.rollbackSpawnSeedRowAfterFailure(ctx, rec.ID)
+			m.cleanupArtifactDir(rec.ID)
 		}
 		return
 	}

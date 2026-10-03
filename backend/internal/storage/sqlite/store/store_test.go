@@ -462,18 +462,19 @@ func TestSessionPersistsArtifactMetadata(t *testing.T) {
 		t.Fatalf("outputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
 	}
 
-	got.Metadata.ArtifactDir = "/tmp/ao/artifacts/artifacts-1/final"
-	got.OutputType = domain.SessionOutputPR
 	got.UpdatedAt = got.UpdatedAt.Add(time.Second)
 	if err := s.UpdateSession(ctx, got); err != nil {
 		t.Fatalf("update session: %v", err)
+	}
+	if applied, err := s.UpdateSessionArtifactOutput(ctx, created.ID, "/tmp/ao/artifacts/artifacts-1/final", domain.SessionOutputPR); err != nil || !applied {
+		t.Fatalf("update artifact output: applied=%v err=%v", applied, err)
 	}
 	updated, ok, err := s.GetSession(ctx, created.ID)
 	if err != nil || !ok {
 		t.Fatalf("get updated session: ok=%v err=%v", ok, err)
 	}
-	if updated.Metadata.ArtifactDir != got.Metadata.ArtifactDir {
-		t.Fatalf("updated artifactDir = %q, want %q", updated.Metadata.ArtifactDir, got.Metadata.ArtifactDir)
+	if updated.Metadata.ArtifactDir != "/tmp/ao/artifacts/artifacts-1/final" {
+		t.Fatalf("updated artifactDir = %q, want the narrow write's value", updated.Metadata.ArtifactDir)
 	}
 	if updated.OutputType != domain.SessionOutputPR {
 		t.Fatalf("updated outputType = %q, want %q", updated.OutputType, domain.SessionOutputPR)
@@ -2239,5 +2240,36 @@ func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
 	}
 	if after.Metadata.ControllerGeneration != "after" || !after.UpdatedAt.Equal(before.UpdatedAt) || after.Activity != before.Activity {
 		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestUpdateSessionDoesNotOverwriteArtifactOutputColumns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	created, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session: %v, %v", ok, err)
+	}
+	if applied, err := s.UpdateSessionArtifactOutput(ctx, created.ID, "/data/artifacts/x", domain.SessionOutputArtifact); err != nil || !applied {
+		t.Fatalf("narrow write: %v, %v", applied, err)
+	}
+	stale.DisplayName = "stale full-row write"
+	if err := s.UpdateSession(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session: %v, %v", ok, err)
+	}
+	if got.DisplayName != stale.DisplayName {
+		t.Fatalf("display name = %q, want the full-row write applied", got.DisplayName)
+	}
+	if got.OutputType != domain.SessionOutputArtifact || got.Metadata.ArtifactDir != "/data/artifacts/x" {
+		t.Fatalf("stale UpdateSession clobbered output columns: type=%q dir=%q", got.OutputType, got.Metadata.ArtifactDir)
 	}
 }

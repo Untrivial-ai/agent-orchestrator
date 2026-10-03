@@ -123,6 +123,7 @@ describe("ArtifactFileView", () => {
 		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+		expect(screen.getByText("Unable to load artifact file")).toBeInTheDocument();
 	});
 
 	it("shows a retry option when no rawUrl is available", async () => {

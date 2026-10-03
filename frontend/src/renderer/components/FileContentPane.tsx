@@ -92,7 +92,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha, previousPath),
+		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t(source.kind === "artifact" ? "files.error.loadArtifact" : "files.error.loadWorkspaceFile"), scope, commitSha, previousPath),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);

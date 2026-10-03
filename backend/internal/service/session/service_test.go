@@ -4521,6 +4521,69 @@ func TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions(t *testin
 	}
 }
 
+// A terminated session whose agent wrote an artifact before any reconcile ran
+// keeps a persisted ArtifactDir but a stale OutputType of none, and the
+// artifact poller skips terminated sessions. Get must repair it durably.
+func TestGetReconcilesTerminatedSessionWithPersistedDirAndUnreconciledArtifact(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "notes.md"), []byte("# notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTerminated: true,
+		OutputType:   domain.SessionOutputNone,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want the durable reconcile triggered on read", reconciler.reconciled)
+	}
+}
+
+func TestGetDoesNotReconcileWhenPersistedOutputTypeAlreadyHasArtifact(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "notes.md"), []byte("# notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		OutputType: domain.SessionOutputArtifact,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: artifactDir},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+	if _, err := svc.Get(context.Background(), "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciler.reconciled) != 0 {
+		t.Fatalf("reconciled = %v, want none for an already-reconciled session", reconciler.reconciled)
+	}
+}
+
 // A reconcile failure must not fail an otherwise-successful claim: the
 // artifact-output poller still corrects OutputType on its next tick.
 func TestClaimPRSucceedsWhenOutputTypeReconcileFails(t *testing.T) {

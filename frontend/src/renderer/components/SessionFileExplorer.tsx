@@ -236,6 +236,7 @@ export function SessionFileExplorer({
 			setFilesSource(sessionId, WORKSPACE_SOURCE);
 			return;
 		}
+		const pr = prSummaries.find((candidate) => candidate.url === value);
 		if (pr) setFilesSource(sessionId, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
 

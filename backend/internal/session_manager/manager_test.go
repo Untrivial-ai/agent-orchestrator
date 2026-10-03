@@ -10720,3 +10720,39 @@ func TestKill_TerminatesEvenWhenTeardownBudgetExpires(t *testing.T) {
 		t.Fatal("session must be marked terminated even though the teardown budget expired")
 	}
 }
+
+func TestSpawn_ArtifactDirWriteFailureRollsBackSeedRowAndDir(t *testing.T) {
+	m, st, _, _ := newManager()
+	dataDir := t.TempDir()
+	m.dataDir = dataDir
+	st.updateSessionErr = errors.New("persist artifact dir failed")
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode})
+	if !errors.Is(err, ErrSpawnArtifactDir) {
+		t.Fatalf("spawn = %v, want ErrSpawnArtifactDir", err)
+	}
+	if _, ok := st.sessions["mer-1"]; ok {
+		t.Fatal("seed row survived a failed artifact dir write")
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "artifacts", "mer-1")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact dir not cleaned up: stat err = %v", statErr)
+	}
+}
+
+func TestSpawn_WorkspaceCreateFailureRemovesReservedArtifactDir(t *testing.T) {
+	m, st, _, ws := newManager()
+	dataDir := t.TempDir()
+	m.dataDir = dataDir
+	ws.createErr = errors.New("create worktree failed")
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode})
+	if !errors.Is(err, ErrWorkspaceCreate) {
+		t.Fatalf("spawn = %v, want ErrWorkspaceCreate", err)
+	}
+	if _, ok := st.sessions["mer-1"]; ok {
+		t.Fatal("seed row survived a failed workspace create")
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "artifacts", "mer-1")); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact dir orphaned after workspace create failure: stat err = %v", statErr)
+	}
+}

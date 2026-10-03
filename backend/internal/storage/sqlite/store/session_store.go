@@ -874,8 +874,6 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		AutoInjectCI:                     rec.AutoInjectCI,
 		CleanupGeneration:                rec.CleanupGeneration,
 		BrowserCapabilityVerifier:        rec.Metadata.BrowserCapabilityVerifier,
-		ArtifactDir:                      rec.Metadata.ArtifactDir,
-		SessionOutputType:                string(normalizeSessionOutputType(rec.OutputType)),
 		ProviderConversationID:           rec.Metadata.ProviderConversationID,
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,

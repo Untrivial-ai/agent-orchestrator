@@ -6,9 +6,7 @@ package sessionartifacts
 
 import (
 	"errors"
-	"io"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,8 +28,14 @@ func Dir(dataDir string, id domain.SessionID) string {
 	return filepath.Join(dataDir, "artifacts", string(id))
 }
 
-// List walks a session's artifact directory and returns its regular files,
-// sorted by path.
+// MaxFiles bounds how many files List returns so a pathological artifact tree
+// cannot stall a session read or the lifecycle reconcile that runs under the
+// lifecycle mutex.
+const MaxFiles = 1000
+
+// List walks a session's artifact directory and returns up to MaxFiles of its
+// regular files, sorted by path. Unreadable entries are skipped rather than
+// failing the walk.
 func List(dir string) ([]domain.SessionArtifactFile, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -44,7 +48,16 @@ func List(dir string) ([]domain.SessionArtifactFile, error) {
 	files := make([]domain.SessionArtifactFile, 0)
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			if path == root {
+				return walkErr
+			}
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(files) >= MaxFiles {
+			return filepath.SkipAll
 		}
 		if d.Type()&os.ModeSymlink != 0 {
 			if d.IsDir() {
@@ -56,21 +69,18 @@ func List(dir string) ([]domain.SessionArtifactFile, error) {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
+		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
-			return err
+			return nil
 		}
 		rel = filepath.ToSlash(rel)
 		files = append(files, domain.SessionArtifactFile{
 			Path:      rel,
 			Name:      filepath.Base(path),
-			Kind:      inferKind(path, rel),
+			Kind:      inferKind(rel),
 			Size:      info.Size(),
 			UpdatedAt: info.ModTime().UTC(),
 		})
@@ -88,22 +98,12 @@ func List(dir string) ([]domain.SessionArtifactFile, error) {
 	return files, nil
 }
 
-func inferKind(absPath, relPath string) domain.SessionArtifactKind {
+func inferKind(relPath string) domain.SessionArtifactKind {
 	switch strings.ToLower(filepath.Ext(relPath)) {
 	case ".html", ".htm":
 		return domain.SessionArtifactHTML
 	case ".md", ".markdown":
 		return domain.SessionArtifactMarkdown
-	}
-	file, err := os.Open(absPath)
-	if err != nil {
-		return domain.SessionArtifactGeneric
-	}
-	defer func() { _ = file.Close() }()
-	buf := make([]byte, 512)
-	n, _ := io.ReadFull(file, buf)
-	if strings.HasPrefix(http.DetectContentType(buf[:n]), "text/html") {
-		return domain.SessionArtifactHTML
 	}
 	return domain.SessionArtifactGeneric
 }
