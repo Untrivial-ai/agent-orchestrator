@@ -477,6 +477,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	const announcedCursorSchemeRef = useRef<Theme | null>(null);
 	const searchAddonRef = useRef<SearchAddon | null>(null);
 	const fitRef = useRef<(() => void) | null>(null);
+	const abandonHiddenFitRef = useRef<(() => void) | null>(null);
 	const colorSchemeReporterRef = useRef<
 		((theme: Theme, themeStyle: ThemeStyle, force?: boolean) => void) | null
 	>(null);
@@ -1216,6 +1217,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// hidden behind the cover. A normally parked terminal still ignores them.
 		const scheduleVisibleFit = () => scheduleStableFit(fitAllowsHidden);
 		fitRef.current = scheduleVisibleFit;
+		// Parking abandons a pending activation fit. Its hidden allowance covers a
+		// container on its way into the pane slot; once the terminal is parked,
+		// fitting would measure the parking lot and shrink the grid to a sliver
+		// while output (such as a new shell's first prompt) keeps arriving.
+		abandonHiddenFitRef.current = () => {
+			fitAllowsHidden = false;
+		};
 		// Window/DPR changes and unmeasured startup cells still need FitAddon.
 		// Coalesce those recovery reads into one frame; measured pane resizes
 		// take the observer path below instead.
@@ -1625,6 +1633,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			get rows() {
 				return term.rows;
 			},
+			measureGrid: () => {
+				try {
+					const grid = fit.proposeDimensions();
+					return grid && grid.cols > 0 && grid.rows > 0 ? { cols: grid.cols, rows: grid.rows } : null;
+				} catch {
+					return null;
+				}
+			},
 			// Forward xterm's write callback: it fires once THIS chunk has been
 			// parsed into the buffer, which is what lets the attachment reveal the
 			// pane at the replay's settled scroll position (issue #3160).
@@ -1698,6 +1714,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			termRef.current = null;
 			if (searchAddonRef.current === searchAddon) searchAddonRef.current = null;
 			fitRef.current = null;
+			abandonHiddenFitRef.current = null;
 			cancelAnimationFrame(raf);
 			if (liveFitFrame !== null) cancelAnimationFrame(liveFitFrame);
 			for (const timer of settleTimers) window.clearTimeout(timer);
@@ -1814,6 +1831,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 
 	useLayoutEffect(() => {
 		if (props.isVisible === false) {
+			abandonHiddenFitRef.current?.();
 			setSearchOpen(false);
 			searchAddonRef.current?.clearDecorations();
 			setContextMenuOpen(false);

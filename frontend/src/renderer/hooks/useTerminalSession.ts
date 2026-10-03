@@ -48,6 +48,12 @@ export type AttachableTerminal = {
 	 * without exposing an intermediate row.
 	 */
 	prepareForActivation: () => Promise<void>;
+	/**
+	 * The grid xterm's fit measures for its host right now, or null while the
+	 * host cannot be measured (parked, zero-sized, fonts not ready). Unlike
+	 * cols/rows, never reports xterm's constructor default as a measurement.
+	 */
+	measureGrid: () => { cols: number; rows: number } | null;
 	/** Tell Cursor Agent the live light/dark scheme (private 997 notification). */
 	notifyCursorColorScheme: () => void;
 	/** Send an explicit UI action through the same guarded path as user input. */

@@ -483,6 +483,37 @@ describe("XtermTerminal", () => {
 		}
 	});
 
+	it("abandons a pending activation fit when the terminal is parked first", async () => {
+		// Switching away before the activation fit's quiet window ends used to fit
+		// the parked container, shrinking the grid to a sliver while output arrived.
+		vi.useFakeTimers();
+		vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+			window.setTimeout(() => callback(performance.now()), 0),
+		);
+		vi.stubGlobal("cancelAnimationFrame", (id: number) => window.clearTimeout(id));
+		try {
+			let terminal: AttachableTerminal | undefined;
+			const onReady = (ready: AttachableTerminal) => {
+				terminal = ready;
+			};
+			const view = render(<XtermTerminal theme="dark" onReady={onReady} />);
+			act(() => vi.runAllTimers());
+			state.fit.mockClear();
+
+			const preparation = terminal!.prepareForActivation();
+			view.rerender(<XtermTerminal theme="dark" isVisible={false} onReady={onReady} />);
+			await act(async () => {
+				vi.runAllTimers();
+				await preparation;
+			});
+
+			expect(state.fit).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it.each([true, false])("lets xterm drain viewport initialization before disposal (DEV=%s)", (development) => {
 		vi.stubEnv("DEV", development);
 		vi.useFakeTimers();

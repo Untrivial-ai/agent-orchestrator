@@ -5,6 +5,12 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { markTerminalHandleFresh } from "../lib/fresh-terminal-handles";
+import {
+	adoptPendingShell,
+	discardPendingShell,
+	PENDING_SHELL_HANDLE_PREFIX,
+	pendingShellGrid,
+} from "../lib/pending-shell-terminals";
 import type { components } from "../../api/schema";
 import { apiErrorCode, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
@@ -28,9 +34,10 @@ export type ShellTerminal = {
 	/** Present when the shell lives in a control-plane sandbox, not the local daemon. */
 	cloud?: { orgId: string };
 	/**
-	 * Exists only in the renderer while the daemon is creating the PTY. It lets
-	 * the tab strip respond to the click immediately without ever attempting to
-	 * attach xterm to a handle that does not exist yet.
+	 * Exists only in the renderer until the daemon has created the PTY. It lets
+	 * the tab strip respond to the click immediately; the tab's xterm mounts and
+	 * measures its grid, which the daemon then creates the PTY at (see
+	 * lib/pending-shell-terminals).
 	 */
 	optimistic?: true;
 };
@@ -113,7 +120,8 @@ function nextCloudShellTitle(terminals: ShellTerminal[], sessionId: string): str
 	return `Terminal ${count + 1}`;
 }
 
-type OpenShellTerminalMutationInput = OpenShellTerminalInput & { optimisticShell?: ShellTerminal };
+type OpenShellTerminalMutationInput = OpenShellTerminalInput & { optimisticShell: ShellTerminal };
+type OpenShellTerminalRequest = components["schemas"]["OpenShellTerminalRequest"];
 type OpenShellTerminalCallbacks = { onSuccess?: (shell: ShellTerminal) => void };
 
 function nextShellTerminalTitle(terminals: ShellTerminal[]): string {
@@ -136,7 +144,7 @@ function createOptimisticShellTerminal(
 ): ShellTerminal {
 	const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	return {
-		handleId: `pending-shell:${id}`,
+		handleId: `${PENDING_SHELL_HANDLE_PREFIX}${id}`,
 		projectId,
 		sessionId,
 		workingDir: "",
@@ -170,7 +178,7 @@ export function useOpenShellTerminal(hostId?: HostId) {
 			shell,
 			cloud,
 			optimisticShell,
-		}: OpenShellTerminalMutationInput = {}): Promise<ShellTerminal> => {
+		}: OpenShellTerminalMutationInput): Promise<ShellTerminal> => {
 			if (usePreviewData && !remote) {
 				previewShellSeq += 1;
 				const shell: ShellTerminal = {
@@ -178,7 +186,7 @@ export function useOpenShellTerminal(hostId?: HostId) {
 					projectId,
 					sessionId,
 					workingDir: `/Users/demo/Projects/${projectId ?? "ao"}`,
-					title: optimisticShell?.title ?? `Terminal ${previewShellSeq}`,
+					title: optimisticShell.title,
 					createdAt: new Date().toISOString(),
 				};
 				previewShellTerminals = [...previewShellTerminals, shell];
@@ -202,7 +210,10 @@ export function useOpenShellTerminal(hostId?: HostId) {
 				cloudShellTerminals = [...cloudShellTerminals, shell];
 				return shell;
 			}
-			const body: OpenShellTerminalInput = {};
+			// Create the PTY at the grid the tab's terminal measured, so the
+			// shell's first prompt is laid out for the width the user sees.
+			const grid = await pendingShellGrid(optimisticShell.handleId);
+			const body: OpenShellTerminalRequest = { cols: grid.cols, rows: grid.rows };
 			if (projectId) body.projectId = projectId;
 			if (sessionId) body.sessionId = sessionId;
 			if (remote && shell) body.shell = shell;
@@ -216,28 +227,29 @@ export function useOpenShellTerminal(hostId?: HostId) {
 			if (!remote) markTerminalHandleFresh(data.shellTerminal.handleId);
 			return toShellTerminal(data.shellTerminal, hostId);
 		},
-		onMutate: (input) => {
-			const optimisticShell =
-				input.optimisticShell ??
-				createOptimisticShellTerminal(input, queryClient.getQueryData<ShellTerminal[]>(queryKey) ?? [], hostId);
+		onMutate: ({ optimisticShell }) => {
 			addOptimisticShell(queryClient, queryKey, optimisticShell);
-			return { optimisticHandleId: optimisticShell.handleId };
 		},
-		onSuccess: (shell, _input, context) => {
+		onSuccess: (shell, { optimisticShell }) => {
+			// Before the tab's target changes: the pending tab's terminal must be
+			// re-keyed to the created handle first, or the cache would mount a
+			// second terminal for it instead of keeping the measured one.
+			adoptPendingShell(optimisticShell.handleId, shell);
 			// Replace, rather than append to, the tab that was visible while the POST
 			// ran. This preserves selection and prevents a duplicate tab flash.
 			queryClient.setQueryData<ShellTerminal[]>(queryKey, (current) => {
 				if (current?.some((candidate) => candidate.handleId === shell.handleId)) return current;
-				const optimisticHandleId = context?.optimisticHandleId;
+				const optimisticHandleId = optimisticShell.handleId;
 				const index = current?.findIndex((candidate) => candidate.handleId === optimisticHandleId) ?? -1;
 				if (index < 0) return [...(current ?? []), shell];
 				return current?.map((candidate, candidateIndex) => (candidateIndex === index ? shell : candidate)) ?? [shell];
 			});
 			if (!shell.cloud) void queryClient.invalidateQueries({ queryKey });
 		},
-		onError: (error, _input, context) => {
+		onError: (error, { optimisticShell }) => {
+			discardPendingShell(optimisticShell.handleId);
 			queryClient.setQueryData<ShellTerminal[]>(queryKey, (current) =>
-				current?.filter((shell) => shell.handleId !== context?.optimisticHandleId),
+				current?.filter((shell) => shell.handleId !== optimisticShell.handleId),
 			);
 			console.error("Failed to open shell terminal:", error);
 			if (!remote && isWindowsPlatform() && apiErrorCode(error) === "SHELL_TERMINAL_SHELL_UNAVAILABLE") {
@@ -250,8 +262,8 @@ export function useOpenShellTerminal(hostId?: HostId) {
 	});
 
 	// Session topbars need the pending shell synchronously so they can select
-	// it in the same click event. Other callers can keep using mutation.mutate;
-	// onMutate supplies an optimistic entry for them too.
+	// it in the same click event. Selecting it is also what starts creation: the
+	// pending tab's terminal measures the grid the daemon creates the PTY at.
 	const open = (input: OpenShellTerminalInput = {}, callbacks?: OpenShellTerminalCallbacks) => {
 		const optimisticShell = createOptimisticShellTerminal(
 			input,

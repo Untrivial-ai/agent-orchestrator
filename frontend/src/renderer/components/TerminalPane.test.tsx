@@ -10,6 +10,7 @@ import type { TerminalMux } from "../lib/terminal-mux";
 import type { TerminalTarget } from "../types/terminal";
 import type { WorkspaceSession } from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
+import { adoptPendingShell, discardPendingShell, pendingShellGrid } from "../lib/pending-shell-terminals";
 import {
 	cloudTerminalKind,
 	TerminalCacheProvider,
@@ -23,6 +24,7 @@ const {
 	getMock,
 	postMock,
 	prepareForActivationMock,
+	measureGridMock,
 	sendUserInputMock,
 	terminalError,
 	terminalState,
@@ -41,6 +43,7 @@ const {
 		getMock: vi.fn(async (_path: string, _options: unknown) => ({ data: undefined })),
 		postMock: vi.fn(),
 		prepareForActivationMock: vi.fn(async (): Promise<void> => undefined),
+		measureGridMock: vi.fn((): { cols: number; rows: number } | null => ({ cols: 93, rows: 27 })),
 		sendUserInputMock: vi.fn(),
 		terminalError: { value: undefined as string | undefined },
 		terminalState: { value: "idle" },
@@ -119,6 +122,7 @@ vi.mock("./XtermTerminal", () => ({
 				writeln: vi.fn(),
 				showLatestOutput: vi.fn(),
 				prepareForActivation: prepareForActivationMock,
+				measureGrid: measureGridMock,
 				notifyCursorColorScheme: vi.fn(),
 				sendUserInput: sendUserInputMock,
 				onUserInput: vi.fn(() => disposable),
@@ -183,6 +187,8 @@ beforeEach(() => {
 	attachMock.mockClear();
 	prepareForActivationMock.mockReset();
 	prepareForActivationMock.mockResolvedValue(undefined);
+	measureGridMock.mockReset();
+	measureGridMock.mockReturnValue({ cols: 93, rows: 27 });
 	sendUserInputMock.mockReset();
 	sendUserInputMock.mockReturnValue(true);
 	xtermMounts.value = 0;
@@ -472,9 +478,9 @@ describe("TerminalPane empty states", () => {
 		}
 	});
 
-	it("selects a temporary shell without attaching xterm to its temporary handle", () => {
+	it("measures a pending shell's grid in xterm without attaching to its temporary handle", async () => {
 		const shell = {
-			handleId: "pending-shell:test",
+			handleId: "pending-shell:measure",
 			sessionId: worker.id,
 			workingDir: "",
 			title: "Terminal 1",
@@ -484,8 +490,8 @@ describe("TerminalPane empty states", () => {
 		const view = renderCachedPane({
 			session: worker,
 			sessions: [worker],
-			// The authoritative shell can replace the optimistic cache row before
-			// the selected target changes. A pending handle itself is the contract.
+			// A list refetch can drop the pending row while the PTY is being
+			// created; the pending handle itself is the contract.
 			shellTerminals: [],
 			terminalTarget: {
 				generation: shell.createdAt,
@@ -496,9 +502,151 @@ describe("TerminalPane empty states", () => {
 			},
 		});
 		try {
-			expect(screen.getByTestId("optimistic-terminal")).toBeInTheDocument();
-			expect(screen.queryByTestId("xterm")).not.toBeInTheDocument();
+			expect(activeXterm()).toBeInTheDocument();
 			expect(terminalSessionOptions.at(-1)?.shellTerminalHandleId).toBeUndefined();
+			expect(screen.queryByText("Agent Orchestrator")).not.toBeInTheDocument();
+			await expect(pendingShellGrid(shell.handleId)).resolves.toEqual({ cols: 93, rows: 27 });
+			expect(attachMock).not.toHaveBeenCalled();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("keeps the measured xterm when the pending shell's PTY is created", async () => {
+		const pending = {
+			handleId: "pending-shell:adopt",
+			sessionId: worker.id,
+			workingDir: "",
+			title: "Terminal 1",
+			createdAt: "2026-08-31T00:00:00Z",
+			optimistic: true,
+		} satisfies ShellTerminal;
+		const created = {
+			handleId: "shellterm-adopted",
+			sessionId: worker.id,
+			workingDir: "/repos/my-app",
+			title: "Terminal 1",
+			createdAt: "2026-08-31T00:00:01Z",
+		} satisfies ShellTerminal;
+		const target = (shell: ShellTerminal): TerminalTarget => ({
+			generation: shell.createdAt,
+			kind: "shell",
+			handleId: shell.handleId,
+			sessionId: worker.id,
+			title: shell.title,
+		});
+		const view = renderCachedPane({
+			session: worker,
+			sessions: [worker],
+			shellTerminals: [pending],
+			terminalTarget: target(pending),
+		});
+		try {
+			await expect(pendingShellGrid(pending.handleId)).resolves.toEqual({ cols: 93, rows: 27 });
+			const instance = activeXterm().dataset.xtermInstance;
+
+			// The open mutation's order: adopt, publish the created row, then
+			// the pane selects the created handle.
+			act(() => {
+				adoptPendingShell(pending.handleId, created);
+				view.queryClient.setQueryData(shellTerminalsQueryKey, [created]);
+			});
+			view.show(worker, target(created));
+
+			await waitFor(() => expect(attachMock).toHaveBeenCalledTimes(1));
+			expect(activeXterm().dataset.xtermInstance).toBe(instance);
+			expect(xtermMounts.value).toBe(1);
+			expect(xtermUnmounts.value).toBe(0);
+			expect(terminalSessionOptions.at(-1)?.shellTerminalHandleId).toBe(created.handleId);
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("attaches a shell handed its PTY while parked without refitting the parked slot", async () => {
+		const pending = {
+			handleId: "pending-shell:parked",
+			sessionId: worker.id,
+			workingDir: "",
+			title: "Terminal 1",
+			createdAt: "2026-08-31T00:00:00Z",
+			optimistic: true,
+		} satisfies ShellTerminal;
+		const other = {
+			handleId: "shellterm-other",
+			sessionId: worker.id,
+			workingDir: "/repos/my-app",
+			title: "Terminal 2",
+			createdAt: "2026-08-31T00:00:02Z",
+		} satisfies ShellTerminal;
+		const created = {
+			handleId: "shellterm-parked",
+			sessionId: worker.id,
+			workingDir: "/repos/my-app",
+			title: "Terminal 1",
+			createdAt: "2026-08-31T00:00:01Z",
+		} satisfies ShellTerminal;
+		const target = (shell: ShellTerminal): TerminalTarget => ({
+			generation: shell.createdAt,
+			kind: "shell",
+			handleId: shell.handleId,
+			sessionId: worker.id,
+			title: shell.title,
+		});
+		const view = renderCachedPane({
+			session: worker,
+			sessions: [worker],
+			shellTerminals: [pending, other],
+			terminalTarget: target(pending),
+		});
+		try {
+			await expect(pendingShellGrid(pending.handleId)).resolves.toEqual({ cols: 93, rows: 27 });
+			// The user moves to another tab before the PTY exists.
+			view.show(worker, target(other));
+			await act(async () => undefined);
+			attachMock.mockClear();
+			prepareForActivationMock.mockClear();
+
+			act(() => {
+				adoptPendingShell(pending.handleId, created);
+				view.queryClient.setQueryData(shellTerminalsQueryKey, [created, other]);
+			});
+
+			// A parked slot fits to a sliver; the parked terminal must attach at the
+			// grid it measured instead of running activation's fit first.
+			await waitFor(() => expect(attachMock).toHaveBeenCalledTimes(1));
+			expect(prepareForActivationMock).not.toHaveBeenCalled();
+		} finally {
+			view.restore();
+		}
+	});
+
+	it("disposes the pending terminal when its PTY could not be created", async () => {
+		const pending = {
+			handleId: "pending-shell:discard",
+			sessionId: worker.id,
+			workingDir: "",
+			title: "Terminal 1",
+			createdAt: "2026-08-31T00:00:00Z",
+			optimistic: true,
+		} satisfies ShellTerminal;
+		const view = renderCachedPane({
+			session: worker,
+			sessions: [worker],
+			shellTerminals: [pending],
+			terminalTarget: {
+				generation: pending.createdAt,
+				kind: "shell",
+				handleId: pending.handleId,
+				sessionId: worker.id,
+				title: pending.title,
+			},
+		});
+		try {
+			expect(activeXterm()).toBeInTheDocument();
+			act(() => discardPendingShell(pending.handleId));
+			await waitFor(() => expect(xtermUnmounts.value).toBe(1));
+			expect(screen.queryByTestId("xterm")).not.toBeInTheDocument();
 		} finally {
 			view.restore();
 		}

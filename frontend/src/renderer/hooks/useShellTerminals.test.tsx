@@ -43,6 +43,12 @@ vi.mock("../stores/terminal-shell-store", () => ({
 }));
 
 import {
+	failPendingShell,
+	PENDING_SHELL_HANDLE_PREFIX,
+	registerPendingShellCache,
+	reportPendingShellGrid,
+} from "../lib/pending-shell-terminals";
+import {
 	type ShellTerminal,
 	shellTerminalsQueryKey,
 	shellTerminalsQueryKeyForHost,
@@ -66,6 +72,17 @@ const shells: ShellTerminal[] = [
 		workingDir: "/tmp",
 	},
 ];
+
+const measuredGrid = { cols: 93, rows: 27 };
+let pendingSeq = 0;
+
+// The pending tab whose terminal has already measured its grid.
+function measuredPendingShell(): ShellTerminal {
+	pendingSeq += 1;
+	const handleId = `${PENDING_SHELL_HANDLE_PREFIX}test-${pendingSeq}`;
+	reportPendingShellGrid(handleId, measuredGrid);
+	return { handleId, workingDir: "", title: "Terminal 1", createdAt: "2026-08-27T00:02:00Z", optimistic: true };
+}
 
 function wrapper(queryClient: QueryClient) {
 	return function Wrapper({ children }: { children: ReactNode }) {
@@ -136,12 +153,13 @@ describe("host-scoped shell terminals", () => {
 		act(() => { pending = result.current.open({ projectId: "project-a", sessionId: "same-session" }); });
 		expect(pending).toMatchObject({ hostId: "host-a", sessionId: "same-session", optimistic: true });
 		expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual([pending]);
+		act(() => reportPendingShellGrid(pending.handleId, measuredGrid));
 		await waitFor(() => expect(queryClient.getQueryData(shellTerminalsQueryKeyForHost("host-a"))).toEqual([
 			{ ...shells[0], sessionId: "same-session", hostId: "host-a" },
 		]));
 
 		expect(remoteA.POST).toHaveBeenCalledWith("/api/v1/shell-terminals", {
-			body: { projectId: "project-a", sessionId: "same-session" },
+			body: { cols: 93, rows: 27, projectId: "project-a", sessionId: "same-session" },
 		});
 		expect(postMock).not.toHaveBeenCalled();
 		expect(shellStoreMock.load).not.toHaveBeenCalled();
@@ -195,7 +213,7 @@ describe("useOpenShellTerminal", () => {
 		queryClient.setQueryData(shellTerminalsQueryKey, []);
 		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await act(async () => result.current.mutateAsync({}));
+		await act(async () => result.current.mutateAsync({ optimisticShell: measuredPendingShell() }));
 
 		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shell]);
 	});
@@ -207,11 +225,11 @@ describe("useOpenShellTerminal", () => {
 		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await act(async () => result.current.mutateAsync({ projectId: "project-1" }));
+		await act(async () => result.current.mutateAsync({ projectId: "project-1", optimisticShell: measuredPendingShell() }));
 
 		expect(shellStoreMock.load).toHaveBeenCalledOnce();
 		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", {
-			body: { projectId: "project-1", shell: "git-bash" },
+			body: { cols: 93, rows: 27, projectId: "project-1", shell: "git-bash" },
 		});
 	});
 
@@ -222,10 +240,10 @@ describe("useOpenShellTerminal", () => {
 		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await act(async () => result.current.mutateAsync({ shell: "C:\\Tools\\bash.exe" }));
+		await act(async () => result.current.mutateAsync({ shell: "C:\\Tools\\bash.exe", optimisticShell: measuredPendingShell() }));
 
 		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", {
-			body: { shell: "C:\\Tools\\bash.exe" },
+			body: { cols: 93, rows: 27, shell: "C:\\Tools\\bash.exe" },
 		});
 	});
 
@@ -234,9 +252,9 @@ describe("useOpenShellTerminal", () => {
 		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await act(async () => result.current.mutateAsync({}));
+		await act(async () => result.current.mutateAsync({ optimisticShell: measuredPendingShell() }));
 
-		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", { body: {} });
+		expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", { body: { cols: 93, rows: 27 } });
 		expect(shellStoreMock.load).not.toHaveBeenCalled();
 	});
 
@@ -247,7 +265,9 @@ describe("useOpenShellTerminal", () => {
 		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
 
-		await expect(act(async () => result.current.mutateAsync({}))).rejects.toEqual({
+		await expect(
+			act(async () => result.current.mutateAsync({ optimisticShell: measuredPendingShell() })),
+		).rejects.toEqual({
 			code: "SHELL_TERMINAL_SHELL_UNAVAILABLE",
 		});
 		await waitFor(() => expect(shellStoreMock.setPreference).toHaveBeenCalledWith({ kind: "auto" }));
@@ -265,6 +285,7 @@ describe("useOpenShellTerminal", () => {
 				projectId: "cloud-project",
 				sessionId: "cloud-session",
 				cloud: { orgId: "cloud-org" },
+				optimisticShell: measuredPendingShell(),
 			}),
 		);
 
@@ -284,6 +305,86 @@ describe("useOpenShellTerminal", () => {
 		await act(async () => close.result.current.mutateAsync(shell.handleId));
 		expect(deleteMock).not.toHaveBeenCalled();
 		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([]);
+	});
+});
+
+describe("useOpenShellTerminal sized creation", () => {
+	it("creates the PTY only once the pending tab's terminal has measured its grid", async () => {
+		const shell = shells[0];
+		postMock.mockResolvedValue({ data: { shellTerminal: { ...shell } } });
+		const queryClient = new QueryClient({
+			defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+		});
+		queryClient.setQueryData(shellTerminalsQueryKey, []);
+		const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+
+		let pending!: ShellTerminal;
+		act(() => {
+			pending = result.current.open({ projectId: "project-1" });
+		});
+		expect(pending.handleId.startsWith(PENDING_SHELL_HANDLE_PREFIX)).toBe(true);
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([pending]);
+		await act(async () => undefined);
+		expect(postMock).not.toHaveBeenCalled();
+
+		act(() => reportPendingShellGrid(pending.handleId, { cols: 101, rows: 33 }));
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/shell-terminals", {
+				body: { cols: 101, rows: 33, projectId: "project-1" },
+			}),
+		);
+		await waitFor(() => expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([shell]));
+	});
+
+	it("hands the pending tab's terminal over to the created shell before publishing it", async () => {
+		const shell = shells[0];
+		postMock.mockResolvedValue({ data: { shellTerminal: { ...shell } } });
+		const queryClient = new QueryClient({
+			defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+		});
+		queryClient.setQueryData(shellTerminalsQueryKey, []);
+		const listAtAdoption: unknown[] = [];
+		const adopt = vi.fn(() => listAtAdoption.push(queryClient.getQueryData(shellTerminalsQueryKey)));
+		const unregister = registerPendingShellCache({ adopt, discard: vi.fn() });
+		try {
+			const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+			const pending = measuredPendingShell();
+
+			await act(async () => result.current.mutateAsync({ optimisticShell: pending }));
+
+			expect(adopt).toHaveBeenCalledWith(pending.handleId, shell);
+			// Adopted while the list still shows the pending tab, so the cache
+			// re-keys the terminal before any pane renders the created handle.
+			expect(listAtAdoption).toEqual([[pending]]);
+		} finally {
+			unregister();
+		}
+	});
+
+	it("drops the pending tab without creating a PTY when its terminal cannot start", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+		});
+		queryClient.setQueryData(shellTerminalsQueryKey, []);
+		const discard = vi.fn();
+		const unregister = registerPendingShellCache({ adopt: vi.fn(), discard });
+		try {
+			const { result } = renderHook(() => useOpenShellTerminal(), { wrapper: wrapper(queryClient) });
+			let pending!: ShellTerminal;
+			act(() => {
+				pending = result.current.open({});
+			});
+
+			act(() => failPendingShell(pending.handleId, new Error("renderer failed")));
+
+			await waitFor(() => expect(result.current.isError).toBe(true));
+			expect(postMock).not.toHaveBeenCalled();
+			expect(discard).toHaveBeenCalledWith(pending.handleId);
+			expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([]);
+		} finally {
+			unregister();
+		}
 	});
 });
 

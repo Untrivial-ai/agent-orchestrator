@@ -35,7 +35,8 @@ import { baseUrlForHost, connectHost, disconnectHost } from "../lib/host-clients
 import { conversationQueryKey } from "../hooks/useConversation";
 import { reviewerConversationQueryKey } from "../hooks/useReviewerConversation";
 import { remoteWorkspaceQueryKey } from "../hooks/useWorkspaceQuery";
-import { shellTerminalsQueryKey, shellTerminalsQueryKeyForHost } from "../hooks/useShellTerminals";
+import { shellTerminalsQueryKey, shellTerminalsQueryKeyForHost, type ShellTerminal } from "../hooks/useShellTerminals";
+import { isPendingShellHandle, reportPendingShellGrid } from "../lib/pending-shell-terminals";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { SessionView } from "./SessionView";
 import { SessionTopbarProvider } from "./SessionTopbarPortal";
@@ -723,6 +724,13 @@ it("opens a shell tab on Box B without attaching a local or Box A terminal", asy
 	queryClient.setQueryData(shellTerminalsQueryKeyForHost("box-a"), "box-a-sentinel");
 	renderRemoteSession(queryClient, "box-b");
 	await userEvent.click(await screen.findByRole("button", { name: "New terminal" }));
+	// TerminalPane is mocked, so stand in for the pending tab's xterm reporting
+	// the grid it measured; the PTY is created only after that.
+	const pending = queryClient
+		.getQueryData<ShellTerminal[]>(shellTerminalsQueryKeyForHost("box-b"))
+		?.find((shell) => isPendingShellHandle(shell.handleId));
+	expect(pending).toBeDefined();
+	act(() => reportPendingShellGrid(pending!.handleId, { cols: 93, rows: 27 }));
 	await waitFor(() => expect(shellPosts).toEqual(["http://127.0.0.1:4001/api/v1/shell-terminals"]));
 	const shellPane = await screen.findByTestId("chat-shell-terminal");
 	expect(within(shellPane).getByTestId("remote-terminal-base")).toHaveAttribute("data-host-id", "box-b");

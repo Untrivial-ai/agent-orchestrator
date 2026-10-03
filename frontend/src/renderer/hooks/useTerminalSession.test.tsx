@@ -126,6 +126,7 @@ function createFakeTerminal(): FakeTerminal {
 			terminal.latestOutputRequests += 1;
 		},
 		prepareForActivation: async () => undefined,
+		measureGrid: () => ({ cols: 80, rows: 24 }),
 		notifyCursorColorScheme: () => undefined,
 		sendUserInput: (data, source = "shortcut") => {
 			let accepted = false;

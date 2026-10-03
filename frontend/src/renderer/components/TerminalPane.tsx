@@ -40,6 +40,13 @@ import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { terminalResetNonce, useTerminalResetStore } from "../stores/terminal-reset-store";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
+import {
+	failPendingShell,
+	isPendingShellHandle,
+	registerPendingShellCache,
+	reportPendingShellGrid,
+	type CreatedShell,
+} from "../lib/pending-shell-terminals";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -82,6 +89,11 @@ type TerminalCacheDescriptor = {
 };
 
 type CachedTerminalEntry = TerminalCacheDescriptor & {
+	/**
+	 * React identity of the entry's portal. Fixed at creation so re-keying a
+	 * pending shell to its created handle keeps the same xterm mounted.
+	 */
+	portalKey: string;
 	activationId: number;
 	activationPhase: "parked" | "visible";
 	container: HTMLDivElement;
@@ -147,15 +159,7 @@ function cacheDescriptor(
 ): TerminalCacheDescriptor | null {
 	if (terminalTarget?.kind === "shell") {
 		if (!terminalTargetBelongsToSession(terminalTarget, session?.id)) return null;
-		const ownerKey = `shell:${session?.id ?? "standalone"}:${terminalTarget.handleId}`;
-		return {
-			cacheKey: `${ownerKey}|handle:${terminalTarget.handleId}|generation:${terminalTarget.generation}`,
-			generation: terminalTarget.generation,
-			handleId: terminalTarget.handleId,
-			kind: "shell",
-			ownerKey,
-			sessionId: session?.id,
-		};
+		return shellCacheDescriptor(session?.id, terminalTarget);
 	}
 
 	// Reviewer terminals stream directly into a fresh mount and are intentionally
@@ -187,6 +191,21 @@ function cacheDescriptor(
 		kind: "worker",
 		ownerKey,
 		sessionId: session.id,
+	};
+}
+
+function shellCacheDescriptor(
+	sessionId: string | undefined,
+	terminalTarget: Extract<TerminalTarget, { kind: "shell" }>,
+): TerminalCacheDescriptor {
+	const ownerKey = `shell:${sessionId ?? "standalone"}:${terminalTarget.handleId}`;
+	return {
+		cacheKey: `${ownerKey}|handle:${terminalTarget.handleId}|generation:${terminalTarget.generation}`,
+		generation: terminalTarget.generation,
+		handleId: terminalTarget.handleId,
+		kind: "shell",
+		ownerKey,
+		sessionId,
 	};
 }
 
@@ -242,7 +261,9 @@ function showTerminal(entry: CachedTerminalEntry, slot: HTMLDivElement): void {
 	// preparation cycle: that made every return to a tab flash blank.
 	entry.container.style.width = "100%";
 	entry.container.style.height = "100%";
-	slot.appendChild(entry.container);
+	// Re-inserting a container that is already in place would blur a focused
+	// terminal, e.g. when a pending shell's entry is re-keyed to its handle.
+	if (entry.container.parentElement !== slot) slot.appendChild(entry.container);
 	setTerminalPhase(entry, "visible");
 }
 
@@ -288,7 +309,7 @@ function CachedTerminalPortal({
 			onTerminalReady={handleTerminalReady}
 		/>,
 		entry.container,
-		entry.cacheKey,
+		entry.portalKey,
 	);
 }
 
@@ -440,6 +461,7 @@ export function TerminalCacheProvider({
 				container.dataset.terminalCacheKey = descriptor.cacheKey;
 				entry = {
 					...descriptor,
+					portalKey: descriptor.cacheKey,
 					activationId: 0,
 					activationPhase: "parked",
 					container,
@@ -512,6 +534,50 @@ export function TerminalCacheProvider({
 		},
 		[rerender],
 	);
+
+	// A new shell tab's terminal mounts before its PTY exists (see
+	// lib/pending-shell-terminals). Once the daemon has created the PTY, move
+	// the pending entry to the created handle's cache key in place, so the
+	// already-measured xterm carries on instead of a second one mounting. This
+	// runs before the pane's target changes, so the slot then finds the entry
+	// already active under its new key.
+	useEffect(() => {
+		const findPendingEntry = (pendingHandleId: string) =>
+			[...entriesRef.current.values()].find(
+				(entry) => entry.kind === "shell" && entry.handleId === pendingHandleId,
+			);
+		return registerPendingShellCache({
+			adopt: (pendingHandleId: string, shell: CreatedShell) => {
+				const entry = findPendingEntry(pendingHandleId);
+				const target = entry?.props.terminalTarget;
+				if (!entry || target?.kind !== "shell") return;
+				const adoptedTarget = {
+					...target,
+					handleId: shell.handleId,
+					generation: shell.createdAt,
+					title: shell.title,
+				};
+				const descriptor = shellCacheDescriptor(entry.sessionId, adoptedTarget);
+				entriesRef.current.delete(entry.cacheKey);
+				if (activeRef.current?.key === entry.cacheKey) {
+					activeRef.current = { ...activeRef.current, key: descriptor.cacheKey };
+				}
+				Object.assign(entry, descriptor);
+				entry.container.dataset.terminalCacheKey = descriptor.cacheKey;
+				entry.props = {
+					...entry.props,
+					terminalTarget: adoptedTarget,
+					createMux: resolveCreateMux(entry.props.session, adoptedTarget),
+				};
+				entriesRef.current.set(descriptor.cacheKey, entry);
+				rerender();
+			},
+			discard: (pendingHandleId: string) => {
+				const entry = findPendingEntry(pendingHandleId);
+				if (entry) removeEntry(entry.cacheKey);
+			},
+		});
+	}, [removeEntry, rerender, resolveCreateMux]);
 
 	// Daemon readiness and theme are shell-wide. Parked entries must observe
 	// them too so reconnect and rendering behavior never depends on the route
@@ -591,7 +657,9 @@ export function TerminalCacheProvider({
 			(shellTerminalsQuery.data ?? []).map((terminal) => [terminal.handleId, terminal] as const),
 		);
 		for (const entry of entriesRef.current.values()) {
-			if (entry.kind !== "shell") continue;
+			// A pending shell's entry belongs to its open mutation, which adopts
+			// or discards it; a list refetch may not include the pending row.
+			if (entry.kind !== "shell" || isPendingShellHandle(entry.handleId)) continue;
 			const shell = shells.get(entry.handleId);
 			if (
 				!shell ||
@@ -645,7 +713,7 @@ export function TerminalCacheProvider({
 				<CachedTerminalPortal
 					active={activeRef.current?.key === entry.cacheKey}
 					entry={entry}
-					key={entry.cacheKey}
+					key={entry.portalKey}
 					onFatal={markFatal}
 					onTerminalReady={markTerminalReady}
 				/>
@@ -696,14 +764,11 @@ export function TerminalPane({
 	onInputRequestResult,
 	createMux,
 }: TerminalPaneProps) {
-	const { t } = useTranslation();
 	const terminalTarget =
 		requestedTerminalTarget &&
 		terminalTargetBelongsToSession(requestedTerminalTarget, session?.id)
 			? requestedTerminalTarget
 			: ({ kind: "worker" } satisfies TerminalTarget);
-	const isOptimisticShell =
-		terminalTarget.kind === "shell" && terminalTarget.handleId.startsWith("pending-shell:");
 	const cache = useContext(TerminalCacheContext);
 	// Subscribe to this session's terminal-reset nonce so a restore (which bumps
 	// it) re-renders the pane and recomputes the descriptor/mux key below, forcing
@@ -767,20 +832,6 @@ export function TerminalPane({
 			</pre>
 		);
 	}
-	// The tab is intentionally selected before the daemon allocates its handle.
-	// Keep that short bridge visually indistinguishable from an empty terminal,
-	// rather than surfacing a separate loading state or attaching xterm to a
-	// handle that cannot exist yet.
-	if (isOptimisticShell) {
-		return (
-			<div
-				aria-label={t("terminal.shellAria")}
-				className="terminal-surface h-full"
-				data-testid="optimistic-terminal"
-			/>
-		);
-	}
-
 	const props = {
 		session,
 		theme,
@@ -1014,8 +1065,17 @@ function AttachedTerminal({
 	const queryClient = useQueryClient();
 	const restoreSessionById = useRestoreSession();
 	// A shell pane has no session, so it hands the hook its handle directly
-	// instead of reading one off `attachSession`.
-	const shellTerminalHandleId = terminalTarget?.kind === "shell" ? terminalTarget.handleId : undefined;
+	// instead of reading one off `attachSession`. A pending shell has no PTY
+	// yet: its terminal only measures the grid the daemon will create it at.
+	const pendingShellHandleId =
+		terminalTarget?.kind === "shell" && isPendingShellHandle(terminalTarget.handleId)
+			? terminalTarget.handleId
+			: undefined;
+	const shellTerminalHandleId =
+		terminalTarget?.kind === "shell" && !pendingShellHandleId ? terminalTarget.handleId : undefined;
+	// Read at attach time without re-attaching on every park/activate.
+	const isVisibleRef = useRef(isVisible);
+	isVisibleRef.current = isVisible;
 	const { attach, state, error, replaySettled, hasAttached, syncVisibleSize } = useTerminalSession(attachSession, {
 		coverInitialReplay: terminalTarget?.kind !== "reviewer",
 		// Cloud workers can acknowledge a terminal before the coding agent emits
@@ -1119,9 +1179,10 @@ function AttachedTerminal({
 		if (initFailed) {
 			onFatal?.("renderer initialization failed");
 			onTerminalStateChange?.("error");
+			if (pendingShellHandleId) failPendingShell(pendingShellHandleId, new Error(t("terminal.initFailed")));
 			return;
 		}
-	}, [initFailed, onFatal, onTerminalStateChange]);
+	}, [initFailed, onFatal, onTerminalStateChange, pendingShellHandleId, t]);
 	const handleLinkOpen = useSessionBrowserLink(session);
 	const handleSessionLinkOpen = useSessionLinkNavigation(session?.hostId);
 	const restoreSession = useCallback(async () => {
@@ -1144,15 +1205,34 @@ function AttachedTerminal({
 		}
 	}, [canRestoreSession, isRestoring, restoreSessionById, session?.hostId, session?.id, t]);
 
+	// Report the pending shell's grid once xterm has measured its visible slot.
+	// A parked pane cannot be measured; it reports when it is next shown.
 	useEffect(() => {
-		if (!terminal) return;
+		if (!terminal || !pendingShellHandleId || !isVisible) return;
+		let current = true;
+		void terminal.prepareForActivation().then(() => {
+			if (!current) return;
+			const grid = terminal.measureGrid();
+			if (grid) reportPendingShellGrid(pendingShellHandleId, grid);
+		});
+		return () => {
+			current = false;
+		};
+	}, [terminal, pendingShellHandleId, isVisible]);
+
+	useEffect(() => {
+		if (!terminal || pendingShellHandleId) return;
 		let current = true;
 		let detach: (() => void) | undefined;
 		// A new xterm starts at its constructor default (80×24). Opening the PTY
 		// before FitAddon has measured its real slot makes full-screen worker TUIs
 		// redraw once at 80×24 and again at the actual grid. Settle that first fit
 		// before attaching so the daemon receives only the authoritative size.
-		void terminal.prepareForActivation().then(() => {
+		// A parked terminal (a shell handed its PTY after the user moved to
+		// another tab) keeps the grid it measured instead: a parked slot fits to
+		// a sliver, and the PTY's first output would land at that width.
+		const settled = isVisibleRef.current ? terminal.prepareForActivation() : Promise.resolve();
+		void settled.then(() => {
 			if (!current) return;
 			detach = attach(terminal);
 		});
@@ -1160,7 +1240,7 @@ function AttachedTerminal({
 			current = false;
 			detach?.();
 		};
-	}, [terminal, handleId, attach, attachSession?.id]);
+	}, [terminal, handleId, attach, attachSession?.id, pendingShellHandleId]);
 
 	if (initFailed) {
 		return (
@@ -1181,7 +1261,9 @@ function AttachedTerminal({
 	const banner = isCloudConnectError
 		? undefined
 		: bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
-	const showEmptyState = !handleId;
+	// A pending shell stays an empty terminal surface until its PTY exists,
+	// rather than the "no session" card.
+	const showEmptyState = !handleId && !pendingShellHandleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
 	// Deliberately NOT the empty state above: that renders a centered "Starting
