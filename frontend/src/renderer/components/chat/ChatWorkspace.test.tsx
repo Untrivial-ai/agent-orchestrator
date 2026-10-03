@@ -5,6 +5,7 @@ import { typeInLexicalEditor } from "../../test/lexical";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatWorkspace, promptSpacerHeight, promptTopInset } from "./ChatWorkspace";
 import { AssistantMessage, HumanMessage, OriginMessage } from "./ChatTimelineItems";
+import { ChatLinkProvider } from "./ChatMarkdown";
 import {
 	chatFixture,
 	chatFixtureEmpty,
@@ -1663,7 +1664,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(answer).toBeGreaterThan(question);
 		expect(relay).toBeGreaterThan(answer);
 
-		const relayCard = screen.getByText(/Checks failed on the base branch/).parentElement;
+		const relayCard = screen.getByText(/Checks failed on the base branch/).closest(".cursor-chat-origin-message");
 		expect(relayCard).toHaveClass("border-l-logo-accent/60");
 		expect(relayCard?.querySelector("svg")).toHaveClass("text-logo-accent");
 	});
@@ -1917,23 +1918,60 @@ Task: Address the feedback below according to its wording. Visual adjustments ar
 		);
 	});
 
-	it("keeps a short automation alert fully visible", () => {
-		const message = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
-		render(<OriginMessage message={message} />);
-		expect(screen.getByText(/Checks failed on the base branch/)).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	it("keeps truncated report previews inert and Markdown-safe", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const message: ConversationMessage = {
+			...source,
+			text: [
+				"**checkpoint**: [Open worker](ao://sessions/proj/sess)",
+				"![tracking pixel](https://attacker.example/pixel.png)",
+				"[Approve deployment](https://attacker.example/approve)",
+				"```python",
+				...Array.from({ length: 80 }, (_, index) => `print(${index})`),
+				"```",
+			].join("\n"),
+		};
+
+		const { container } = render(<OriginMessage message={message} />);
+
+		expect(screen.getByText("checkpoint").tagName).toBe("STRONG");
+		expect(screen.getByRole("link", { name: "Open worker" })).toHaveAttribute("href", "ao://sessions/proj/sess");
+		expect(screen.getByText("tracking pixel")).toBeInTheDocument();
+		expect(screen.queryByRole("img", { name: "tracking pixel" })).not.toBeInTheDocument();
+		expect(container).toHaveTextContent("Approve deployment");
+		expect(screen.queryByRole("link", { name: "Approve deployment" })).not.toBeInTheDocument();
+		expect(document.querySelector("pre")).toBeNull();
+		expect(screen.queryByText(/diagram could not be rendered/i)).not.toBeInTheDocument();
 	});
 
-	it("linkifies session URLs without parsing an origin preview as Markdown", () => {
-		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
-		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
-		const { container } = render(<OriginMessage message={{ ...source, text }} />);
+	it("keeps a short automation alert fully visible", () => {
+		const message = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const { container } = render(<OriginMessage message={{ ...message, text: "Checks failed:\nlint exited 1\ntests exited 2" }} />);
+		expect(screen.getByText(/Checks failed:/)).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+		expect(container.querySelector(".chat-md")).toHaveClass("whitespace-pre-wrap");
+	});
 
-		const paragraph = container.querySelector(".cursor-chat-origin-message > p");
-		expect(paragraph).toHaveClass("whitespace-pre-wrap");
-		expect(paragraph?.textContent).toBe(text);
-		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
-		expect(container.querySelector("ul, blockquote, em")).toBeNull();
+	it("renders automation formatting and opens labeled session links in app", async () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const onSessionLinkOpen = vi.fn();
+		const text = "Reports since your previous turn:\n\n- **checkpoint**: [Open worker](ao://sessions/proj/sess)\n\n> Ready for review";
+		const { container } = render(
+			<ChatLinkProvider onSessionLinkOpen={onSessionLinkOpen}>
+				<OriginMessage message={{ ...source, origin: "automation", text }} />
+			</ChatLinkProvider>,
+		);
+
+		expect(screen.getByText("checkpoint").tagName).toBe("STRONG");
+		expect(screen.getByRole("listitem")).toHaveTextContent("checkpoint: Open worker");
+		expect(screen.getByText("Ready for review").closest("blockquote")).not.toBeNull();
+		const link = screen.getByRole("link", { name: "Open worker" });
+		expect(link).toHaveAttribute("href", "ao://sessions/proj/sess");
+		expect(link).toHaveAttribute("rel", expect.stringContaining("noreferrer"));
+		expect(container.querySelector(".cursor-chat-origin-message")).toHaveClass("border-l-logo-accent/60");
+
+		await userEvent.click(link);
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/proj/sess");
 	});
 });
 

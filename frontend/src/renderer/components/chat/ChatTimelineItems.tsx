@@ -61,7 +61,7 @@ import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
-import { ActivityTitle, ChatMarkdown, SessionLinkedText } from "./ChatMarkdown";
+import { ActivityTitle, ChatMarkdown, OriginPreviewMarkdown, SessionLinkedText } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -114,6 +114,13 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
 
 const ORIGIN_REPORT_COLLAPSE_AT = 600;
 const ORIGIN_REPORT_PREVIEW_LENGTH = 240;
+
+function originReportPreview(text: string): string {
+	const cut = text.slice(0, ORIGIN_REPORT_PREVIEW_LENGTH);
+	const lastCompleteLine = cut.lastIndexOf("\n");
+	const preview = lastCompleteLine > 0 ? cut.slice(0, lastCompleteLine) : cut;
+	return `${preview.trimEnd()}…`;
+}
 
 /** Smooth baseline, with adaptive catch-up when provider chunks outrun playback. */
 const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
@@ -654,7 +661,7 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 
 	const longReport = message.text.length > ORIGIN_REPORT_COLLAPSE_AT;
 	const preview = longReport
-		? `${message.text.slice(0, ORIGIN_REPORT_PREVIEW_LENGTH).trimEnd()}…`
+		? originReportPreview(message.text)
 		: message.text;
 
 	return (
@@ -666,12 +673,16 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 					{formatTime(message.createdAt)}
 				</span>
 			</div>
-			{longReport && expanded ? (
-				<ChatMarkdown text={message.text} muted />
+			{longReport && !expanded ? (
+				<div className="line-clamp-3">
+					<OriginPreviewMarkdown text={preview} />
+				</div>
 			) : (
-				<p className={cn("whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
-					<SessionLinkedText text={preview} />
-				</p>
+				<ChatMarkdown
+					text={message.text}
+					muted
+					className="whitespace-pre-wrap text-sm leading-relaxed"
+				/>
 			)}
 			{longReport ? (
 				<button

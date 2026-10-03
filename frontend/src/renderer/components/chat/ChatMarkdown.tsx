@@ -139,6 +139,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 	text,
 	streaming = false,
 	muted = false,
+	className,
 }: {
 	text: string;
 	streaming?: boolean;
@@ -148,6 +149,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 	 * being dimmed with opacity — which would wash out code and links too.
 	 */
 	muted?: boolean;
+	className?: string;
 }) {
 	return (
 		<StreamingProse.Provider value={streaming}>
@@ -155,6 +157,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
 				className={cn(
 					"chat-md leading-[1.58]",
 					muted ? "text-[13px] text-muted-foreground" : "text-sm text-foreground",
+					className,
 				)}
 			>
 				<Markdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={chatUrlTransform}>
@@ -311,6 +314,36 @@ function MarkdownImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 	}
 	return <ChatImage src={src} alt={alt} />;
 }
+
+const ORIGIN_PREVIEW_ELEMENTS = ["a", "br", "code", "del", "em", "img", "strong"];
+const ORIGIN_PREVIEW_COMPONENTS: Components = {
+	a: ({ href, children }) => href && isSessionLink(href)
+		? <MarkdownLink href={href}>{children}</MarkdownLink>
+		: <>{children}</>,
+	img: ({ alt }) => <span className="text-muted-foreground">{alt}</span>,
+	code: ({ children }) => <code className="font-mono text-[0.95em] text-markdown-code">{children}</code>,
+};
+
+/**
+ * A collapsed cross-boundary report preview. Inline formatting and canonical
+ * session links remain useful, while block UI, external links, and remote image
+ * fetches stay inert until the reader expands the report.
+ */
+export const OriginPreviewMarkdown = memo(function OriginPreviewMarkdown({ text }: { text: string }) {
+	return (
+		<div className="chat-md whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+			<Markdown
+				allowedElements={ORIGIN_PREVIEW_ELEMENTS}
+				unwrapDisallowed
+				remarkPlugins={PLUGINS}
+				components={ORIGIN_PREVIEW_COMPONENTS}
+				urlTransform={chatUrlTransform}
+			>
+				{text}
+			</Markdown>
+		</div>
+	);
+});
 
 /** Linkify canonical session URLs without interpreting any surrounding text as Markdown. */
 export const SessionLinkedText = memo(function SessionLinkedText({ text }: { text: string }) {
