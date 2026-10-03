@@ -998,7 +998,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cfg.AgentConfigResolved = true
 		}
 	}
-	if mode == domain.SessionModeTUI && cfg.Harness == domain.HarnessClaudeCode {
+	if mode == domain.SessionModeTUI && (cfg.Harness == domain.HarnessClaudeCode || cfg.Harness == domain.HarnessCodex || strings.TrimSpace(cfg.AgentConfig.Effort) != "") {
 		resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
 		if err != nil {
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
@@ -1438,6 +1438,9 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 		resolved.Effort = requested.Effort
 	}
 	if cfg.Harness != domain.HarnessCodex && cfg.Harness != domain.HarnessClaudeCode {
+		if strings.TrimSpace(requested.Effort) != "" {
+			return ports.AgentConfig{}, fmt.Errorf("%w for harness %q: --effort is only supported for codex and claude-code agents", ports.ErrUnsupportedEffort, cfg.Harness)
+		}
 		resolved.Effort = ""
 		return resolved, nil
 	}

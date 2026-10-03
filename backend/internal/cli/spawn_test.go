@@ -1060,3 +1060,53 @@ func TestSpawnModelFlagWiring(t *testing.T) {
 		t.Fatalf("spawn request model = %q, want gpt-5.6-sol", req.Model)
 	}
 }
+
+// TestSpawnEffortFlagWiring asserts `ao spawn --effort` sends the reasoning
+// effort override to the daemon without touching project config.
+func TestSpawnEffortFlagWiring(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var req spawnRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/agents/readiness/ensure":
+			_, _ = io.WriteString(w, authorizedAgentsJSON("codex"))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-21","status":"idle"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "codex", "--name", "worker", "--effort", " high ")
+	if err != nil {
+		t.Fatalf("spawn failed: %v stderr=%s", err, errOut)
+	}
+	if req.Effort != "high" {
+		t.Fatalf("spawn request effort = %q, want high", req.Effort)
+	}
+}
+
+// TestSpawnEffortFlagRejectsUnsupportedHarness asserts `ao spawn --effort`
+// fails loudly for harnesses that cannot honor it instead of silently
+// discarding the override.
+func TestSpawnEffortFlagRejectsUnsupportedHarness(t *testing.T) {
+	for _, agent := range []string{"gemini", "aider", "amp"} {
+		t.Run(agent, func(t *testing.T) {
+			_, _, err := executeCLI(t, Deps{}, "spawn", "--standalone", "--agent", agent, "--name", "Worker", "--effort", "high")
+			if err == nil || ExitCode(err) != 2 {
+				t.Fatalf("err=%v exit=%d, want usage error", err, ExitCode(err))
+			}
+			if !strings.Contains(err.Error(), "--effort is only supported for codex and claude-code agents") {
+				t.Fatalf("err=%v, want --effort support hint", err)
+			}
+		})
+	}
+}

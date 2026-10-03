@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -415,6 +416,47 @@ func TestResolveClaudeTUIAgentConfigRejectsUnsupportedEffort(t *testing.T) {
 	}, domain.ProjectConfig{})
 	if !errors.Is(err, ports.ErrUnsupportedEffort) {
 		t.Fatalf("error = %v, want ErrUnsupportedEffort", err)
+	}
+}
+
+func TestResolveAgentConfigRejectsExplicitEffortForUnsupportedHarness(t *testing.T) {
+	m := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "gemini-2.5-pro", IsDefault: true, Efforts: []string{"low", "high"}},
+	}}}}
+	for _, harness := range []domain.AgentHarness{domain.HarnessDroid, domain.HarnessAider, domain.HarnessAmp} {
+		// Explicit per-spawn effort must fail loudly instead of being silently
+		// discarded: the caller asked for something the harness cannot honor.
+		_, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+			ProjectID: "p", Kind: domain.KindWorker, Harness: harness,
+			AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro", Effort: "high"},
+		}, domain.ProjectConfig{})
+		if !errors.Is(err, ports.ErrUnsupportedEffort) {
+			t.Fatalf("harness %q error = %v, want ErrUnsupportedEffort", harness, err)
+		}
+		if !strings.Contains(err.Error(), "only supported for codex and claude-code") {
+			t.Fatalf("harness %q error = %v, want support hint", harness, err)
+		}
+		// Same when the override arrives as an explicit task override.
+		_, err = m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+			ProjectID: "p", Kind: domain.KindWorker, Harness: harness,
+			AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro", Effort: "high"}, EffortOverride: true,
+		}, domain.ProjectConfig{})
+		if !errors.Is(err, ports.ErrUnsupportedEffort) {
+			t.Fatalf("harness %q override error = %v, want ErrUnsupportedEffort", harness, err)
+		}
+	}
+
+	// Inherited project/role effort still clears silently: nothing explicit was
+	// requested, so there is nothing to reject.
+	resolved, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessDroid,
+		AgentConfig: ports.AgentConfig{Model: "gemini-2.5-pro"},
+	}, domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Effort: "high"}}})
+	if err != nil {
+		t.Fatalf("inherited effort error = %v, want silent clear", err)
+	}
+	if resolved.Effort != "" {
+		t.Fatalf("inherited effort = %q, want provider default", resolved.Effort)
 	}
 }
 

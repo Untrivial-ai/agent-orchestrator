@@ -31,6 +31,30 @@ func AppendModelFlag(cmd *[]string, cfg ports.AgentConfig, flag string) {
 	}
 }
 
+// ModelEffortConfigSpec returns the common optional model + effort config
+// fields used by adapters that forward a --model-style argument and an
+// --effort-style reasoning-level argument. Empty effort defers to the
+// adapter/model default, so adapters honor it even when the model catalog
+// advertises no efforts list.
+func ModelEffortConfigSpec(ctx context.Context, modelDescription, effortDescription string) (ports.ConfigSpec, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.ConfigSpec{}, err
+	}
+	return ports.ConfigSpec{Fields: []ports.ConfigField{
+		{Key: "model", Type: ports.ConfigFieldString, Description: modelDescription},
+		{Key: "effort", Type: ports.ConfigFieldString, Description: effortDescription},
+	}}, nil
+}
+
+// AppendEffortFlag appends a trimmed reasoning-effort override using the
+// adapter-owned static flag name. Empty effort appends nothing so the agent
+// uses its own default.
+func AppendEffortFlag(cmd *[]string, cfg ports.AgentConfig, flag string) {
+	if effort := strings.TrimSpace(cfg.Effort); effort != "" {
+		*cmd = append(*cmd, flag, effort)
+	}
+}
+
 // Base provides no-op defaults for the optional ports.Agent methods. Embed it in
 // a Plugin struct (`agentbase.Base`) and override only what the harness needs.
 // Every method honors ctx cancellation and otherwise does nothing, matching what

@@ -667,6 +667,11 @@ func TestGetConfigSpecReportsModelField(t *testing.T) {
 			Type:        ports.ConfigFieldString,
 			Description: "Model override passed to `codex --model`.",
 		},
+		{
+			Key:         "effort",
+			Type:        ports.ConfigFieldString,
+			Description: "Reasoning effort override passed to `codex -c model_reasoning_effort`.",
+		},
 	}
 	if !reflect.DeepEqual(spec.Fields, want) {
 		t.Fatalf("config fields\nwant: %#v\n got: %#v", want, spec.Fields)

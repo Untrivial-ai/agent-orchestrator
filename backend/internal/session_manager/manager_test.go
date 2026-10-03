@@ -6954,6 +6954,39 @@ func TestSpawn_RejectsUnsupportedClaudeTUIEffortBeforeSessionRow(t *testing.T) {
 	}
 }
 
+func TestSpawn_RejectsExplicitEffortForUnsupportedHarnessBeforeSessionRow(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "gemini-2.5-pro", IsDefault: true, Efforts: []string{"low", "high"}},
+	}}})
+
+	// TUI is the default session mode: an explicit --effort for a harness that
+	// cannot honor it must fail before any durable state exists, not ride
+	// along unused while the CLI reports success.
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:     "mer",
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessDroid,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig: ports.AgentConfig{
+			Model: "gemini-2.5-pro", Effort: "high",
+		},
+		EffortOverride: true,
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("err = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("no session row should be created, got %d", len(st.sessions))
+	}
+	if ws.lastCfg.SessionID != "" || ws.destroyed != 0 {
+		t.Fatal("workspace must not be created for an unsupported harness effort")
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime must not be created for an unsupported harness effort")
+	}
+}
+
 func TestSpawn_RejectsFreshClaudeAuthInWorkspaceLaunchContext(t *testing.T) {
 	m, st, rt, ws := newManager()
 	project := st.projects["mer"]
