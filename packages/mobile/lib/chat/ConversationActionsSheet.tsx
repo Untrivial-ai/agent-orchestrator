@@ -29,7 +29,7 @@ export function ConversationActionsSheet({ entry, snapshot, onAction }: { entry:
 			case "pull_requests": return { icon: "git-pull-request" as const, label: "PR Review", run: entry.onPullRequests };
 			case "map": return { icon: "list" as const, label: "Conversation history", run: entry.onMap };
 			case "refresh": return { icon: "refresh-cw" as const, label: entry.refreshing ? "Refreshing conversation…" : "Refresh conversation", disabled: entry.refreshing, run: entry.onRefresh };
-			case "settings": return { icon: "sliders" as const, label: "Turn settings", value: snapshot.settings.model || "Default", run: entry.onSettings };
+			case "settings": return { icon: "sliders" as const, label: "Turn settings", value: entry.modelLabel || undefined, run: entry.onSettings };
 			case "rename": return { icon: "edit-2" as const, label: "Rename conversation", run: entry.onRename };
 			case "pin": return { icon: "bookmark" as const, label: entry.pinned ? "Unpin worker" : "Pin worker", run: entry.onTogglePin };
 			case "compact": return { icon: "archive" as const, label: entry.compacting ? "Compacting history…" : "Compact history", disabled: turnInFlight || entry.compacting, run: entry.onCompact };

@@ -1,6 +1,7 @@
 import { fetch as expoFetch } from "expo/fetch";
 import { ApiError, ATTACHMENT_REQUEST_TIMEOUT_MS, apiRequest } from "../api";
 import { authHeaders, httpBase, type ServerConfig } from "../config";
+import { resolveDefaultChoices } from "./turnSettingsModel";
 import type {
 	ActivityDetail,
 	ActivityKind,
@@ -290,7 +291,7 @@ export async function setConversationSettings(cfg: ServerConfig, sessionId: stri
 export async function getConversationConfigOptions(cfg: ServerConfig, sessionId: string): Promise<ChatConfigOption[]> {
 	const res = await apiRequest(cfg, conversationPath(sessionId, "/config-options"));
 	const body = (await res.json()) as { options?: ChatConfigOption[] };
-	return body.options ?? [];
+	return resolveDefaultChoices(body.options ?? []);
 }
 
 export async function setConversationConfigOption(
@@ -304,7 +305,7 @@ export async function setConversationConfigOption(
 		body: JSON.stringify(value),
 	});
 	const body = (await res.json()) as { options?: ChatConfigOption[] };
-	return body.options ?? [];
+	return resolveDefaultChoices(body.options ?? []);
 }
 
 export async function getConversationSkills(cfg: ServerConfig, sessionId: string): Promise<ChatSkill[]> {

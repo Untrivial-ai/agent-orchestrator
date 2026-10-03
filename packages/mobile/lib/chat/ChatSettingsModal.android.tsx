@@ -7,18 +7,20 @@ import type { Theme } from "../theme";
 import { useTheme, useThemedStyles, useThemeState } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import type { ChatConfigOption, ChatModel, ConversationSnapshot, TurnSettings } from "./types";
-import { fastControlEnabled, fastControlValue, orderedProviderControls, providerTurnControlKind } from "./turnSettingsModel";
+import { approvalLabel, effortChoiceLabel, effortSliderIndex, effortSliderWrite, fastControlEnabled, fastControlValue, followsAgentLabel, nativeModelLabel, NOT_REPORTED, orderedProviderControls, providerChoiceLabel, providerTurnControlKind } from "./turnSettingsModel";
 import { can } from "./types";
 import { type, space } from "../tokens";
 
+// Labels come from approvalLabel, which names Codex's default differently.
 const APPROVALS = [
-	{ id: "default", label: "Default", description: "The worktree remains the safety boundary" },
-	{ id: "accept-edits", label: "Ask outside worktree", description: "Edits here are allowed; anything else asks" },
-	{ id: "auto", label: "Ask when unsure", description: "The agent requests approval when it needs it" },
-	{ id: "bypass-permissions", label: "Never ask", description: "No approval or sandbox prompts" },
+	{ id: "default", description: "The worktree remains the safety boundary" },
+	{ id: "accept-edits", description: "Edits here are allowed; anything else asks" },
+	{ id: "auto", description: "The agent requests approval when it needs it" },
+	{ id: "bypass-permissions", description: "No approval or sandbox prompts" },
 ] as const;
 
-type Choice = { value: string; label: string; description?: string };
+/** `tick` is the slider's short label, where "Use agent effort" does not fit. */
+type Choice = { value: string; label: string; description?: string; tick?: string };
 type OpenChoice = { title: string; value: string; items: Choice[]; onChange(value: string): void } | null;
 type Props = {
 	snapshot: ConversationSnapshot;
@@ -46,15 +48,22 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 	const advancedOptions = providerControls.filter((option) => providerTurnControlKind(option) === "other");
 	const modelChoices = modelOption
 		? modelOption.choices.map((model) => ({ value: model.value, label: model.name, description: model.description }))
-		: models.map((model) => ({ value: model.id, label: model.displayName, description: model.description || (model.default ? "Provider default" : undefined) }));
-	const selectedModel = modelOption?.currentValue ?? selected?.id ?? modelChoices[0]?.value ?? "";
-	const effortChoices = effortOption
+		: models.map((model) => ({ value: model.id, label: model.displayName, description: model.description || undefined }));
+	// Nothing reported means nothing selected: the first model or level is not
+	// a stand-in for the one the provider did not name (#5834).
+	const selectedModel = modelOption?.currentValue ?? selected?.id ?? "";
+	const modelValue = modelOption ? providerChoiceLabel(modelOption) : nativeModelLabel(selected, snapshot.settings.model);
+	const effortChoices = (effortOption
 		? effortOption.choices.map((effort) => ({ value: effort.value, label: capitalize(effort.name) }))
-		: (selected?.efforts ?? []).map((effort) => ({ value: effort, label: capitalize(effort) }));
-	const selectedEffort = effortOption?.currentValue ?? snapshot.settings.reasoningEffort ?? selected?.defaultEffort ?? effortChoices[0]?.value ?? "";
+		: (selected?.efforts ?? []).map((effort) => ({ value: effort, label: effortChoiceLabel(effort) }))
+	).map((choice) => ({ ...choice, tick: followsAgentLabel(choice.label) ? "Agent" : undefined }));
+	const selectedEffort = effortOption?.currentValue ?? snapshot.settings.reasoningEffort ?? selected?.defaultEffort ?? "";
+	// What the slider says when the effort is none of its levels; the same text
+	// the iOS turn-settings row shows for it.
+	const effortValue = effortOption ? providerChoiceLabel(effortOption) : selectedEffort ? effortChoiceLabel(selectedEffort) : NOT_REPORTED;
 	const permissionChoices = permissionOption
 		? permissionOption.choices.map((choice) => ({ value: choice.value, label: choice.name, description: choice.description }))
-		: APPROVALS.map((item) => ({ value: item.id, label: item.label, description: item.description }));
+		: APPROVALS.map((item) => ({ value: item.id, label: approvalLabel(item.id, snapshot.harness), description: item.description }));
 	const selectedPermission = permissionOption?.currentValue ?? snapshot.settings.approvalMode ?? "default";
 	const permissionDescription = permissionChoices.find((choice) => choice.value === selectedPermission)?.description;
 	const choose = (title: string, value: string, items: Choice[], onChange: (value: string) => void) => {
@@ -80,18 +89,18 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 		<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 			{fastOption || modelChoices.length || effortChoices.length ? <SettingsGroup title="RESPONSE">
 				{fastOption ? <FastModeRow option={fastOption} disabled={disabled} onOption={onOption} /> : null}
-				{modelChoices.length ? <SettingRow icon="layers" label="Model" value={modelChoices.find((choice) => choice.value === selectedModel)?.label ?? "Choose"} description="Choose the model for the next message" disabled={disabled} onPress={() => choose("Model", selectedModel, modelChoices, (model) => {
+				{modelChoices.length ? <SettingRow icon="layers" label="Model" value={modelValue} description="Choose the model for the next message" disabled={disabled} onPress={() => choose("Model", selectedModel, modelChoices, (model) => {
 					if (modelOption) onOption(modelOption.id, { value: model });
 					else onSettings({ ...snapshot.settings, model, reasoningEffort: undefined });
 				})} /> : null}
-				{effortChoices.length ? <EffortSlider choices={effortChoices} selected={selectedEffort} disabled={disabled} onChange={(reasoningEffort) => {
+				{effortChoices.length ? <EffortSlider choices={effortChoices} selected={selectedEffort} unplaced={effortValue} disabled={disabled} onChange={(reasoningEffort) => {
 					if (effortOption) onOption(effortOption.id, { value: reasoningEffort });
 					else onSettings({ ...snapshot.settings, reasoningEffort });
 				}} /> : null}
 			</SettingsGroup> : null}
 
 			{permissionChoices.length ? <SettingsGroup title="PERMISSIONS">
-				<SettingRow icon="circle-dashed-check" label="Permission mode" value={permissionChoices.find((choice) => choice.value === selectedPermission)?.label ?? "Default"} description={permissionDescription} disabled={disabled} onPress={() => choose("Permission mode", selectedPermission, permissionChoices, (value) => {
+				<SettingRow icon="circle-dashed-check" label="Permission mode" value={permissionOption ? providerChoiceLabel(permissionOption) : approvalLabel(snapshot.settings.approvalMode ?? "default", snapshot.harness)} description={permissionDescription} disabled={disabled} onPress={() => choose("Permission mode", selectedPermission, permissionChoices, (value) => {
 					if (permissionOption) onOption(permissionOption.id, { value });
 					else onSettings({ ...snapshot.settings, approvalMode: value as TurnSettings["approvalMode"] });
 				})} />
@@ -100,7 +109,7 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 			{advancedOptions.length ? <SettingsGroup title="ADVANCED">
 				{advancedOptions.map((option) => option.type === "boolean"
 					? <ToggleRow key={option.id} label={option.name} description={option.description} value={Boolean(option.currentBoolean)} disabled={disabled} onChange={(enabled) => onOption(option.id, { enabled })} />
-					: <SettingRow key={option.id} icon="sliders" label={option.name} value={choiceLabel(option)} description={option.description} disabled={disabled} onPress={() => choose(option.name, option.currentValue ?? option.choices[0]?.value ?? "", option.choices.map((choice) => ({ value: choice.value, label: choice.groupName || choice.group ? `${choice.groupName || choice.group} · ${choice.name}` : choice.name, description: choice.description })), (value) => onOption(option.id, { value }))} />,
+					: <SettingRow key={option.id} icon="sliders" label={option.name} value={providerChoiceLabel(option)} description={option.description} disabled={disabled} onPress={() => choose(option.name, option.currentValue ?? option.choices[0]?.value ?? "", option.choices.map((choice) => ({ value: choice.value, label: choice.groupName || choice.group ? `${choice.groupName || choice.group} · ${choice.name}` : choice.name, description: choice.description })), (value) => onOption(option.id, { value }))} />,
 				)}
 			</SettingsGroup> : null}
 
@@ -145,25 +154,29 @@ function ToggleRow({ label, description, value, disabled, onChange }: { label: s
 	return <View style={[styles.row, disabled && styles.disabled]}><Feather name="zap" size={17} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>{label}</Text>{description ? <Text numberOfLines={2} style={styles.rowDescription}>{description}</Text> : null}</View><Host style={styles.switchHost} colorScheme={scheme} seedColor={t.accent}><NativeSwitch value={value} disabled={disabled} onValueChange={(next) => { haptics.select(); onChange(next); }} /></Host></View>;
 }
 
-function EffortSlider({ choices, selected, disabled, onChange }: { choices: Choice[]; selected: string; disabled?: boolean; onChange(value: string): void }) {
+function EffortSlider({ choices, selected, unplaced, disabled, onChange }: { choices: Choice[]; selected: string; unplaced: string; disabled?: boolean; onChange(value: string): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const { scheme } = useThemeState();
-	const selectedIndex = Math.max(0, choices.findIndex((choice) => choice.value === selected));
+	// -1 while the current effort is none of these levels. The thumb still needs
+	// a place, but nothing is written until it moves. Clamping it to the first
+	// level used to save that level about 180 ms after the sheet opened, a
+	// change nobody made.
+	const selectedIndex = effortSliderIndex(choices, selected);
 	const [index, setIndex] = useState(selectedIndex);
 
 	useEffect(() => setIndex(selectedIndex), [selectedIndex]);
 	useEffect(() => {
-		const next = choices[index]?.value;
-		if (!next || next === selected) return;
+		const next = effortSliderWrite(choices, selected, index);
+		if (!next) return;
 		const timer = setTimeout(() => { haptics.select(); onChange(next); }, 180);
 		return () => clearTimeout(timer);
 	}, [choices, index, onChange, selected]);
 
 	return <View style={[styles.effort, disabled && styles.disabled]}>
-		<View style={styles.effortHeader}><Feather name="activity" size={17} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>Reasoning effort</Text><Text style={styles.rowDescription}>More effort can improve harder tasks</Text></View><Text style={styles.effortValue}>{choices[index]?.label}</Text></View>
-		<Host style={styles.sliderHost} colorScheme={scheme} seedColor={t.accent}><Slider value={index} min={0} max={Math.max(0, choices.length - 1)} step={1} disabled={disabled} onValueChange={(value) => setIndex(Math.round(value))} testID="turn-settings-effort" /></Host>
-		<View style={styles.effortLabels}>{choices.map((choice, choiceIndex) => <Text key={choice.value} style={[styles.effortLabel, choiceIndex === index && { color: t.accent }]}>{choice.label}</Text>)}</View>
+		<View style={styles.effortHeader}><Feather name="activity" size={17} color={t.textSecondary} /><View style={styles.rowCopy}><Text style={styles.rowLabel}>Reasoning effort</Text><Text style={styles.rowDescription}>More effort can improve harder tasks</Text></View><Text style={styles.effortValue}>{index < 0 ? unplaced : choices[index]?.label}</Text></View>
+		<Host style={styles.sliderHost} colorScheme={scheme} seedColor={t.accent}><Slider value={Math.max(0, index)} min={0} max={Math.max(0, choices.length - 1)} step={1} disabled={disabled} onValueChange={(value) => setIndex(Math.round(value))} testID="turn-settings-effort" /></Host>
+		<View style={styles.effortLabels}>{choices.map((choice, choiceIndex) => <Text key={choice.value} style={[styles.effortLabel, choiceIndex === index && { color: t.accent }]}>{choice.tick ?? choice.label}</Text>)}</View>
 	</View>;
 }
 
@@ -188,11 +201,6 @@ function ChoicePage({ choice, onBack }: { choice: NonNullable<OpenChoice>; onBac
 function Notice({ color, background, icon, text }: { color: string; background: string; icon: keyof typeof Feather.glyphMap; text: string }) {
 	const styles = useThemedStyles(makeStyles);
 	return <View accessibilityRole="alert" style={[styles.notice, { backgroundColor: background }]}><Feather name={icon} size={15} color={color} /><Text style={[styles.noticeText, { color }]}>{text}</Text></View>;
-}
-
-function choiceLabel(option: ChatConfigOption): string {
-	const current = option.choices.find((choice) => choice.value === option.currentValue);
-	return current?.name ?? option.currentValue ?? "Choose";
 }
 
 function capitalize(value: string): string { return value ? value[0].toUpperCase() + value.slice(1) : value; }

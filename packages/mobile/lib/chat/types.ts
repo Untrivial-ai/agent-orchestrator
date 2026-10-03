@@ -236,6 +236,8 @@ export type ChatModel = {
 export type ChatConfigChoice = {
 	value: string;
 	name: string;
+	/** The AO permission mode this choice maps to, when the daemon maps it (Claude's and OpenCode's modes). */
+	permissionMode?: ApprovalMode;
 	description?: string;
 	group?: string;
 	groupName?: string;

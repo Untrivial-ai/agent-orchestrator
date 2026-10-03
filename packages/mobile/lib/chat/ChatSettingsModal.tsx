@@ -6,13 +6,15 @@ import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import type { ChatConfigOption, ChatModel, ConversationSnapshot, TurnSettings } from "./types";
 import { can } from "./types";
+import { approvalLabel, effortChoiceLabel } from "./turnSettingsModel";
 import { iconSize, microLabel, space, type } from "../tokens";
 
+// Labels come from approvalLabel, which names Codex's default differently.
 const APPROVALS = [
-	{ id: "default", label: "Default", hint: "The worktree is the safety boundary" },
-	{ id: "accept-edits", label: "Ask outside worktree", hint: "Edits here are allowed; anything else asks" },
-	{ id: "auto", label: "Ask when unsure", hint: "The agent decides when to check with you" },
-	{ id: "bypass-permissions", label: "Never ask", hint: "No approvals or sandbox prompts" },
+	{ id: "default", hint: "The worktree is the safety boundary" },
+	{ id: "accept-edits", hint: "Edits here are allowed; anything else asks" },
+	{ id: "auto", hint: "The agent decides when to check with you" },
+	{ id: "bypass-permissions", hint: "No approvals or sandbox prompts" },
 ] as const;
 
 export function ChatSettingsSheet({
@@ -52,13 +54,13 @@ export function ChatSettingsSheet({
 					{error ? <View accessibilityRole="alert" style={styles.error}><Feather name="alert-circle" size={iconSize.sm} color={t.red} /><Text style={styles.errorText}>{error}</Text></View> : null}
 					{snapshot.modelReroute ? <View style={styles.reroute}><Feather name="shuffle" size={iconSize.sm} color={t.amber} /><View style={{ flex: 1 }}><Text style={styles.rerouteTitle}>Currently answered by {snapshot.modelReroute.toModel}</Text><Text style={styles.rerouteCopy}>{snapshot.modelReroute.fromModel ? `${snapshot.modelReroute.fromModel} was requested. ` : ""}{snapshot.modelReroute.reason || "The provider selected a fallback model for this conversation."}</Text></View></View> : null}
 					{(!usesProviderOptions || !hasProviderModel) && models.length ? <SettingsSection icon="layers" title="Model">
-						{models.map((model) => <Choice key={model.id} label={model.displayName} hint={model.description || (model.default ? "Provider default" : undefined)} selected={model.id === selected?.id} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, model: model.id, reasoningEffort: undefined })} />)}
+						{models.map((model) => <Choice key={model.id} label={model.displayName} hint={model.description || undefined} selected={model.id === selected?.id} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, model: model.id, reasoningEffort: undefined })} />)}
 					</SettingsSection> : null}
 					{(!usesProviderOptions || !hasProviderModel) && efforts.length ? <SettingsSection icon="activity" title="Reasoning effort">
-						{efforts.map((effort) => <Choice key={effort} label={capitalize(effort)} selected={effort === (snapshot.settings.reasoningEffort ?? selected?.defaultEffort)} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, reasoningEffort: effort })} />)}
+						{efforts.map((effort) => <Choice key={effort} label={effortChoiceLabel(effort)} selected={effort === (snapshot.settings.reasoningEffort ?? selected?.defaultEffort)} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, reasoningEffort: effort })} />)}
 					</SettingsSection> : null}
 					{(!usesProviderOptions || !hasProviderMode) ? <SettingsSection icon="circle-dashed-check" title="Approvals">
-						{APPROVALS.map((mode) => <Choice key={mode.id} label={mode.label} hint={mode.hint} selected={mode.id === (snapshot.settings.approvalMode ?? "default")} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, approvalMode: mode.id })} />)}
+						{APPROVALS.map((mode) => <Choice key={mode.id} label={approvalLabel(mode.id, snapshot.harness)} hint={mode.hint} selected={mode.id === (snapshot.settings.approvalMode ?? "default")} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, approvalMode: mode.id })} />)}
 					</SettingsSection> : null}
 					{options.map((option) => <SettingsSection key={option.id} icon={configOptionIcon(option)} title={option.name} description={option.description}>
 						{option.type === "boolean" ? <View style={styles.switchRow}><Text style={styles.choiceLabel}>{option.currentBoolean ? "On" : "Off"}</Text><Switch disabled={disabled} value={Boolean(option.currentBoolean)} onValueChange={(enabled) => onOption(option.id, { enabled })} trackColor={{ true: t.green }} /></View> : <GroupedChoices option={option} disabled={disabled} onOption={onOption} />}
@@ -90,7 +92,6 @@ function Choice({ label, hint, selected, disabled, onPress }: { label: string; h
 	return <Pressable accessibilityRole="radio" accessibilityState={{ selected, disabled }} disabled={disabled} onPress={() => { haptics.select(); onPress(); }} style={({ pressed }) => [styles.choice, pressed && { backgroundColor: t.bgSubtle }]}><View style={{ flex: 1 }}><Text style={[styles.choiceLabel, selected && { color: t.accent }]}>{label}</Text>{hint ? <Text style={styles.choiceHint}>{hint}</Text> : null}</View>{selected ? <Feather name="check" size={iconSize.sm} color={t.accent} /> : null}</Pressable>;
 }
 
-function capitalize(value: string): string { return value ? value[0].toUpperCase() + value.slice(1) : value; }
 function configOptionIcon(option: ChatConfigOption): keyof typeof Feather.glyphMap | undefined {
 	if (option.category === "model" || option.id === "model") return "layers";
 	if (option.id === "agent") return undefined;

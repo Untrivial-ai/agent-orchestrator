@@ -8,6 +8,8 @@ export type ConversationActionsEntry = {
 	snapshot: ConversationSnapshot;
 	subscribeEntry(listener: (entry: ConversationActionsEntry) => void): () => void;
 	sessionTitle: string;
+	/** What the Turn settings row names; empty when nothing is known. */
+	modelLabel: string;
 	openingShell: boolean;
 	compacting: boolean;
 	mcpReloading: boolean;

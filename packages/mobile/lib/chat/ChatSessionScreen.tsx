@@ -44,6 +44,7 @@ import { quotaWarning } from "./conversationChrome";
 import { controllerStoppedBanner, errorBanner, mcpBanner, quotaBanner, reauthBanner, rolledBackBanner, threadBanner, type BannerCopy } from "./conversationBanners";
 import { conversationActionError, conversationActionUnsupported } from "./conversationErrors";
 import { conversationMarkers } from "./timelineModel";
+import { turnSettingsModelLabel } from "./turnSettingsModel";
 import { brokenMcpServers, can } from "./types";
 import { useMobileConversation } from "./useConversation";
 import { useOpenPage } from "../pageNavigation";
@@ -140,6 +141,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		const liveEntry = {
 			...entry,
 			snapshot,
+			modelLabel: turnSettingsModelLabel(snapshot, conversation.models, conversation.configOptions),
 			openingShell,
 			compacting: conversation.pendingActions.includes("compact"),
 			mcpReloading: conversation.pendingActions.includes("mcp"),
@@ -152,7 +154,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		};
 		actionsEntryRef.current = liveEntry;
 		actionsListeners.current.forEach((listener) => listener(liveEntry));
-	}, [conversation.snapshot, conversation.pendingActions, conversation.refreshing, conversation.actionCodes, openingShell, interfaceSwitch.status, interfaceSwitch.error, interfaceSwitch.starting, interfaceTransitionActive, session.id]);
+	}, [conversation.snapshot, conversation.models, conversation.configOptions, conversation.pendingActions, conversation.refreshing, conversation.actionCodes, openingShell, interfaceSwitch.status, interfaceSwitch.error, interfaceSwitch.starting, interfaceTransitionActive, session.id]);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
 		!interfaceSwitch.transition?.noticeAcknowledgedAt &&
@@ -421,6 +423,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				return () => { actionsListeners.current.delete(listener); };
 			},
 			sessionTitle: sessionName,
+			modelLabel: turnSettingsModelLabel(current, conversation.models, conversation.configOptions),
 			openingShell,
 			compacting: conversation.pendingActions.includes("compact"),
 			mcpReloading: conversation.pendingActions.includes("mcp"),
