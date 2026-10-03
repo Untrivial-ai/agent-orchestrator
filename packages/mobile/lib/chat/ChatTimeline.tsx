@@ -878,7 +878,7 @@ function InputField({ name, property, required, value, onChange }: { name: strin
 	return <View style={styles.field}>
 		<Text style={styles.inputLabel}>{label}</Text>
 		{property.description ? <Text style={styles.inputHint}>{property.description}</Text> : null}
-		<ElicitationTextField label={label} value={value} numeric={property.type === "number" || property.type === "integer"} maxLength={property.maxLength} onChange={onChange} />
+		<ElicitationTextField label={label} secret={property.format === "password"} value={value} numeric={property.type === "number" || property.type === "integer"} maxLength={property.maxLength} onChange={onChange} />
 	</View>;
 }
 

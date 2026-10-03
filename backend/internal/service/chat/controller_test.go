@@ -3119,6 +3119,7 @@ func newHarnessWithConversationAndStoreForHarness(
 	chatStore := wrapStore(st)
 	svc := chatsvc.New(chatsvc.Options{
 		Store:    chatStore,
+		Reader:   fullSnapshotReader(st),
 		Sessions: st,
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)

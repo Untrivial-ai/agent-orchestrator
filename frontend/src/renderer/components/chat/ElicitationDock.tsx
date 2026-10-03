@@ -415,7 +415,7 @@ function FormField({
 	const control = (
 		<input
 			id={id}
-			type={numeric ? "number" : "text"}
+			type={numeric ? "number" : property.format === "password" ? "password" : "text"}
 			aria-required={required || undefined}
 			min={typeof property.minimum === "number" ? property.minimum : undefined}
 			max={typeof property.maximum === "number" ? property.maximum : undefined}

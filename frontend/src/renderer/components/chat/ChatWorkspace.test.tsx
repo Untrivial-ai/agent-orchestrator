@@ -846,6 +846,15 @@ describe("ChatWorkspace timeline", () => {
 		).not.toBeInTheDocument();
 	});
 
+	it("keeps an asynchronous question docked after its turn finishes", () => {
+		const snapshot = withUserInput("pending");
+		const input = snapshot.items.find((item) => item.kind === "activity" && item.activityKind === "user_input");
+		if (input?.kind === "activity") input.detail = { ...input.detail, responseMode: "message" };
+		snapshot.turns = snapshot.turns.map((turn) => ({ ...turn, state: "completed" }));
+		render(<ChatWorkspace snapshot={snapshot} onResolveInput={vi.fn()} />);
+		expect(screen.getByRole("group", { name: "Agent question" })).toBeInTheDocument();
+	});
+
 	it("leaves nothing behind once a question is answered", () => {
 		render(<ChatWorkspace snapshot={withUserInput("completed")} onResolveInput={vi.fn()} />);
 

@@ -180,6 +180,12 @@ func (c *conversation) ReadHistory(ctx context.Context) ([]ports.ChatEvent, erro
 				return nil, fmt.Errorf("encode history item %s: %w", itemID, err)
 			}
 			for eventIndex, event := range normalizeItem(params, true) {
+				// Native history cannot tell whether an asynchronous question was
+				// answered. Its text is replayed, but only live events create requests;
+				// AO's durable pending rows survive reconnect independently.
+				if event.Kind == ports.ChatEventInputRequested {
+					continue
+				}
 				event.ProviderEventID = historyEventID(
 					c.threadID, turn.ID, "item", eventItemID, string(event.Kind), fmt.Sprint(eventIndex))
 				events = append(events, event)

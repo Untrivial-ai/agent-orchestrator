@@ -62,6 +62,7 @@ export type ConversationMessage = {
 export type DecisionOption = { id: string; label: string };
 export type FileChange = DiffFile & { patch?: string; patchTruncated?: boolean };
 export type InputProperty = {
+	format?: string;
 	type?: "string" | "number" | "integer" | "boolean" | "array";
 	title?: string;
 	description?: string;
@@ -140,6 +141,7 @@ export type ActivityDetail = {
 	tokensReclaimed?: number;
 	contextWindow?: number;
 	inputMode?: "form" | "url";
+	responseMode?: "message";
 	message?: string;
 	schema?: {
 		title?: string;

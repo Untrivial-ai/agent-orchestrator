@@ -13,6 +13,7 @@ import {
 	textFieldStyle,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
+import { TextInput } from "react-native";
 import { useEffect } from "react";
 import { glassPanel } from "../glass";
 import { haptics } from "../haptics";
@@ -48,7 +49,7 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 	</Host>;
 }
 
-export function ElicitationTextField({ value, label, numeric, maxLength, onChange }: ElicitationTextFieldProps) {
+export function ElicitationTextField({ value, label, numeric, secret, maxLength, onChange }: ElicitationTextFieldProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const text = useNativeState(value === undefined ? "" : String(value));
@@ -56,6 +57,7 @@ export function ElicitationTextField({ value, label, numeric, maxLength, onChang
 		const next = value === undefined ? "" : String(value);
 		if (text.get() !== next) text.set(next);
 	}, [text, value]);
+	if (secret) return <TextInput accessibilityLabel={label} secureTextEntry autoCorrect={false} value={value === undefined ? "" : String(value)} onChangeText={onChange} maxLength={maxLength} style={{ color: t.textPrimary, padding: 14 }} />;
 	return <Host style={{ width: "100%", height: 46 }} colorScheme={scheme} seedColor={t.accent}>
 		<TextField
 			text={text}

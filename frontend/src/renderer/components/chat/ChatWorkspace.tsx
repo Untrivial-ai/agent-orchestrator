@@ -157,7 +157,7 @@ function latestPendingInteraction(
 			item.kind !== "activity" ||
 			item.activityKind !== activityKind ||
 			item.status !== "pending" ||
-			(item.turnId ? item.turnId !== turn?.id : !turn)
+			(item.detail?.responseMode !== "message" && (item.turnId ? item.turnId !== turn?.id : !turn))
 		) {
 			return latest;
 		}
@@ -1209,7 +1209,7 @@ function ChatWorkspaceContent({
 	const composerElicitation = useMemo(
 		() =>
 			stablePendingUserInput ? (
-				<ElicitationDock activity={stablePendingUserInput} onResolve={onResolveInput} />
+				<ElicitationDock key={stablePendingUserInput.requestId} activity={stablePendingUserInput} onResolve={onResolveInput} />
 			) : undefined,
 		[onResolveInput, stablePendingUserInput],
 	);

@@ -1108,6 +1108,7 @@ SELECT EXISTS (
     WHERE conversation_id = ?
       AND kind IN ('approval', 'user_input')
       AND status = 'pending'
+      AND COALESCE(json_extract(CASE WHEN json_valid(detail_json) THEN detail_json ELSE '{}' END, '$.responseMode'), '') <> 'message'
 );
 
 -- Any approval still pending when a controller dies can never be answered: the
@@ -1117,13 +1118,13 @@ UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = ?
 WHERE conversation_id = ? AND kind = 'approval' AND status = 'pending';
 
--- A structured input request is held by an in-memory provider RPC just like an
--- approval. If that controller disappears, the old card must stop accepting
--- answers because there is no longer a provider call to receive one.
+-- Blocking inputs belong to the live provider RPC. Async inputs are answered
+-- through durable message intake and survive controller replacement.
 -- name: FailPendingConversationInputs :exec
 UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = ?
-WHERE conversation_id = ? AND kind = 'user_input' AND status = 'pending';
+WHERE conversation_id = ? AND kind = 'user_input' AND status = 'pending'
+  AND COALESCE(json_extract(CASE WHEN json_valid(detail_json) THEN detail_json ELSE '{}' END, '$.responseMode'), '') <> 'message';
 
 -- A project conversation can move to a new orchestrator while the old provider
 -- stream is still closing. Settle only requests owned by turns from that old
@@ -1134,6 +1135,7 @@ SET status = 'failed', revision = revision + 1, updated_at = sqlc.arg(updated_at
 WHERE conversation_activities.conversation_id = sqlc.arg(target_conversation_id)
   AND kind IN ('approval', 'user_input')
   AND status = 'pending'
+  AND COALESCE(json_extract(CASE WHEN json_valid(detail_json) THEN detail_json ELSE '{}' END, '$.responseMode'), '') <> 'message'
   AND turn_id IN (
     SELECT id
     FROM conversation_turns

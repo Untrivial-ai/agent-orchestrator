@@ -26,6 +26,7 @@ export type RequestDockFreeText = {
 	name: string;
 	placeholder: string;
 	numeric: boolean;
+	secret?: boolean;
 	maxLength?: number;
 };
 
@@ -155,6 +156,7 @@ function freeTextFor(name: string, property: InputProperty): RequestDockFreeText
 		name,
 		placeholder: property.title?.trim() || "Type your answer…",
 		numeric: property.type === "number" || property.type === "integer",
+		secret: property.format === "password",
 		maxLength: property.maxLength,
 	};
 }

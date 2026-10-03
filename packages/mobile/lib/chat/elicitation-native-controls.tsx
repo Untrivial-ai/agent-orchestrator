@@ -1,4 +1,5 @@
 import { Button, Column, Host, ListItem, Text as NativeText, TextInput as NativeTextInput, useNativeState } from "@expo/ui";
+import { TextInput } from "react-native";
 import { useEffect } from "react";
 import { haptics } from "../haptics";
 import { useTheme, useThemeState } from "../ThemeProvider";
@@ -16,6 +17,7 @@ export type ElicitationTextFieldProps = {
 	label: string;
 	autoFocus?: boolean;
 	numeric?: boolean;
+	secret?: boolean;
 	maxLength?: number;
 	onChange(value: string | number): void;
 };
@@ -44,7 +46,7 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 	);
 }
 
-export function ElicitationTextField({ value, label, autoFocus, numeric, maxLength, onChange }: ElicitationTextFieldProps) {
+export function ElicitationTextField({ value, label, autoFocus, numeric, secret, maxLength, onChange }: ElicitationTextFieldProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const text = useNativeState(value === undefined ? "" : String(value));
@@ -52,6 +54,7 @@ export function ElicitationTextField({ value, label, autoFocus, numeric, maxLeng
 		const next = value === undefined ? "" : String(value);
 		if (text.value !== next) text.value = next;
 	}, [text, value]);
+	if (secret) return <TextInput accessibilityLabel={label} secureTextEntry autoCorrect={false} value={value === undefined ? "" : String(value)} onChangeText={onChange} maxLength={maxLength} style={{ color: t.textPrimary, padding: 14 }} />;
 	return <Host style={{ width: "100%", height: 58 }} colorScheme={scheme} seedColor={t.accent}>
 		<NativeTextInput
 			value={text}

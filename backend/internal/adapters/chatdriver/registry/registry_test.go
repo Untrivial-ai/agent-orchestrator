@@ -21,6 +21,7 @@ func TestShippedChatDrivers(t *testing.T) {
 
 	for _, harness := range []domain.AgentHarness{
 		domain.HarnessCodex,
+		domain.HarnessGrok,
 		domain.HarnessClaudeCode,
 		domain.HarnessOpenCode,
 		domain.HarnessOpenCodeV2,

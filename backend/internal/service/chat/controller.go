@@ -187,6 +187,7 @@ func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controller
 
 // Controller drives one Chat session.
 type Controller struct {
+	inputReader  SnapshotReader
 	sessionID    domain.SessionID
 	reviewID     string
 	conversation domain.ConversationRecord
@@ -2079,6 +2080,75 @@ func (c *Controller) ResolveInput(
 	requestID string,
 	response ports.ChatInputResponse,
 ) error {
+	// Async questions are durable facts, not parked RPCs. Serialize their answer
+	// with ordinary intake and use a stable message id so retries cannot run twice.
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.inputReader != nil {
+		rows, err := c.inputReader.LoadConversationSnapshot(ctx, c.conversation.ID)
+		if err != nil {
+			return err
+		}
+		for _, activity := range rows.Activities {
+			if activity.RequestID != requestID || activity.Kind != domain.ActivityKindUserInput {
+				continue
+			}
+			if activity.Status != domain.ActivityStatusPending {
+				return ports.ErrChatRequestNotPending
+			}
+			var input struct {
+				ResponseMode string         `json:"responseMode"`
+				Message      string         `json:"message"`
+				Schema       map[string]any `json:"schema"`
+			}
+			if err := json.Unmarshal(activity.Detail, &input); err != nil {
+				return err
+			}
+			if input.ResponseMode != "message" {
+				break
+			}
+			request := ports.ChatInputRequest{Mode: ports.ChatInputModeForm, Message: input.Message, Schema: input.Schema}
+			if err := ports.ValidateChatInputResponse(request, response); err != nil {
+				return err
+			}
+			if response.Action == ports.ChatInputActionAccept {
+				messageID := "input-answer:" + requestID
+				for _, message := range rows.Messages {
+					if message.ClientMessageID != messageID {
+						continue
+					}
+					for _, turn := range rows.Turns {
+						if turn.ID != message.TurnID || (turn.State != domain.TurnStateFailed && turn.State != domain.TurnStateInterrupted) {
+							continue
+						}
+						retryID, found, lookupErr := c.store.RetryTurnIDForSource(ctx, c.conversation.ID, turn.ID)
+						if lookupErr != nil {
+							return lookupErr
+						}
+						if !found {
+							return fmt.Errorf("%w: answer delivery %s failed; retry its message", ErrRetryDeliveryUncertain, turn.ID)
+						}
+						retry, lookupErr := c.store.TurnByID(ctx, retryID)
+						if lookupErr != nil {
+							return lookupErr
+						}
+						if retry.State == domain.TurnStateFailed || retry.State == domain.TurnStateInterrupted {
+							return fmt.Errorf("%w: answer retry %s failed", ErrRetryDeliveryUncertain, retry.ID)
+						}
+					}
+				}
+				text, err := ports.ChatInputAnswerText(request, response.Content)
+				if err != nil {
+					return err
+				}
+				if _, err := c.sendLocked(ctx, ports.ChatUserMessage{ClientMessageID: messageID, Text: text, Origin: domain.MessageOriginHuman, AuthoredByUser: true}, true); err != nil {
+					return err
+				}
+			}
+			detail, _ := json.Marshal(map[string]any{"action": response.Action, "content": response.Content})
+			return c.store.ResolveApproval(ctx, c.conversation.ID, requestID, string(detail), c.now())
+		}
+	}
 	responder, ok := c.conv.(ports.ChatInputResponder)
 	if !ok {
 		return fmt.Errorf("%w: structured input", ports.ErrChatUnsupported)
@@ -3043,6 +3113,7 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			"schema":        event.Input.Schema,
 			"url":           event.Input.URL,
 			"elicitationId": event.Input.ElicitationID,
+			"responseMode":  event.Input.ResponseMode,
 		})
 		return c.store.UpsertActivity(ctx, c.conversation.ID, event.ProviderTurnID,
 			domain.ConversationActivity{
@@ -3160,6 +3231,9 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 	case ports.ChatEventApprovalResolved:
 		c.reportInteractionResolved(ctx, "chat.approval.resolved", now)
 	case ports.ChatEventInputRequested:
+		if event.Input != nil && event.Input.ResponseMode == "message" {
+			return
+		}
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.input.requested", now)
 	case ports.ChatEventInputResolved:
 		c.reportInteractionResolved(ctx, "chat.input.resolved", now)

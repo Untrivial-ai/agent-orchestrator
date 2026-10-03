@@ -39,7 +39,6 @@ var approvalMethods = map[string]domain.ActivityKind{
 	codexproto.MethodItemCommandExecutionRequestApproval: domain.ActivityKindCommand,
 	codexproto.MethodItemFileChangeRequestApproval:       domain.ActivityKindFileChange,
 	codexproto.MethodItemPermissionsRequestApproval:      domain.ActivityKindApproval,
-	codexproto.MethodItemToolRequestUserInput:            domain.ActivityKindApproval,
 }
 
 // conversation is one live Codex thread. It is the only writer to that thread.
@@ -629,7 +628,7 @@ func isNoActiveTurn(err error) bool {
 	return strings.Contains(strings.ToLower(rpcErr.Message), "no active turn")
 }
 
-// ResolveRequest answers a parked approval or user-input request.
+// ResolveRequest answers a parked approval request.
 //
 // The decision is checked against the set the provider offered for THIS request,
 // and the request stays parked unless a valid answer is actually going through.
@@ -675,17 +674,17 @@ func (c *conversation) ResolveRequest(ctx context.Context, requestID string, dec
 // (acceptWithExecpolicyAmendment), and a client that only knows the id cannot
 // reconstruct them. AO echoes what the provider sent rather than rebuilding it.
 type parkedRequest struct {
-	ch      chan ports.ChatDecision
-	method  string
-	offered map[string]json.RawMessage
+	ch        chan ports.ChatDecision
+	method    string
+	offered   map[string]json.RawMessage
+	input     *ports.ChatInputRequest
+	questions []ports.ChatQuestion
 }
 
 // reply resolves a client decision into the payload to send back.
 func (p *parkedRequest) reply(decision ports.ChatDecision) (ports.ChatDecision, error) {
-	if p.method == "item/tool/requestUserInput" {
-		// Not a decision but an answer: the provider offers questions, not options,
-		// so there is no set to check it against.
-		return decision, nil
+	if p.input != nil {
+		return ports.ChatDecision{}, fmt.Errorf("%w: use structured input response", ports.ErrChatDecisionNotOffered)
 	}
 	raw, ok := p.offered[decision.ID]
 	if !ok {
@@ -714,6 +713,8 @@ func (p *parkedRequest) offeredIDs() []string {
 // error, never with a fabricated decision.
 func (c *conversation) handleServerRequest(ctx context.Context, req serverRequest) (any, error) {
 	switch req.Method {
+	case codexproto.MethodItemToolRequestUserInput, codexproto.MethodMcpServerElicitationRequest:
+		return c.handleInputRequest(ctx, req)
 	case codexproto.MethodAccountChatgptAuthTokensRefresh:
 		return nil, c.reportAuthRefreshRequest(req.Params)
 	case codexproto.MethodItemToolCall:

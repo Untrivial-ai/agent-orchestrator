@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -397,133 +396,7 @@ func acpInputResponse(response ports.ChatInputResponse) acpsdk.UnstableCreateEli
 }
 
 func validateInputResponse(request ports.ChatInputRequest, response ports.ChatInputResponse) error {
-	switch response.Action {
-	case ports.ChatInputActionDecline, ports.ChatInputActionCancel:
-		return nil
-	case ports.ChatInputActionAccept:
-		if request.Mode == ports.ChatInputModeURL {
-			return nil
-		}
-	default:
-		return fmt.Errorf("%w: unsupported input action %q", ports.ErrChatDecisionNotOffered, response.Action)
-	}
-	if request.Mode != ports.ChatInputModeForm {
-		return fmt.Errorf("%w: unsupported input mode %q", ports.ErrChatDecisionNotOffered, request.Mode)
-	}
-	if err := validateFormContent(request.Schema, response.Content); err != nil {
-		return fmt.Errorf("%w: %s", ports.ErrChatDecisionNotOffered, err.Error())
-	}
-	return nil
-}
-
-func validateFormContent(schema, content map[string]any) error {
-	for _, name := range formRequired(schema["required"]) {
-		if name == "" {
-			continue
-		}
-		if _, present := content[name]; !present {
-			return fmt.Errorf("required input %q is missing", name)
-		}
-	}
-	properties, _ := schema["properties"].(map[string]any)
-	for name, value := range content {
-		rawProperty, known := properties[name]
-		if !known {
-			return fmt.Errorf("input %q is not in the requested schema", name)
-		}
-		property, ok := rawProperty.(map[string]any)
-		if !ok {
-			return fmt.Errorf("input %q has an invalid requested schema", name)
-		}
-		if err := validateFormValue(value, property); err != nil {
-			return fmt.Errorf("input %q %s", name, err.Error())
-		}
-	}
-	return nil
-}
-
-func validateFormValue(value any, property map[string]any) error {
-	typeName, _ := property["type"].(string)
-	switch typeName {
-	case "string", "":
-		text, ok := value.(string)
-		if !ok {
-			return errors.New("must be a string")
-		}
-		if !formOptionOffered(text, property) {
-			return errors.New("is not one of the offered values")
-		}
-	case "number", "integer":
-		numeric, ok := number(value)
-		if !ok || math.IsNaN(numeric) || math.IsInf(numeric, 0) {
-			return errors.New("must be a finite number")
-		}
-		if typeName == "integer" && math.Trunc(numeric) != numeric {
-			return errors.New("must be an integer")
-		}
-	case "boolean":
-		if _, ok := value.(bool); !ok {
-			return errors.New("must be a boolean")
-		}
-	case "array":
-		values, ok := value.([]any)
-		if !ok {
-			return errors.New("must be an array")
-		}
-		items, _ := property["items"].(map[string]any)
-		for _, item := range values {
-			text, ok := item.(string)
-			if !ok || !formOptionOffered(text, items) {
-				return errors.New("contains a value that was not offered")
-			}
-		}
-	default:
-		return fmt.Errorf("uses unsupported type %q", typeName)
-	}
-	return nil
-}
-
-func formRequired(value any) []string {
-	switch values := value.(type) {
-	case []string:
-		return values
-	case []any:
-		out := make([]string, 0, len(values))
-		for _, value := range values {
-			if text, ok := value.(string); ok {
-				out = append(out, text)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func formOptionOffered(value string, schema map[string]any) bool {
-	var options []any
-	if candidates, ok := schema["oneOf"].([]any); ok {
-		options = candidates
-	} else if candidates, ok := schema["anyOf"].([]any); ok {
-		options = candidates
-	} else if candidates, ok := schema["enum"].([]any); ok {
-		for _, candidate := range candidates {
-			if candidate == value {
-				return true
-			}
-		}
-		return len(candidates) == 0
-	}
-	if len(options) == 0 {
-		return true
-	}
-	for _, raw := range options {
-		option, _ := raw.(map[string]any)
-		if option["const"] == value {
-			return true
-		}
-	}
-	return false
+	return ports.ValidateChatInputResponse(request, response)
 }
 
 func (c *conversation) discardInput(requestID string) {

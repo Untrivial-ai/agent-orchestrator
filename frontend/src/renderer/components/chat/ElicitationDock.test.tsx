@@ -21,6 +21,19 @@ function activity(detail: ConversationActivity["detail"]): ConversationActivity 
 }
 
 describe("ElicitationDock", () => {
+	it("masks secret answers and keeps failed submissions editable", async () => {
+		const user = userEvent.setup();
+		const onResolve = vi.fn().mockRejectedValue(new Error("Try again"));
+		render(<ElicitationDock activity={activity({ inputMode: "form", schema: { type: "object", properties: { password: { type: "string", title: "Password", format: "password" } } } })} onResolve={onResolve} />);
+		const input = screen.getByLabelText("Password");
+		expect(input).toHaveAttribute("type", "password");
+		await user.type(input, "secret");
+		await user.click(screen.getByRole("button", { name: "Continue" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Try again");
+		expect(input).toHaveValue("secret");
+		expect(input).toBeEnabled();
+	});
+
 	const claudeQuestions = {
 		type: "object" as const,
 		required: ["question_0", "question_1"],

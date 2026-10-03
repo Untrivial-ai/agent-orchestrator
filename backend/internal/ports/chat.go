@@ -817,6 +817,9 @@ type ChatInputRequest struct {
 	Schema        map[string]any
 	URL           string
 	ElicitationID string
+	// ResponseMode "message" means the agent continues while an answer is pending.
+	// The service delivers the answer through ordinary durable message intake.
+	ResponseMode string
 }
 
 // ChatInputResponder is optional because not every machine protocol supports

@@ -2451,7 +2451,8 @@ func (s *Store) ResolveApproval(
 }
 
 // HasPendingConversationInteractions reports whether the durable conversation
-// still contains an actionable approval or structured-input request.
+// still contains a blocking approval or structured-input request. Async questions
+// remain actionable without putting a running provider into waiting-input state.
 func (s *Store) HasPendingConversationInteractions(ctx context.Context, conversationID string) (bool, error) {
 	pending, err := s.qr.HasPendingConversationInteractions(ctx, conversationID)
 	if err != nil {

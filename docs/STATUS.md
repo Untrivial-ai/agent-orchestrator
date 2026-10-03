@@ -63,8 +63,13 @@ surface (`npm run sqlc`, `npm run api`).
   session-scoped worker history, bounded history pages, transactional raw-event
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
+- Structured Chat questions: Codex blocking `requestUserInput`, asynchronous
+  question messages, and MCP form/URL elicitation use the shared desktop/mobile
+  input surface. Async answers use durable message intake and survive controller
+  replacement. Grok native ACP questions preserve choices, custom answers, and
+  selection annotations. See [provider coverage](research/structured-chat-input.md).
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, Qwen, and
+  (claude-agent-acp), Cursor, Grok, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, Qwen, and
   the built-in Unreal Agent library. Unreal Agent Chat runs on macOS and Linux
   behind AO's detached provider host, persists its native session plus an
   acknowledged AO event journal, and currently requires an explicit

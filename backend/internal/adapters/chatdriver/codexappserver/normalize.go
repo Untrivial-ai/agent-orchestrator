@@ -875,7 +875,7 @@ func autoReviewDetail(
 		detail["rawCommand"] = *action.Command
 	}
 	if action.Cwd != nil && *action.Cwd != "" {
-		detail["cwd"] = string(*action.Cwd)
+		detail["cwd"] = *action.Cwd
 	}
 	if action.Source != nil {
 		detail["commandSource"] = string(*action.Source)
@@ -989,6 +989,19 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 	}
 
 	if it.Type == itemAgentMessage {
+		if it.Delivery != nil && *it.Delivery == codexproto.AgentMessageDeliveryAsync && len(it.Questions) > 0 {
+			if !completed {
+				return nil
+			}
+			input, err := asyncQuestionInput(it.Questions)
+			if err != nil || it.itemID() == "" {
+				return nil
+			}
+			return []ports.ChatEvent{
+				{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: p.TurnID, ProviderItemID: it.itemID(), Text: deref(it.Text)},
+				{Kind: ports.ChatEventInputRequested, ProviderTurnID: p.TurnID, ProviderItemID: it.itemID(), RequestID: "async:" + it.itemID(), Input: &input},
+			}
+		}
 		if !completed {
 			// The message row is created by the first delta; a started event
 			// with no text adds nothing.

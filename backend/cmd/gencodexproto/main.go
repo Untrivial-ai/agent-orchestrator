@@ -649,6 +649,16 @@ func (g *generator) renderTypes(b *strings.Builder) {
 }
 
 func (g *generator) renderDef(b *strings.Builder, name string, s *schema, inline *[]inlineType, emitted map[string]bool) {
+	constantNames := map[string]int{}
+	constantName := func(value string) string {
+		base := name + exportName(value)
+		constantNames[base]++
+		if constantNames[base] > 1 {
+			return fmt.Sprintf("%s%d", base, constantNames[base])
+		}
+		return base
+	}
+
 	if emitted[name] {
 		return
 	}
@@ -664,7 +674,7 @@ func (g *generator) renderDef(b *strings.Builder, name string, s *schema, inline
 			if !ok {
 				continue
 			}
-			fmt.Fprintf(b, "\t%s%s %s = %q\n", name, exportName(str), name, str)
+			fmt.Fprintf(b, "\t%s %s = %q\n", constantName(str), name, str)
 		}
 		b.WriteString(")\n\n")
 		return
@@ -689,7 +699,7 @@ func (g *generator) renderDef(b *strings.Builder, name string, s *schema, inline
 				if a.Description != "" {
 					fmt.Fprintf(b, "\t// %s\n", oneLine(a.Description))
 				}
-				fmt.Fprintf(b, "\t%s%s %s = %q\n", name, exportName(str), name, str)
+				fmt.Fprintf(b, "\t%s %s = %q\n", constantName(str), name, str)
 			}
 		}
 		b.WriteString(")\n\n")
@@ -954,13 +964,19 @@ func (g *generator) renderFlattenedUnion(
 	emitted[tagType] = true
 	fmt.Fprintf(b, "// %s is the discriminator of %s.\ntype %s string\n\nconst (\n", tagType, name, tagType)
 	seen := map[string]bool{}
+	usedNames := map[string]bool{}
 	sort.Strings(tagValues)
 	for _, v := range tagValues {
 		if seen[v] {
 			continue
 		}
 		seen[v] = true
-		fmt.Fprintf(b, "\t%s%s %s = %q\n", tagType, exportName(v), tagType, v)
+		constant := tagType + exportName(v)
+		for usedNames[constant] {
+			constant += "_"
+		}
+		usedNames[constant] = true
+		fmt.Fprintf(b, "\t%s %s = %q\n", constant, tagType, v)
 	}
 	b.WriteString(")\n\n")
 }

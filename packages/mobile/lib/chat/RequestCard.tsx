@@ -212,6 +212,8 @@ export function RequestCard({
 							onChangeText={setDraft}
 							placeholder={current.freeText.placeholder}
 							placeholderTextColor={t.textTertiary}
+							secureTextEntry={current.freeText.secret}
+							autoCorrect={!current.freeText.secret}
 							keyboardType={current.freeText.numeric ? "number-pad" : "default"}
 							maxLength={current.freeText.maxLength}
 							returnKeyType="send"

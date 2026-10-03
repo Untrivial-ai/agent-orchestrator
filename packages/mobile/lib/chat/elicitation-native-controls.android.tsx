@@ -41,7 +41,7 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 	);
 }
 
-export function ElicitationTextField({ value, label, autoFocus, numeric, maxLength, onChange }: ElicitationTextFieldProps) {
+export function ElicitationTextField({ value, label, autoFocus, numeric, secret, maxLength, onChange }: ElicitationTextFieldProps) {
 	const t = useTheme();
 	return (
 		<TextInput
@@ -51,6 +51,9 @@ export function ElicitationTextField({ value, label, autoFocus, numeric, maxLeng
 			placeholder={label}
 			placeholderTextColor={t.textFaint}
 			selectionColor={t.accent}
+			secureTextEntry={secret}
+			autoCorrect={!secret}
+			accessibilityLabel={label}
 			keyboardType={numeric ? "numeric" : "default"}
 			maxLength={maxLength}
 			style={[styles.input, { color: t.textPrimary, backgroundColor: t.bgSubtle, borderColor: t.borderDefault }]}
