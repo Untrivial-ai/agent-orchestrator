@@ -329,6 +329,37 @@ describe("useCloseShellTerminal", () => {
 		await waitFor(() => expect(result.current.isPending).toBe(false));
 	});
 
+	it("keeps a closing tab hidden when another close's refetch still lists it", async () => {
+		// Two tabs closed in quick succession: the first delete settles and
+		// refetches the list before the daemon has processed the second delete.
+		const finishDeletes = new Map<string, (result: { error?: unknown }) => void>();
+		deleteMock.mockImplementation(
+			(_path: string, options: { params: { path: { handleId: string } } }) =>
+				new Promise((resolve) => finishDeletes.set(options.params.path.handleId, resolve)),
+		);
+		getMock.mockResolvedValue({ data: { shellTerminals: [shells[1]] } });
+		const queryClient = queryClientWithShells();
+		const { result } = renderHook(
+			() => ({ list: useShellTerminals(), close: useCloseShellTerminal() }),
+			{ wrapper: wrapper(queryClient) },
+		);
+
+		act(() => result.current.close.mutate(shells[0].handleId));
+		act(() => result.current.close.mutate(shells[1].handleId));
+		await waitFor(() => expect(finishDeletes.size).toBe(2));
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([]);
+
+		act(() => finishDeletes.get(shells[0].handleId)?.({}));
+		await waitFor(() => expect(getMock).toHaveBeenCalled());
+		await act(async () => undefined);
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([]);
+
+		getMock.mockResolvedValue({ data: { shellTerminals: [] } });
+		act(() => finishDeletes.get(shells[1].handleId)?.({}));
+		await waitFor(() => expect(result.current.close.isPending).toBe(false));
+		expect(queryClient.getQueryData(shellTerminalsQueryKey)).toEqual([]);
+	});
+
 	it("restores an optimistically removed tab when a live PTY fails to close", async () => {
 		let finishDelete!: (result: { error: unknown }) => void;
 		deleteMock.mockReturnValue(new Promise((resolve) => (finishDelete = resolve)));
