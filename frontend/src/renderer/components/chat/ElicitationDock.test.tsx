@@ -46,6 +46,70 @@ describe("ElicitationDock", () => {
 		},
 	};
 
+	it("shows the Claude question, not only its short header", () => {
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					message: "Please answer the following questions.",
+					schema: {
+						type: "object",
+						required: ["question_0", "question_1"],
+						properties: {
+							question_0: {
+								type: "string",
+								title: "403 handling",
+								description: "What should a client do when the API returns 403?",
+								oneOf: [
+									{ const: "retry", title: "Retry" },
+									{ const: "fail", title: "Fail" },
+								],
+							},
+							question_1: {
+								type: "string",
+								title: "Timeout",
+								description: "How long should the client wait?",
+								oneOf: [{ const: "30s", title: "30 seconds" }],
+							},
+						},
+					},
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("403 handling")).toBeVisible();
+		expect(screen.getByText("What should a client do when the API returns 403?")).toBeVisible();
+		expect(screen.getByRole("radio", { name: "Retry" })).toBeInTheDocument();
+		expect(screen.queryByText("How long should the client wait?")).not.toBeInTheDocument();
+	});
+
+	it("shows a single Claude question from the elicitation message", () => {
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					message: "Which port should the proxy listen on?",
+					schema: {
+						type: "object",
+						required: ["question_0"],
+						properties: {
+							question_0: {
+								type: "string",
+								title: "Port",
+								oneOf: [{ const: "8080", title: "8080" }],
+							},
+						},
+					},
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Port")).toBeVisible();
+		expect(screen.getByText("Which port should the proxy listen on?")).toBeVisible();
+	});
+
 	it("shows one Claude question and its Other field at a time", () => {
 		render(
 			<ElicitationDock
