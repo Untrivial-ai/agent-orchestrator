@@ -17,6 +17,10 @@ import (
 // protocol migration without guessing from session metadata.
 const directHandlePrefix = "ptyhost-v1:"
 
+// DirectHandleID wraps a raw conpty handle id in the persisted ptyhost-v1
+// scheme so a hybrid runtime routes it to the direct backend.
+func DirectHandleID(id string) string { return directHandlePrefix + id }
+
 // routedBackend captures the capabilities the daemon conditionally consumes.
 // Both tmux and the detached PTY host provide them; keeping them on the router
 // avoids silently disabling styled-output safety checks or process supervision.

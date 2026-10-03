@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty/ptyregistry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/runtimeselect"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -3522,6 +3524,74 @@ func (m *Manager) ReconcileBackground(ctx context.Context) (resultErr error) {
 		m.logger.Error("reconcile: transition-message delivery deferred for retry", "error", err)
 	}
 	m.wakeTransitionMessageDispatcher()
+	return nil
+}
+
+// ReconcileOrphanedPtyHosts destroys durable conpty pty-host panes that no
+// non-terminated session owns: reviewer panes whose worker row is terminated
+// (the crash window between the termination commit and the lifecycle
+// ReviewerTeardown hook, #5948), panes whose owner row was never written
+// (crash inside runtime.Create before the reviews upsert), previous-app-run
+// shell terminals (shellterm-* rows are unreachable after a restart), and
+// stale prelaunch reservations. Must run before the API listener accepts
+// traffic so no client can register a fresh pane mid-sweep, and before
+// ReconcileBackground's adopt pass (which only ever adopts non-terminated
+// sessions, i.e. always keep-set members). tmux-runtime daemons no-op on the
+// empty registry. Per-item failures are logged and skipped.
+func (m *Manager) ReconcileOrphanedPtyHosts(ctx context.Context) error {
+	entries, complete, err := ptyregistry.Scan(ctx)
+	if err != nil || !complete {
+		if err == nil {
+			err = errors.New("incomplete scan")
+		}
+		return fmt.Errorf("reconcile orphaned pty-hosts: scan: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	recs, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile orphaned pty-hosts: list sessions: %w", err)
+	}
+
+	// Keep handles of every non-terminated session plus its reviewer pane,
+	// derived from bare session ids: the reviews table is not a liveness
+	// signal, and session_manager cannot import review (import cycle), so the
+	// "review-" prefix is duplicated from review.launcher's reviewerHandleID.
+	// ponytail: this keep-rule enumerates every known runtime.Create caller
+	// whose SessionID is not a session row (today: review-*, and shellterm-*
+	// which is deliberately condemned as unreachable after a restart) — a
+	// future rowless caller needs a rule here or gets swept by design.
+	keep := make(map[string]struct{}, 2*len(recs))
+	for _, rec := range recs {
+		if rec.IsTerminated {
+			continue
+		}
+		keep[string(rec.ID)] = struct{}{}
+		// Duplicated from review.launcher's reviewerHandleID ("review-" +
+		// worker id); session_manager cannot import review (import cycle).
+		keep["review-"+string(rec.ID)] = struct{}{}
+	}
+	for _, e := range entries {
+		if _, ok := keep[e.SessionID]; ok {
+			continue
+		}
+		if e.PtyHostPID == 0 && e.PipePath == ptyregistry.UnresolvedPipePath {
+			// Destroy refuses unresolved reservations; unregistering is the
+			// only way to unblock a future same-id Create.
+			if err := ptyregistry.Unregister(ctx, e.SessionID); err != nil {
+				m.logger.Warn("reconcile: orphaned pty-host reservation unregister failed", "sessionID", e.SessionID, "error", err)
+			}
+			continue
+		}
+		// The direct-host scheme routes the hybrid runtime to conpty; a bare
+		// id would be dispatched to the tmux backend and miss the registry.
+		if err := m.runtime.Destroy(ctx, ports.RuntimeHandle{ID: runtimeselect.DirectHandleID(e.SessionID)}); err != nil {
+			m.logger.Warn("reconcile: orphaned pty-host destroy failed", "sessionID", e.SessionID, "error", err)
+			continue
+		}
+		m.logger.Info("reconcile: destroyed ownerless pty-host", "sessionID", e.SessionID)
+	}
 	return nil
 }
 

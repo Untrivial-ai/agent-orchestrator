@@ -21,6 +21,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/amp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty/ptyregistry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/scratch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -9854,6 +9855,85 @@ func TestReconcileReap_TerminatedAndDeadTmuxLeftAlone(t *testing.T) {
 	}
 	if err := m.reconcileReap(context.Background(), rec); err != nil {
 		t.Fatalf("reconcileReap: %v", err)
+	}
+	if rt.destroyed != 0 {
+		t.Fatalf("Destroy calls = %d, want 0", rt.destroyed)
+	}
+}
+
+func TestReconcileOrphanedPtyHosts_DestroyOwnerlessKeepsLiveWorkerAndReviewer(t *testing.T) {
+	ptyregistry.SetRunFilePath(t.TempDir())
+	t.Cleanup(func() { ptyregistry.SetRunFilePath("") })
+
+	st := newFakeStore()
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm, LookPath: lookPath})
+
+	st.sessions["w-live"] = domain.SessionRecord{ID: "w-live", ProjectID: "p1"}
+	st.sessions["w-term"] = domain.SessionRecord{ID: "w-term", ProjectID: "p1", IsTerminated: true}
+
+	registeredAt := time.Now().UTC().Format(time.RFC3339)
+	for _, e := range []ptyregistry.Entry{
+		{SessionID: "w-live", PtyHostPID: os.Getpid(), PipePath: "127.0.0.1:61001", RegisteredAt: registeredAt},
+		{SessionID: "review-w-live", PtyHostPID: os.Getpid(), PipePath: "127.0.0.1:61002", RegisteredAt: registeredAt},
+		{SessionID: "w-term", PtyHostPID: os.Getpid(), PipePath: "127.0.0.1:61003", RegisteredAt: registeredAt},
+		{SessionID: "ghost", PtyHostPID: os.Getpid(), PipePath: "127.0.0.1:61004", RegisteredAt: registeredAt},
+		{SessionID: "ghost-res", PtyHostPID: 0, PipePath: ptyregistry.UnresolvedPipePath, RegisteredAt: registeredAt},
+	} {
+		if err := ptyregistry.Register(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := m.ReconcileOrphanedPtyHosts(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Destroy handles carry the direct-host scheme so a hybrid runtime routes
+	// them to conpty, not tmux.
+	want := map[string]bool{"ptyhost-v1:ghost": true, "ptyhost-v1:w-term": true}
+	gotDestroyed := map[string]bool{}
+	for _, id := range rt.destroyedIDs {
+		gotDestroyed[id] = true
+	}
+	if !maps.Equal(gotDestroyed, want) {
+		t.Fatalf("destroyedIDs = %v, want %v", rt.destroyedIDs, want)
+	}
+	entries, _, err := ptyregistry.Scan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range entries {
+		got[e.SessionID] = true
+	}
+	if got["ghost-res"] {
+		t.Fatal("ownerless reservation must be unregistered")
+	}
+	if !got["w-live"] || !got["review-w-live"] {
+		t.Fatalf("live panes must survive the sweep, got %v", got)
+	}
+	// fakeRuntime.Destroy, unlike conpty, does not unregister; the w-term and
+	// ghost entries therefore remain in the file and are pruned by Scan's
+	// dead-PID pass on a later boot.
+}
+
+func TestReconcileOrphanedPtyHosts_EmptyRegistryIsNoop(t *testing.T) {
+	ptyregistry.SetRunFilePath(t.TempDir())
+	t.Cleanup(func() { ptyregistry.SetRunFilePath("") })
+
+	st := newFakeStore()
+	rt := &fakeRuntime{}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	lookPath := func(string) (string, error) { return "/bin/true", nil }
+	m := New(Deps{Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st, Messenger: &fakeMessenger{}, Lifecycle: lcm, LookPath: lookPath})
+
+	if err := m.ReconcileOrphanedPtyHosts(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if rt.destroyed != 0 {
 		t.Fatalf("Destroy calls = %d, want 0", rt.destroyed)
