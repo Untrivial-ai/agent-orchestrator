@@ -71,3 +71,11 @@ func TestProvidersRequireWorkerHome(t *testing.T) {
 		t.Fatal("coder requires a worker home")
 	}
 }
+
+func TestLoadRejectsInvalidDockerExtraLabelsJSON(t *testing.T) {
+	t.Setenv("AO_CLOUD_DOCKER_EXTRA_LABELS_JSON", "{")
+	_, err := Load()
+	if err == nil || err.Error() == "" {
+		t.Fatal("Load must reject malformed Docker extra labels")
+	}
+}

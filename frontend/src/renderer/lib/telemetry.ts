@@ -531,6 +531,40 @@ export async function sanitizeRendererProperties(
 				safe.reason = properties.reason;
 			}
 			break;
+		case "ao.renderer.cloud_browser_first_frame":
+		case "ao.renderer.cloud_browser_input_ack":
+		case "ao.renderer.cloud_browser_input_frame": {
+			for (const key of ["elapsed_ms", "relay_to_paint_ms", "decode_ms", "paint_ms"] as const) {
+				const value = properties?.[key];
+				if (
+					typeof value === "number" &&
+					Number.isFinite(value) &&
+					Number.isInteger(value) &&
+					value >= 0 &&
+					value <= 30 * 60_000
+				) {
+					safe[key] = value;
+				}
+			}
+			const frameBytes = properties?.frame_bytes;
+			if (typeof frameBytes === "number" && Number.isSafeInteger(frameBytes) && frameBytes > 0 && frameBytes <= 1024 * 1024) {
+				safe.frame_bytes = frameBytes;
+			}
+			const width = properties?.width;
+			if (typeof width === "number" && Number.isSafeInteger(width) && width > 0 && width <= 1440) safe.width = width;
+			const height = properties?.height;
+			if (typeof height === "number" && Number.isSafeInteger(height) && height > 0 && height <= 900) safe.height = height;
+			if (typeof properties?.reconnect === "boolean") safe.reconnect = properties.reconnect;
+			if (
+				properties?.input_kind === "input" ||
+				properties?.input_kind === "navigate" ||
+				properties?.input_kind === "tab" ||
+				properties?.input_kind === "dialog"
+			) {
+				safe.input_kind = properties.input_kind;
+			}
+			break;
+		}
 		case "ao.renderer.agents_available": {
 			// Counts and a fixed-vocabulary id list only. Agent ids come from AO's own
 			// registry, never from user input, so they carry no user data.

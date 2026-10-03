@@ -183,6 +183,7 @@ class TaskDefinitionTests(unittest.TestCase):
         self.assertEqual(environment["AO_CLOUD_WORKER_HELPER_BINARY_PATH"], "/ao")
         self.assertEqual(environment["AO_CLOUD_TERMINAL_STREAM"], "1")
         self.assertEqual(environment["AO_CLOUD_TERMINAL_RELAY"], "1")
+        self.assertEqual(environment["AO_CLOUD_BROWSER_VIEWER"], "1")
         secrets = {
             item["name"]: item["valueFrom"] for item in container["secrets"]
         }

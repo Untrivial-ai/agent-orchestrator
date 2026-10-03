@@ -151,8 +151,10 @@ it("hides stale chat controls when the upstream daemon fails but its proxy remai
 	upstreamFailed = true;
 	await act(async () => { await queryClient.invalidateQueries({ queryKey: remoteWorkspaceQueryKey("box-a") }); });
 	expect(queryClient.getQueryData(remoteWorkspaceQueryKey("box-a"))).toBeDefined();
-	expect(screen.queryByTestId("session-detail")).not.toBeInTheDocument();
-	expect(screen.getByRole("alert")).toHaveTextContent("Host is offline");
+	await waitFor(() => {
+		expect(screen.queryByTestId("session-detail")).not.toBeInTheDocument();
+		expect(screen.getByRole("alert")).toHaveTextContent("Host is offline");
+	});
 	expect(screen.queryByRole("combobox", { name: "Message the agent" })).not.toBeInTheDocument();
 	expect(screen.queryByRole("complementary", { name: "Session inspector" })).not.toBeInTheDocument();
 	expect(localGet).not.toHaveBeenCalled();

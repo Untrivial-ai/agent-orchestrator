@@ -51,6 +51,7 @@ type Config struct {
 	WorkerImage string
 	Network     string
 	Namespace   string
+	ExtraLabels map[string]string
 
 	// HTTPClient is only for deterministic tests against an HTTP server. A
 	// production client accepts unix:// only so an accidentally exposed,
@@ -61,11 +62,12 @@ type Config struct {
 
 // Client manages worker containers in one local Docker namespace.
 type Client struct {
-	baseURL   string
-	image     string
-	network   string
-	namespace string
-	http      *http.Client
+	baseURL     string
+	image       string
+	network     string
+	namespace   string
+	extraLabels map[string]string
+	http        *http.Client
 }
 
 var (
@@ -89,6 +91,13 @@ func New(config Config) (*Client, error) {
 	network := strings.TrimSpace(config.Network)
 	if strings.ContainsRune(network, '\x00') {
 		return nil, errors.New("docker: network contains a NUL byte")
+	}
+	extraLabels := make(map[string]string, len(config.ExtraLabels))
+	for key, value := range config.ExtraLabels {
+		if strings.TrimSpace(key) == "" || strings.ContainsRune(key, '\x00') || strings.ContainsRune(value, '\x00') {
+			return nil, errors.New("docker: extra label contains an empty key or NUL byte")
+		}
+		extraLabels[key] = value
 	}
 
 	host := strings.TrimSpace(config.Host)
@@ -124,10 +133,11 @@ func New(config Config) (*Client, error) {
 		httpClient = &http.Client{Transport: transport, Timeout: defaultTimeout}
 	}
 	client := &Client{
-		image:     image,
-		network:   network,
-		namespace: namespace,
-		http:      httpClient,
+		image:       image,
+		network:     network,
+		namespace:   namespace,
+		extraLabels: extraLabels,
+		http:        httpClient,
 	}
 	version := strings.TrimSpace(config.APIVersion)
 	if version == "" {
@@ -496,10 +506,16 @@ func (c *Client) labelsFor(spec sandbox.Spec) (map[string]string, string, error)
 	if err := validateIdentity("organization id", spec.OrgID); err != nil {
 		return nil, "", err
 	}
-	labels := make(map[string]string, len(spec.Labels)+6)
+	labels := make(map[string]string, len(c.extraLabels)+len(spec.Labels)+6)
+	for key, value := range c.extraLabels {
+		labels[key] = value
+	}
 	for key, value := range spec.Labels {
 		if strings.ContainsRune(key, '\x00') || strings.ContainsRune(value, '\x00') {
 			return nil, "", errors.New("docker: label contains a NUL byte")
+		}
+		if configured, ok := labels[key]; ok && configured != value {
+			return nil, "", fmt.Errorf("docker: label %s conflicts with the provider value", key)
 		}
 		labels[key] = value
 	}

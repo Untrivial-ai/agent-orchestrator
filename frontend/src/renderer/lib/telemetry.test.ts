@@ -521,6 +521,46 @@ describe("telemetry sanitizers", () => {
 			await sanitizeRendererProperties("ao.renderer.terminal_attach_failed", { reason: "something else" }),
 		).toEqual({});
 	});
+
+	it("keeps bounded Cloud browser timing fields without page content or identifiers", async () => {
+		const safe = await sanitizeRendererProperties("ao.renderer.cloud_browser_first_frame", {
+			elapsed_ms: 1_240,
+			relay_to_paint_ms: 16,
+			decode_ms: 12,
+			paint_ms: 2,
+			frame_bytes: 64_000,
+			width: 1280,
+			height: 720,
+			reconnect: true,
+			url: "https://private.example/path",
+			title: "private title",
+			typed_text: "private input",
+			session_id: "session-1",
+		});
+
+		expect(safe).toEqual({
+			elapsed_ms: 1_240,
+			relay_to_paint_ms: 16,
+			decode_ms: 12,
+			paint_ms: 2,
+			frame_bytes: 64_000,
+			width: 1280,
+			height: 720,
+			reconnect: true,
+		});
+	});
+
+	it("keeps only fixed Cloud browser input categories and bounded latency", async () => {
+		expect(await sanitizeRendererProperties("ao.renderer.cloud_browser_input_ack", {
+			elapsed_ms: 24,
+			input_kind: "navigate",
+			url: "https://private.example/",
+		})).toEqual({ elapsed_ms: 24, input_kind: "navigate" });
+		expect(await sanitizeRendererProperties("ao.renderer.cloud_browser_input_frame", {
+			elapsed_ms: -1,
+			input_kind: "private-operation",
+		})).toEqual({});
+	});
 });
 
 describe("reserveCapture", () => {

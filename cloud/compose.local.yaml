@@ -1,0 +1,24 @@
+services:
+  migrate:
+    build:
+      dockerfile: "${AO_CLOUD_LOCAL_DOCKERFILE:-Dockerfile}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_LOCAL_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_LOCAL_TARGET_ARCH}"
+
+  control-plane:
+    build:
+      dockerfile: "${AO_CLOUD_LOCAL_DOCKERFILE:-Dockerfile}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_LOCAL_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_LOCAL_TARGET_ARCH}"
+
+  worker-image:
+    build:
+      dockerfile: "${AO_CLOUD_LOCAL_DOCKERFILE:-Dockerfile}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_LOCAL_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_LOCAL_TARGET_ARCH}"

@@ -16,6 +16,7 @@ import type {
 } from "../../shared/browser-annotations";
 import type { BrowserProfileViewState } from "../../shared/browser-profiles";
 import { BROWSER_OVERLAY_CANDIDATE_SELECTOR, OPEN_BROWSER_OVERLAY_SELECTOR } from "../lib/dom-selectors";
+import type { CloudBrowserControl, CloudBrowserSnapshot } from "../lib/cloud-browser-stream";
 import { aoBridge } from "../lib/bridge";
 
 export type { BrowserNavState };
@@ -25,6 +26,14 @@ export type ClosedBrowserTab = {
 	title: string;
 	url: string;
 	favicon?: string;
+};
+
+export type CloudBrowserSurfaceModel = {
+	snapshot: CloudBrowserSnapshot;
+	send: (control: Omit<CloudBrowserControl, "version" | "streamEpoch">) => boolean;
+	setViewport: (width: number, height: number) => void;
+	reportPaint: (frameSequence: number, decodeMs: number, paintMs: number, frameUrl: string) => void;
+	retry: () => void;
 };
 
 const MAX_CLOSED_TABS = 5;
@@ -57,6 +66,7 @@ type UseBrowserViewOptions = {
 	origin?: { hostId: string; sessionId: string; proxyBase: string };
 	active: boolean;
 	poppedOut: boolean;
+	disabled?: boolean;
 	/**
 	 * When true, the view is cleared and the daemon-driven preview is suppressed.
 	 * Use when the session is terminated: the old preview content should not
@@ -108,6 +118,7 @@ export type BrowserViewModel = {
 	annotationState?: Pick<BrowserAnnotationStatePayload, "count" | "screenshotCount" | "hasDraft">;
 	setAnnotationMode: (enabled: boolean) => Promise<void>;
 	annotationAction?: (action: BrowserAnnotationActionInput["action"]) => Promise<void>;
+	cloudSurface?: CloudBrowserSurfaceModel;
 };
 
 const EMPTY_NAV_STATE: BrowserNavState = {
@@ -235,6 +246,7 @@ export function useBrowserView({
 	terminated,
 	previewUrl,
 	previewRevision,
+	disabled,
 }: UseBrowserViewOptions): BrowserViewModel {
 	const [viewId, setViewId] = useState("");
 	const [navState, setNavState] = useState<BrowserNavState>(EMPTY_NAV_STATE);
@@ -265,7 +277,7 @@ export function useBrowserView({
 	const overlayOpenRef = useRef(false);
 	const tabNoticeTimerRef = useRef<number | null>(null);
 	const tabsStateRef = useRef(tabsState);
-	const hasNativeBrowser = Boolean(window.ao?.browser);
+	const hasNativeBrowser = !disabled && Boolean(window.ao?.browser);
 
 	useEffect(() => {
 		activeRef.current = active;

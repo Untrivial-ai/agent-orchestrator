@@ -103,6 +103,11 @@ const cloudMocks = vi.hoisted(() => ({
 	signIn: vi.fn(),
 }));
 
+const localAuthMocks = vi.hoisted(() => ({
+	available: false,
+	openDialog: vi.fn(),
+}));
+
 vi.mock("../hooks/useCloudSandboxProviders", () => ({
 	useCloudSandboxProviders: () => ({
 		available: cloudMocks.coderAvailable ? ["nodeops", "coder"] : ["nodeops"],
@@ -128,6 +133,20 @@ vi.mock("../lib/cloud-session", () => ({
 		signIn: cloudMocks.signIn,
 		signOut: async () => undefined,
 	}),
+}));
+
+vi.mock("../hooks/useCloudLocalAuth", () => ({
+	useCloudLocalAuth: () => ({
+		available: localAuthMocks.available,
+		cpUrl: localAuthMocks.available ? "http://127.0.0.1:8081" : "https://cp.example.com",
+		login: vi.fn(),
+		register: vi.fn(),
+	}),
+}));
+
+vi.mock("../stores/local-signin-dialog-store", () => ({
+	useLocalSignInDialogStore: (selector: (state: { openDialog: () => void }) => unknown) =>
+		selector({ openDialog: localAuthMocks.openDialog }),
 }));
 
 vi.mock("../hooks/useCloudCp", () => ({
@@ -369,6 +388,8 @@ beforeEach(() => {
 	githubDaemonMocks.listGitHubRepos.mockReset().mockResolvedValue({ repos: [] });
 	githubDaemonMocks.saveGitHubPAT.mockReset().mockResolvedValue(undefined);
 	cloudMocks.signIn.mockReset();
+	localAuthMocks.available = false;
+	localAuthMocks.openDialog.mockReset();
 	window.localStorage.clear();
 	useUiStore.setState({ globalToast: null, globalToasts: [] });
 });
@@ -1705,6 +1726,18 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(cloudMocks.signIn).toHaveBeenCalledOnce();
 	});
 
+	it("opens local Docker sign-in from the Cloud project source when loopback auth is available", async () => {
+		cloudMocks.cloudEnabled = true;
+		localAuthMocks.available = true;
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.click(screen.getByRole("button", { name: "Use local Docker" }));
+
+		expect(localAuthMocks.openDialog).toHaveBeenCalledOnce();
+		expect(cloudMocks.signIn).not.toHaveBeenCalled();
+	});
 	it("opens the Cloud sign-in flow directly from a home-page signal", async () => {
 		cloudMocks.cloudEnabled = true;
 		const view = render(<CreateProjectFlow mode="choose" sourceSignal={null} {...noop} />, { wrapper: CloudTestProviders });

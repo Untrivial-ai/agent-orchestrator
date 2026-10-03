@@ -71,6 +71,18 @@ token with read access to `ao-cloud`.
 
 These are shared-ready boundaries, not a hosted Cloud implementation.
 
+## Shared session browser
+
+The worker runs the session browser service and starts Chromium only after
+explicit browser intent. The desktop streams that same VM browser through an
+authenticated viewer, including its bundled DevTools. CDP stays on loopback.
+Browser traffic does not enter the durable worker-request queue.
+
+See [Shared browser sessions](cloud-shared-browser.md) for architecture, feature
+flags, limitations and current manual/automated test instructions. The older
+[Stage 1 runbook](cloud-browser-stage1.md) records the command-only milestone.
+Cold-start preparation is reviewed separately and is not included here.
+
 ## Private implementation status
 
 The private repository now contains:

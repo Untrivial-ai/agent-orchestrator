@@ -30,6 +30,7 @@ import { CoderTemplatePicker } from "./CoderTemplatePicker";
 import { SearchablePicker } from "./SearchablePicker";
 import { buildCoderRequestOptions, useCoderSessionOptionsStore } from "../stores/coder-session-options-store";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import type { RemoteHost } from "../hooks/useRemoteHosts";
 import { usePreparedClone } from "../hooks/usePreparedClone";
@@ -42,6 +43,7 @@ import { aoBridge } from "../lib/bridge";
 import { CloudCpError } from "../lib/cloud-cp";
 import type { CloudCpGitHubAppRepository } from "../lib/cloud-cp/types";
 import { useCloudSession } from "../lib/cloud-session";
+import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useUiStore } from "../stores/ui-store";
 import { useShellMaybe } from "../lib/shell-context";
 import { resolveSandboxProviderPreference, useSandboxProviderStore } from "../stores/sandbox-provider-store";
@@ -1280,6 +1282,9 @@ function CloudSignInPanel({
 	onSignIn: () => void;
 }) {
 	const { t } = useTranslation();
+	const { available: localAuthAvailable } = useCloudLocalAuth();
+	const openLocalSignIn = useLocalSignInDialogStore((state) => state.openDialog);
+	const handleSignIn = () => (localAuthAvailable ? openLocalSignIn() : onSignIn());
 	return (
 		<div className={cn(onboardingPanelClass, "flex flex-col items-center gap-4 px-4 py-6 text-center")}>
 			<Button type="button" variant="outline" size="icon" className="absolute left-3 top-3" aria-label={t("createProject.backToSource")} onClick={onBack}>
@@ -1287,8 +1292,8 @@ function CloudSignInPanel({
 			</Button>
 			<Cloud className="size-6 text-foreground" aria-hidden="true" />
 			<p className="text-[13px] leading-5 text-muted-foreground">{t("createProject.cloudSignInPrompt")}</p>
-			<Button disabled={disabled} onClick={onSignIn} type="button" variant="primary">
-				{t("shell.signInToAOCloud")}
+			<Button disabled={disabled} onClick={handleSignIn} type="button" variant="primary">
+				{localAuthAvailable ? t("cloudLocalAuth.useLocalDocker") : t("shell.signInToAOCloud")}
 			</Button>
 		</div>
 	);
@@ -1812,6 +1817,12 @@ function CloudProjectCard({
 						isCreating={isCreating}
 						createError={submitError}
 					/>
+				) : null}
+
+				{submitError ? (
+					<div className={onboardingAlertErrorClass} role="alert">
+						<p>{submitError}</p>
+					</div>
 				) : null}
 
 				{/* The agent step carries its own Back; show one here until it appears. */}

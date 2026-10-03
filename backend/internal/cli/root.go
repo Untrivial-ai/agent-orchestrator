@@ -18,6 +18,7 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/clibrowser"
 )
 
 // Execute runs the ao CLI with process stdio.
@@ -52,6 +53,10 @@ func ExitCode(err error) int {
 	}
 	var ue usageError
 	if errors.As(err, &ue) {
+		return 2
+	}
+	var shared *clibrowser.UsageError
+	if errors.As(err, &shared) {
 		return 2
 	}
 	return 1

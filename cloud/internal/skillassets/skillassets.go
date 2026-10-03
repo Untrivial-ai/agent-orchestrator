@@ -1,9 +1,9 @@
 // Package skillassets embeds the cloud using-ao skill (the catalog of the
 // in-sandbox `ao` CLI) and installs it into the worker data dir at ao-worker
-// boot. The cloud `ao` is a different, smaller CLI than the desktop one
-// (control-plane-mediated spawn/list/send/report/kill only), so this content is
-// written for the cloud grammar and must never be replaced with the desktop
-// skill from backend/internal/skillassets.
+// boot. The cloud `ao` is a different, smaller CLI than the desktop one. It
+// combines control-plane orchestration commands with session-local browser
+// control, so this content is written for the cloud grammar and must never be
+// replaced with the desktop skill from backend/internal/skillassets.
 //
 // The embedded copy is the single source of truth. Install clobbers the
 // on-disk copy on every worker boot, so a new ao-worker binary always

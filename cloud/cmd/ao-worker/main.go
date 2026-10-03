@@ -61,6 +61,7 @@ var workerCapabilities = []string{
 	"workspace.files",
 	"terminal.workspace",
 	"terminal.agent",
+	"browser.viewer",
 	"notification.events",
 }
 
@@ -225,6 +226,29 @@ func run(logger *slog.Logger) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// The in-VM browser service binds synchronously before any terminal opens
+	// so the agent env can never race the listener. A browserd failure must
+	// not kill the worker (same policy as a missing harness): agents lose
+	// browser verbs and everything else keeps running. The vars are exported
+	// into the worker env (workspace shell terminals inherit os.Environ) and
+	// injected into the coding-agent command when it is built.
+	browserdEnv, stopBrowserd, err := startBrowserd(runCtx, BrowserdOptions{
+		DataDir:   dataDir,
+		SessionID: bootstrap.SessionID,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Warn("browserd unavailable; continuing without browser verbs", "error", err)
+	} else {
+		defer func() { _ = stopBrowserd(context.Background()) }()
+		for key, value := range browserdEnv {
+			if err := os.Setenv(key, value); err != nil {
+				logger.Warn("export browser env failed", "key", key, "error", err)
+			}
+		}
+	}
+
 	started := make(chan error, 1)
 	chatWorkspaceReady := make(chan struct{})
 	compareBase := ""
@@ -250,8 +274,12 @@ func run(logger *slog.Logger) error {
 	// perceived connection path independent from clone latency without letting
 	// a prompt run in an empty workspace.
 	transportSupervisor.HoldAgentInputUntilWorkspaceReady()
-	results := make(chan error, 6)
 	backgroundWorkers := 5
+	if os.Getenv("AO_CLOUD_BROWSER_VIEWER") == "1" && browserdEnv["AO_BROWSER_API_URL"] != "" {
+		backgroundWorkers++
+	}
+	// The notification outbox can add one more long-lived worker after it is opened below.
+	results := make(chan error, backgroundWorkers+1)
 	go func() { results <- client.heartbeatLoop(runCtx, logger) }()
 	go func() { results <- transportSupervisor.Run(runCtx) }()
 	go func() {
@@ -263,6 +291,14 @@ func run(logger *slog.Logger) error {
 	go func() {
 		results <- runReviewBridge(runCtx, reviewSocketPath, client, logger)
 	}()
+	if os.Getenv("AO_CLOUD_BROWSER_VIEWER") == "1" && browserdEnv["AO_BROWSER_API_URL"] != "" {
+		go func() {
+			results <- workertransport.RunBrowserStream(
+				runCtx, client, bootstrap.SessionID,
+				browserdEnv["AO_BROWSER_API_URL"], browserdEnv["AO_BROWSER_CAPABILITY"], logger,
+			)
+		}()
+	}
 	if outbox, err := notificationoutbox.Open(filepath.Join(dataDir, "notification-outbox.db")); err != nil {
 		logger.Warn("open notification outbox", "error", err)
 	} else {
@@ -331,6 +367,7 @@ func run(logger *slog.Logger) error {
 		if err := startInteractiveAgent(
 			runCtx, logger, client, bootstrap, workspace, dataDir,
 			pullRequestSocketPath, reviewSocketPath, checkpointSocketPath, &transportSupervisor, rehydrateDone,
+			browserdEnv,
 		); err != nil && runCtx.Err() == nil {
 			logger.Error("background coding-agent startup failed", "error", err)
 		}
@@ -438,6 +475,7 @@ func startInteractiveAgent(
 	workspace, dataDir, pullRequestSocketPath, reviewSocketPath, checkpointSocketPath string,
 	transportSupervisor *workertransport.Supervisor,
 	rehydrateDone <-chan struct{},
+	browserEnv map[string]string,
 ) error {
 	// Wait until the checkout has completed and any delete/restore rehydration
 	// has run: the transcript must be on disk before the command is built, so
@@ -460,6 +498,25 @@ func startInteractiveAgent(
 	agentCommand, err := transportSupervisor.AgentCommandFactory(ctx, bootstrap.Launch.AgentSessionID)
 	if err != nil {
 		return fmt.Errorf("build interactive coding-agent command: %w", err)
+	}
+	agentCommand.Env["AO_CLOUD_WORKER_API_URL"] = client.baseURL
+	agentCommand.Env["AO_CLOUD_WORKER_TOKEN_FILE"] = client.tokenFile
+	agentCommand.Env["AO_SESSION_ID"] = bootstrap.SessionID
+	agentCommand.Env["AO_PROJECT_ID"] = bootstrap.Launch.ProjectID
+	agentCommand.Env["AO_SESSION_KIND"] = bootstrap.Launch.Kind
+	agentCommand.Env["AO_CHECKPOINT_SOCKET"] = checkpointSocketPath
+	agentCommand.Env["AO_PULL_REQUEST_SOCKET"] = pullRequestSocketPath
+	agentCommand.Env["AO_PULL_REQUEST_HELP"] = "curl --unix-socket $AO_PULL_REQUEST_SOCKET " +
+		`-X POST http://localhost/pull-request -H 'Content-Type: application/json' ` +
+		`-d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}' ` +
+		"to push the current branch and open a pull request against the repository's default branch."
+	agentCommand.Env["AO_REVIEW_SOCKET"] = reviewSocketPath
+	agentCommand.Env["AO_REVIEW_HELP"] = "curl --unix-socket $AO_REVIEW_SOCKET " +
+		`-X POST http://localhost/review -H 'Content-Type: application/json' ` +
+		`-d '{"reviewRunId":"<review run id from the prompt>","verdict":"approved|changes_requested","body":"<your findings>"}' ` +
+		"to submit an AO-triggered review verdict."
+	for key, value := range browserEnv {
+		agentCommand.Env[key] = value
 	}
 	agentTerminal, err := client.ensureAgentTerminal(ctx)
 	if err != nil {
@@ -872,6 +929,21 @@ func (c *client) DialTerminalStream(
 		HTTPHeader: header,
 	})
 	return conn, err
+}
+
+func (c *client) DialBrowserStream(ctx context.Context, sessionID string) (*websocket.Conn, error) {
+	streamURL := c.baseURL + "/worker/sessions/" + url.PathEscape(sessionID) + "/browser-stream"
+	if strings.HasPrefix(streamURL, "http") {
+		streamURL = "ws" + strings.TrimPrefix(streamURL, "http")
+	}
+	header := http.Header{}
+	if token := c.currentToken(); token != "" {
+		header.Set("Authorization", "Worker "+token)
+	}
+	connection, _, err := websocket.Dial(ctx, streamURL, &websocket.DialOptions{
+		HTTPClient: c.http, HTTPHeader: header, CompressionMode: websocket.CompressionDisabled,
+	})
+	return connection, err
 }
 
 func (c *client) ensureAgentTerminal(

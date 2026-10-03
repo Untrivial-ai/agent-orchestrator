@@ -1,5 +1,6 @@
 import type {
   AgentProfile,
+  BrowserViewerTicket,
   ClientEvent,
   ClientEventPage,
   ChatMessageInput,
@@ -635,6 +636,29 @@ export class CloudClient {
       ),
       { method: "POST", body: { kind }, signal: options.signal },
     );
+  }
+
+  createBrowserViewerTicket(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<BrowserViewerTicket> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/browser-view-ticket`,
+      ),
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  browserViewerUrl(orgId: string, sessionId: string, ticket: string): string {
+    const url = new URL(
+      `${this.baseUrl}${this.orgPath(orgId, `/sessions/${encodeURIComponent(sessionId)}/browser-view/stream`)}`,
+    );
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("ticket", ticket);
+    return url.toString();
   }
 
   terminalUrl(

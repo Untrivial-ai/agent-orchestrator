@@ -1,53 +1,27 @@
 package browser
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"fmt"
-
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/browsercontract"
 )
 
-// Authority issues and verifies unguessable per-session browser capabilities.
-// It is intentionally stateless so daemon replacement does not invalidate
-// capabilities held by surviving workers.
-type Authority struct{}
+// Authority adapts the shared stateless capability authority to the daemon's
+// domain-typed interfaces. All logic lives in pkg/browsercontract.
+type Authority struct {
+	inner *browsercontract.Authority
+}
 
 // NewAuthority returns a stateless browser capability authority.
-func NewAuthority() *Authority { return &Authority{} }
+func NewAuthority() *Authority {
+	return &Authority{inner: browsercontract.NewAuthority()}
+}
 
-// Issue mints a fresh capability for one worker launch. Relaunching a worker
-// rotates the token and its persisted verifier.
+// Issue mints a fresh capability for one worker launch.
 func (a *Authority) Issue(sessionID domain.SessionID) (token, verifier string, err error) {
-	if a == nil || sessionID == "" {
-		return "", "", fmt.Errorf("issue browser capability: session id is required")
-	}
-	raw := make([]byte, sha256.Size)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", fmt.Errorf("generate browser capability: %w", err)
-	}
-	token = base64.RawURLEncoding.EncodeToString(raw)
-	return token, capabilityVerifier(sessionID, token), nil
+	return a.inner.Issue(string(sessionID))
 }
 
 // Valid compares the presented token with a durable verifier in constant time.
-// Binding the digest to the session id prevents a verifier copied between rows
-// from authorizing the copied-to session.
 func (a *Authority) Valid(sessionID domain.SessionID, token, verifier string) bool {
-	if a == nil || sessionID == "" || token == "" || verifier == "" {
-		return false
-	}
-	expected := capabilityVerifier(sessionID, token)
-	return hmac.Equal([]byte(expected), []byte(verifier))
-}
-
-func capabilityVerifier(sessionID domain.SessionID, token string) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte("ao-browser-capability-verifier-v1\x00"))
-	_, _ = h.Write([]byte(sessionID))
-	_, _ = h.Write([]byte{'\x00'})
-	_, _ = h.Write([]byte(token))
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+	return a.inner.Valid(string(sessionID), token, verifier)
 }
