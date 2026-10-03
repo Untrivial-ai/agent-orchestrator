@@ -59,7 +59,7 @@ func reviewErrorKind(err error) string {
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
 	RecoverChatReviewers(ctx context.Context) error
-	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.TriggerResult, error)
+	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig, prURL string) (reviewcore.TriggerResult, error)
 	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
 	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
 	TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error)
@@ -88,7 +88,7 @@ type Service struct {
 	// engineTrigger indirects the engine's source-tagged trigger so the
 	// instrumented path can be exercised without standing up a full engine and
 	// its eighteen-method store. Defaulted in New; only tests replace it.
-	engineTrigger func(context.Context, domain.SessionID, domain.ReviewerHarness, domain.AgentConfig, domain.ReviewTriggerSource) (reviewcore.TriggerResult, error)
+	engineTrigger func(context.Context, domain.SessionID, domain.ReviewerHarness, domain.AgentConfig, domain.ReviewTriggerSource, string) (reviewcore.TriggerResult, error)
 }
 
 type reviewNotificationSink interface {
@@ -208,8 +208,9 @@ func New(engine *reviewcore.Engine, store Store, opts ...Option) *Service {
 			harness domain.ReviewerHarness,
 			config domain.AgentConfig,
 			source domain.ReviewTriggerSource,
+			prURL string,
 		) (reviewcore.TriggerResult, error) {
-			return s.engine.TriggerWithSource(ctx, workerID, harness, config, source)
+			return s.engine.TriggerWithSource(ctx, workerID, harness, config, source, prURL)
 		}
 	}
 	return s
@@ -426,13 +427,14 @@ func (s *Service) Trigger(
 	workerID domain.SessionID,
 	harness domain.ReviewerHarness,
 	config domain.AgentConfig,
+	prURL string,
 ) (reviewcore.TriggerResult, error) {
-	return s.triggerWithSource(ctx, workerID, harness, config, domain.ReviewTriggerManual)
+	return s.triggerWithSource(ctx, workerID, harness, config, domain.ReviewTriggerManual, prURL)
 }
 
 // TriggerAuto starts a daemon-initiated review pass.
 func (s *Service) TriggerAuto(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (reviewcore.TriggerResult, error) {
-	return s.triggerWithSource(ctx, workerID, harness, domain.AgentConfig{}, domain.ReviewTriggerAuto)
+	return s.triggerWithSource(ctx, workerID, harness, domain.AgentConfig{}, domain.ReviewTriggerAuto, "")
 }
 
 // triggerWithSource is the single instrumented trigger path. Both entry points
@@ -446,6 +448,7 @@ func (s *Service) triggerWithSource(
 	harness domain.ReviewerHarness,
 	config domain.AgentConfig,
 	source domain.ReviewTriggerSource,
+	prURL string,
 ) (reviewcore.TriggerResult, error) {
 	triggeredPayload := map[string]any{"trigger": string(source)}
 	if err := config.Validate(); err != nil {
@@ -467,7 +470,7 @@ func (s *Service) triggerWithSource(
 		}
 		defer release()
 	}
-	result, err := s.engineTrigger(ctx, workerID, harness, config, source)
+	result, err := s.engineTrigger(ctx, workerID, harness, config, source, prURL)
 	if err != nil {
 		s.emit(ctx, "ao.review.trigger_failed", workerID, map[string]any{
 			"error_kind": reviewErrorKind(err),

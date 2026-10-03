@@ -200,12 +200,14 @@ type RestoreReviewerResult struct {
 // this pass under it without editing project config, so picking a reviewer for
 // one session cannot change what any other session in the project runs. The
 // harness-change path below already handles the swap by respawning the pane.
-func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, config domain.AgentConfig) (TriggerResult, error) {
-	return e.TriggerWithSource(ctx, workerID, override, config, domain.ReviewTriggerManual)
+func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, config domain.AgentConfig, prURL string) (TriggerResult, error) {
+	return e.TriggerWithSource(ctx, workerID, override, config, domain.ReviewTriggerManual, prURL)
 }
 
-// TriggerWithSource starts a review and records who initiated the pass.
-func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, overrideConfig domain.AgentConfig, source domain.ReviewTriggerSource) (TriggerResult, error) {
+// TriggerWithSource starts a review and records who initiated it. A non-empty
+// prURL restricts the pass to that one pull request; empty reviews every
+// eligible PR on the session.
+func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, overrideConfig domain.AgentConfig, source domain.ReviewTriggerSource, prURL string) (TriggerResult, error) {
 	if workerID == "" {
 		return TriggerResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
@@ -245,6 +247,12 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	prs, err := e.prs.ListPRsBySession(ctx, workerID)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	if prURL != "" {
+		prs = restrictPRs(prs, prURL)
+		if len(prs) == 0 {
+			return TriggerResult{}, fmt.Errorf("%w: worker %q has no PR %q to review", ErrInvalid, workerID, prURL)
+		}
 	}
 	if len(prs) == 0 {
 		return TriggerResult{}, fmt.Errorf("%w: worker %q has no PR to review", ErrInvalid, workerID)
@@ -496,6 +504,18 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	resultRun := launchRun
 	createdFlag := len(created) > 0 || len(restarted) > 0
 	return TriggerResult{Run: resultRun, ReviewerHandleID: legacyReviewerHandle(reviewRow), Created: createdFlag, Reviews: reviews, Runs: triggerRuns, CreatedRuns: created, ReviewerSurface: reviewerSurface(reviewRow)}, nil
+}
+
+// restrictPRs narrows a session's tracked PRs to the one the caller named, for
+// a per-PR review trigger. The first URL match wins; alias URLs are not
+// resolved here because triggers carry the tracked URL the API reports back.
+func restrictPRs(prs []domain.PullRequest, prURL string) []domain.PullRequest {
+	for _, pr := range prs {
+		if pr.URL == prURL {
+			return []domain.PullRequest{pr}
+		}
+	}
+	return nil
 }
 
 func autoReviewSessionReason(worker domain.SessionRecord, now time.Time) string {
