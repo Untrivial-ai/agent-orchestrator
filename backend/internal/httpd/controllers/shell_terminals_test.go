@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
@@ -126,6 +127,55 @@ func TestShellTerminalsAPI_OpenAcceptsEmptyBody(t *testing.T) {
 	}
 	if svc.gotOpenInput.ProjectID != "" {
 		t.Errorf("project id = %q, want empty", svc.gotOpenInput.ProjectID)
+	}
+}
+
+// The renderer measures its terminal before creating the shell so the PTY
+// starts at the width the user sees; that grid must reach the runtime intact.
+func TestShellTerminalsAPI_OpenPassesInitialSizeThrough(t *testing.T) {
+	svc := &fakeShellTerminalService{opened: sampleShellTerminal()}
+	srv := newShellTerminalTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/shell-terminals", `{"projectId":"portfolio","cols":93,"rows":27}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", status, body)
+	}
+	if got, want := svc.gotOpenInput.InitialSize, (ports.TerminalSize{Cols: 93, Rows: 27}); got != want {
+		t.Errorf("initial size = %+v, want %+v", got, want)
+	}
+}
+
+// Desktop and mobile builds that predate sized creation send no grid; they must
+// keep opening shells exactly as before.
+func TestShellTerminalsAPI_OpenWithoutSizeKeepsRuntimeDefault(t *testing.T) {
+	svc := &fakeShellTerminalService{opened: sampleShellTerminal()}
+	srv := newShellTerminalTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/shell-terminals", `{"projectId":"portfolio"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", status, body)
+	}
+	if !svc.gotOpenInput.InitialSize.IsZero() {
+		t.Errorf("initial size = %+v, want zero", svc.gotOpenInput.InitialSize)
+	}
+}
+
+func TestShellTerminalsAPI_OpenRejectsInvalidSize(t *testing.T) {
+	for _, reqBody := range []string{
+		`{"cols":93}`,
+		`{"rows":27}`,
+		`{"cols":-1,"rows":27}`,
+		`{"cols":93,"rows":70000}`,
+	} {
+		svc := &fakeShellTerminalService{opened: sampleShellTerminal()}
+		srv := newShellTerminalTestServer(t, svc)
+		body, status, _ := doRequest(t, srv, "POST", "/api/v1/shell-terminals", reqBody)
+		if status != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body=%s", reqBody, status, body)
+		}
+		if svc.gotOpenInput != (shelltermsvc.OpenShellTerminalInput{}) {
+			t.Errorf("%s: service was called with %+v", reqBody, svc.gotOpenInput)
+		}
 	}
 }
 

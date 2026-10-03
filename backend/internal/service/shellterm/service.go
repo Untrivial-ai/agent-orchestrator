@@ -323,6 +323,7 @@ func (s *Service) OpenShellTerminal(ctx context.Context, in OpenShellTerminalInp
 		argv: argv, env: env, projectID: projectID, sessionID: in.SessionID,
 		workingDir: workingDir, title: nextShellTerminalTitle(openTerminals),
 		previewVerifier: verifier,
+		initialSize:     in.InitialSize,
 	})
 }
 
@@ -536,6 +537,7 @@ type openTerminalConfig struct {
 	transient                bool
 	cleanupWorkingDirOnError bool
 	previewVerifier          string
+	initialSize              ports.TerminalSize
 }
 
 // openTerminal creates and persists a terminal, rolling the runtime back on
@@ -561,6 +563,7 @@ func (s *Service) openTerminal(ctx context.Context, cfg openTerminalConfig) (She
 		// A user shell's exit is final, just like a trusted command's exit.
 		// Durability across app launches is a separate persistence policy.
 		ExitOnCommandCompletion: true,
+		InitialSize:             cfg.initialSize,
 	})
 	if err != nil {
 		if cfg.cleanupWorkingDirOnError {

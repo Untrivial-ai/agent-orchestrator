@@ -63,7 +63,7 @@ func TestProbeFencedRuntimeRegistryMalformedIsUnknown(t *testing.T) {
 func TestRegistryResolutionHonorsCallerCancellation(t *testing.T) {
 	isolateRegistry(t)
 	spawnCalls := 0
-	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		spawnCalls++
 		return "127.0.0.1:1", livePID(), nil
 	}})
@@ -94,7 +94,7 @@ func TestCreateAndDestroyPassCallerContextToRegistryMutations(t *testing.T) {
 	isolateRegistry(t)
 	type contextKey struct{}
 	ctx := context.WithValue(context.Background(), contextKey{}, "registry-mutation")
-	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		return "127.0.0.1:1", livePID(), nil
 	}})
 	rt.killHost = func(string) error { return nil }
@@ -145,7 +145,7 @@ func TestProbeFencedRuntimeGenerationMismatchIsUnknown(t *testing.T) {
 func TestPartialCreateCleanupFailureReturnsRuntimeEffectEvidence(t *testing.T) {
 	isolateRegistry(t)
 	createErr := errors.New("spawn response lost")
-	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	rt := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		return "127.0.0.1:1", livePID(), createErr
 	}})
 	rt.killHost = func(string) error { return errors.New("cleanup denied") }
@@ -310,6 +310,7 @@ func startInProcHost(t *testing.T, sessionID string, fakePID int) *inProcHost {
 			Listener:  ln,
 			PTY:       pty,
 			Ring:      ring,
+			Size:      defaultHostSize,
 		})
 	}()
 	return &inProcHost{
@@ -338,7 +339,7 @@ func (h *inProcHost) cleanup(t *testing.T) {
 // The returned map maps sessionID -> *inProcHost for test inspection.
 func fakeSpawnerFor(t *testing.T, hosts map[string]*inProcHost, fakePID int) hostSpawner {
 	t.Helper()
-	return func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (string, int, error) {
+	return func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string, _ ports.TerminalSize) (string, int, error) {
 		h := startInProcHost(t, sessionID, fakePID)
 		if hosts != nil {
 			hosts[sessionID] = h

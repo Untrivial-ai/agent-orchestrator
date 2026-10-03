@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // ShellTerminal is one standalone shell pane. HandleID is the runtime handle
@@ -41,6 +42,10 @@ type OpenShellTerminalInput struct {
 	ProjectID domain.ProjectID `json:"projectId,omitempty"`
 	SessionID domain.SessionID `json:"sessionId,omitempty"`
 	Shell     string           `json:"shell,omitempty"`
+	// InitialSize is the requesting terminal's measured grid, so the shell's
+	// first prompt is laid out for the width the user actually sees. Zero for
+	// clients that predate sized creation; see ports.RuntimeConfig.InitialSize.
+	InitialSize ports.TerminalSize `json:"-"`
 }
 
 // InitialInputReadyState describes a terminal state that is ready to receive

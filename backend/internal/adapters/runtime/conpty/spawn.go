@@ -7,13 +7,50 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // hostSpawner starts a detached pty-host for the session and returns its
-// loopback address ("127.0.0.1:PORT") and OS pid once it prints READY.
+// loopback address ("127.0.0.1:PORT") and OS pid once it prints READY. size is
+// the grid the host's PTY starts at; zero leaves the host's default.
 // Injectable for tests: replace this field on Options before calling New.
-type hostSpawner func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (addr string, pid int, err error)
+type hostSpawner func(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string, size ports.TerminalSize) (addr string, pid int, err error)
+
+// hostSizeArgPrefix marks the optional leading pty-host argument carrying the
+// PTY's starting grid. Session ids never contain "=", so the flag cannot be
+// mistaken for the positional session id.
+const hostSizeArgPrefix = "--size="
+
+// ptyHostArgs builds the pty-host subcommand argv:
+// pty-host [--size=<cols>x<rows>] <sessionID> <cwd> <shellCmd> <shellArgs...>
+func ptyHostArgs(sessionID, cwd string, argv []string, size ports.TerminalSize) []string {
+	args := []string{"pty-host"}
+	if !size.IsZero() {
+		args = append(args, fmt.Sprintf("%s%dx%d", hostSizeArgPrefix, size.Cols, size.Rows))
+	}
+	args = append(args, sessionID, cwd)
+	return append(args, argv...)
+}
+
+// splitHostSizeArg consumes the optional leading --size argument from the
+// pty-host argv (everything after the subcommand name). A host spawned without
+// one, e.g. by a daemon that predates sized creation, starts at defaultHostSize.
+func splitHostSizeArg(args []string) (ports.TerminalSize, []string, error) {
+	if len(args) == 0 || !strings.HasPrefix(args[0], hostSizeArgPrefix) {
+		return defaultHostSize, args, nil
+	}
+	raw := strings.TrimPrefix(args[0], hostSizeArgPrefix)
+	colsText, rowsText, ok := strings.Cut(raw, "x")
+	cols, colsErr := strconv.ParseUint(colsText, 10, 16)
+	rows, rowsErr := strconv.ParseUint(rowsText, 10, 16)
+	if !ok || colsErr != nil || rowsErr != nil || cols == 0 || rows == 0 {
+		return ports.TerminalSize{}, nil, fmt.Errorf("invalid size %q: want <cols>x<rows>", raw)
+	}
+	return ports.TerminalSize{Cols: uint16(cols), Rows: uint16(rows)}, args[1:], nil
+}
 
 // cleanupStartedHostFailure preserves evidence of a child that may still own
 // the session. A successful kill proves the failed spawn left no runtime;

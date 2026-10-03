@@ -210,6 +210,7 @@ func startServe(t *testing.T, pid int) *serveFixture {
 			Listener:  ln,
 			PTY:       pty,
 			Ring:      ring,
+			Size:      defaultHostSize,
 		})
 	}()
 	return &serveFixture{

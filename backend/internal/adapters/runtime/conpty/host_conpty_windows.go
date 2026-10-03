@@ -10,6 +10,8 @@ import (
 
 	gopty "github.com/aymanbagabas/go-pty"
 	"golang.org/x/sys/windows"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // conptyConn is the real ptyConn implementation backed by go-pty's ConPty
@@ -31,7 +33,7 @@ type conptyConn struct {
 
 // newConPTY creates a ConPTY session running shellCmd in cwd with shellArgs.
 // It starts the process and returns a ptyConn ready for use.
-func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
+func newConPTY(cwd, shellCmd string, shellArgs []string, size ports.TerminalSize) (ptyConn, error) {
 	// go-pty's New() returns a ConPty on Windows.
 	p, err := gopty.New()
 	if err != nil {
@@ -43,8 +45,7 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 		return nil, fmt.Errorf("conpty: expected ConPty on windows, got %T", p)
 	}
 
-	// Set an initial size matching node-pty defaults from pty-host.ts.
-	if err := cp.Resize(initialConPTYColumns, initialConPTYRows); err != nil {
+	if err := cp.Resize(int(size.Cols), int(size.Rows)); err != nil {
 		_ = cp.Close()
 		return nil, fmt.Errorf("conpty: initial resize: %w", err)
 	}

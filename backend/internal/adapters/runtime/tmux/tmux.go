@@ -355,7 +355,7 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 	}
 
 	launchCmd := buildLaunchCommand(cfg)
-	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
+	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd, cfg.InitialSize)
 	if _, err := r.run(ctx, args...); err != nil {
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
 			fmt.Errorf("tmux runtime: create session %s: %w", id, err),

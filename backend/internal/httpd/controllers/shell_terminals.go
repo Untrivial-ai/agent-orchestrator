@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
@@ -66,10 +68,17 @@ func (c *ShellTerminalsController) open(w http.ResponseWriter, r *http.Request) 
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
+	initialSize, ok := shellTerminalInitialSize(req.Cols, req.Rows)
+	if !ok {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_TERMINAL_SIZE",
+			"cols and rows must be sent together, each between 1 and 65535", nil)
+		return
+	}
 	terminal, err := c.Svc.OpenShellTerminal(r.Context(), shelltermsvc.OpenShellTerminalInput{
-		ProjectID: domain.ProjectID(req.ProjectID),
-		SessionID: domain.SessionID(req.SessionID),
-		Shell:     req.Shell,
+		ProjectID:   domain.ProjectID(req.ProjectID),
+		SessionID:   domain.SessionID(req.SessionID),
+		Shell:       req.Shell,
+		InitialSize: initialSize,
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
@@ -78,6 +87,18 @@ func (c *ShellTerminalsController) open(w http.ResponseWriter, r *http.Request) 
 	envelope.WriteJSON(w, http.StatusCreated, ShellTerminalEnvelope{
 		ShellTerminal: shellTerminalResponse(terminal),
 	})
+}
+
+// shellTerminalInitialSize validates the optional measured grid. Both fields
+// omitted is valid: clients that predate sized creation send neither.
+func shellTerminalInitialSize(cols, rows int) (ports.TerminalSize, bool) {
+	if cols == 0 && rows == 0 {
+		return ports.TerminalSize{}, true
+	}
+	if cols < 1 || rows < 1 || cols > math.MaxUint16 || rows > math.MaxUint16 {
+		return ports.TerminalSize{}, false
+	}
+	return ports.TerminalSize{Cols: uint16(cols), Rows: uint16(rows)}, true
 }
 
 func (c *ShellTerminalsController) rename(w http.ResponseWriter, r *http.Request) {

@@ -1,16 +1,33 @@
 package tmux
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
 
-// newSessionArgs builds args for `tmux new-session -d -s <id> -x 220 -y 50
-// -c <cwd> <shell> -c <launchCmd>`. The shell -c form runs the launch command
-// inside the configured shell so exported env vars and quoting work correctly.
-func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+)
+
+// Detached sessions need an explicit grid because no client is attached yet.
+// Used only when the caller has no viewer grid (see RuntimeConfig.InitialSize).
+const (
+	defaultSessionCols = 220
+	defaultSessionRows = 50
+)
+
+// newSessionArgs builds args for `tmux new-session -d -s <id> -x <cols> -y
+// <rows> -c <cwd> <shell> -c <launchCmd>`. The shell -c form runs the launch
+// command inside the configured shell so exported env vars and quoting work
+// correctly.
+func newSessionArgs(id, cwd, shellPath, launchCmd string, size ports.TerminalSize) []string {
+	cols, rows := defaultSessionCols, defaultSessionRows
+	if !size.IsZero() {
+		cols, rows = int(size.Cols), int(size.Rows)
+	}
 	return []string{
 		"new-session", "-d",
 		"-s", id,
-		"-x", "220",
-		"-y", "50",
+		"-x", strconv.Itoa(cols),
+		"-y", strconv.Itoa(rows),
 		"-c", cwd,
 		shellPath, "-c", launchCmd,
 	}

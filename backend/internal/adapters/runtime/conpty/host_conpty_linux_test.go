@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 func TestLinuxPTYConnStreamsResizesAndReportsExit(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `printf 'ready\n'; IFS= read -r line; printf 'received:%s\n' "$line"; exit 7`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestLinuxDefaultSpawnHostEndToEnd(t *testing.T) {
 	addr, hostPID, err := defaultSpawnHost(ctx, "spawn-e2e", t.TempDir(), []string{
 		"env", "AO_PREFIX_VALUE=prefix", "/bin/sh", "-c",
 		`printf '\033[c'; sleep 0.05; printf 'ready:%s:%s\n' "$AO_DIRECT_PTY_TEST" "$AO_PREFIX_VALUE"; IFS= read -r line; printf 'received:%s\n' "$line"; sleep 30`,
-	}, map[string]string{"AO_DIRECT_PTY_TEST": "works"})
+	}, map[string]string{"AO_DIRECT_PTY_TEST": "works"}, ports.TerminalSize{})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestLinuxDefaultSpawnHostEndToEnd(t *testing.T) {
 func TestLinuxPTYCloseReapsTermIgnoringProcessGroup(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `trap '' TERM; (trap '' TERM; printf 'child-ready\n'; sleep 30) & wait`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestLinuxPTYCloseReapsTermIgnoringProcessGroup(t *testing.T) {
 func TestLinuxPTYCloseReapsOrphanedBackgroundJobWhenLeaderExitsEarly(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `printf 'bg-ready\n'; (trap '' HUP; sleep 30) & sleep 0.05; exit 0`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestLinuxPTYCloseReapsOrphanedBackgroundJobWhenLeaderExitsEarly(t *testing.
 func TestLinuxPTYCloseReapsDescendantWithOwnProcessGroup(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/bash", []string{
 		"-c", `set -m; (trap '' TERM HUP; printf 'pg-child-ready\n'; sleep 30) & wait`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestLinuxPTYCloseDoesNotKillUnrelatedProcessAfterPIDReuse(t *testing.T) {
 func TestLinuxPTYCloseDelayedAfterFullSessionExit(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `printf 'done\n'; exit 0`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestLinuxPTYCloseReapsLateChildSpawnedInTERMHandler(t *testing.T) {
 	// in the same session and exits immediately (0.05s).
 	conn, err := newConPTY(t.TempDir(), "/bin/bash", []string{
 		"-c", `trap 'sleep 30 & exit 0' TERM; printf 'trap-ready\n'; while true; do sleep 1; done`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,5 +533,20 @@ func TestLinuxPTYCloseReapsLateChildSpawnedInTERMHandler(t *testing.T) {
 	}
 	if linuxSessionAlive(leaderPID, leaderStartTime) {
 		t.Fatalf("late child spawned during TERM handler in session %d survived Close()", leaderPID)
+	}
+}
+
+func TestNewConPTYStartsAtRequestedSize(t *testing.T) {
+	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{"-c", "sleep 30"}, ports.TerminalSize{Cols: 93, Rows: 27})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	size, err := pty.GetsizeFull(conn.(*linuxPTYConn).pty)
+	if err != nil {
+		t.Fatalf("GetsizeFull: %v", err)
+	}
+	if size.Cols != 93 || size.Rows != 27 {
+		t.Fatalf("PTY size = %dx%d, want 93x27", size.Cols, size.Rows)
 	}
 }

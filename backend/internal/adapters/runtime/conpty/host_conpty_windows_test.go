@@ -15,7 +15,7 @@ func TestConPTYChildExitClosesOutputAndRejectsResize(t *testing.T) {
 	cmdPath := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
 	conn, err := newConPTY(t.TempDir(), cmdPath, []string{
 		"/d", "/s", "/c", "echo ao-conpty-exit",
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatalf("newConPTY: %v", err)
 	}

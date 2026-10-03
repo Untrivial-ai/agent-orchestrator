@@ -69,7 +69,7 @@ func TestStartedHostKillFailureRetainsPartialCreateEvidence(t *testing.T) {
 		t.Fatalf("started-host cleanup = (%d, %v), want retained pid and joined startup/kill errors", pid, spawnErr)
 	}
 
-	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		return "", pid, spawnErr
 	}})
 	_, err := runtime.Create(context.Background(), ports.RuntimeConfig{
@@ -145,7 +145,7 @@ func TestStartedHostKillFailureRetainsPartialCreateEvidence(t *testing.T) {
 func TestCreateReservationFailureDoesNotSpawnOrClaimRuntimeEffect(t *testing.T) {
 	isolateRegistry(t)
 	spawnCalls := 0
-	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		spawnCalls++
 		return "127.0.0.1:1", livePID(), nil
 	}})
@@ -168,7 +168,7 @@ func TestCreateReservationFailureDoesNotSpawnOrClaimRuntimeEffect(t *testing.T) 
 func TestDefinitiveSpawnFailureRetainsCleanupAuthorityUntilUnregisterSucceeds(t *testing.T) {
 	isolateRegistry(t)
 	spawnErr := errors.New("pty-host failed before starting")
-	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		return "", 0, spawnErr
 	}})
 	unregisterErr := errors.New("reservation cleanup denied")
@@ -225,7 +225,7 @@ func TestDefinitiveSpawnFailureRetainsCleanupAuthorityUntilUnregisterSucceeds(t 
 func TestPostStartRegistryUpdateFailureLeavesDurableUnknownReservation(t *testing.T) {
 	isolateRegistry(t)
 	startupErr := errors.New("READY response lost")
-	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+	runtime := New(Options{Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 		return "", livePID(), startupErr
 	}})
 	registerCalls := 0
@@ -320,5 +320,54 @@ func TestInteractiveTerminalEnvPreservesExplicitNoColor(t *testing.T) {
 				t.Fatalf("explicit NO_COLOR not preserved: %#v", env)
 			}
 		})
+	}
+}
+
+func TestPtyHostArgsCarryInitialSize(t *testing.T) {
+	argv := []string{"/bin/zsh", "-l"}
+	sized := ptyHostArgs("shellterm-1", "/tmp/ws", argv, ports.TerminalSize{Cols: 93, Rows: 27})
+	if want := []string{"pty-host", "--size=93x27", "shellterm-1", "/tmp/ws", "/bin/zsh", "-l"}; !slices.Equal(sized, want) {
+		t.Fatalf("sized args = %q, want %q", sized, want)
+	}
+	size, rest, err := splitHostSizeArg(sized[1:])
+	if err != nil || size != (ports.TerminalSize{Cols: 93, Rows: 27}) || !slices.Equal(rest, sized[2:]) {
+		t.Fatalf("splitHostSizeArg(sized) = %+v, %q, %v", size, rest, err)
+	}
+
+	// Hosts spawned without a size (headless agents, or a daemon that predates
+	// sized creation) keep the default grid and the legacy positional argv.
+	unsized := ptyHostArgs("shellterm-1", "/tmp/ws", argv, ports.TerminalSize{})
+	if want := []string{"pty-host", "shellterm-1", "/tmp/ws", "/bin/zsh", "-l"}; !slices.Equal(unsized, want) {
+		t.Fatalf("unsized args = %q, want %q", unsized, want)
+	}
+	size, rest, err = splitHostSizeArg(unsized[1:])
+	if err != nil || size != defaultHostSize || !slices.Equal(rest, unsized[1:]) {
+		t.Fatalf("splitHostSizeArg(unsized) = %+v, %q, %v", size, rest, err)
+	}
+
+	for _, bad := range []string{"--size=", "--size=93", "--size=0x27", "--size=93x0", "--size=70000x27", "--size=axb"} {
+		if _, _, err := splitHostSizeArg([]string{bad, "shellterm-1", "/tmp/ws", "/bin/zsh"}); err == nil {
+			t.Errorf("splitHostSizeArg(%q) accepted an invalid size", bad)
+		}
+	}
+}
+
+func TestCreatePassesInitialSizeToSpawner(t *testing.T) {
+	isolateRegistry(t)
+	spawnErr := errors.New("stop after capturing size")
+	var got ports.TerminalSize
+	runtime := New(Options{Spawner: func(_ context.Context, _, _ string, _ []string, _ map[string]string, size ports.TerminalSize) (string, int, error) {
+		got = size
+		return "", 0, spawnErr
+	}})
+	want := ports.TerminalSize{Cols: 93, Rows: 27}
+	_, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "shellterm-sized", WorkspacePath: t.TempDir(), Argv: []string{"/bin/zsh"}, InitialSize: want,
+	})
+	if !errors.Is(err, spawnErr) {
+		t.Fatalf("Create error = %v, want spawner error", err)
+	}
+	if got != want {
+		t.Fatalf("spawner size = %+v, want %+v", got, want)
 	}
 }

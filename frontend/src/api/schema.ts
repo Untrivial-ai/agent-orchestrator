@@ -4328,8 +4328,12 @@ export interface components {
             shellTerminal: components["schemas"]["CodexAccountLoginTerminalResponse"];
         };
         OpenShellTerminalRequest: {
+            /** @description Column count of the terminal that will display the shell, measured before creation so the shell starts at the width the user sees. Send together with rows; omitted starts the shell at the daemon's default grid. */
+            cols?: number;
             /** @description Project whose root the shell starts in. Omitted opens the shell in the daemon data dir. */
             projectId?: string;
+            /** @description Row count of the terminal that will display the shell. Send together with cols. */
+            rows?: number;
             /** @description Agent session the shell is scoped to, so it appears only in that session's tab strip. Omitted makes it a standalone shell. */
             sessionId?: string;
             /** @description Windows shell selector: auto, git-bash, pwsh, powershell, cmd, or a custom executable path. Ignored on macOS and Linux. */

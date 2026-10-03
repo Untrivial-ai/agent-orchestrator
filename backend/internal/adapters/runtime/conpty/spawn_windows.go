@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // boundedBuffer is a thread-safe io.Writer that retains up to max bytes of what
@@ -49,7 +51,7 @@ func (b *boundedBuffer) String() string {
 // and spawns it detached on Windows. It reads stdout for "READY:<pid> <port>"
 // with a 10s timeout, then unrefs (detaches) the child. Returns the loopback
 // address and the pty-host OS PID.
-func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (string, int, error) {
+func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string, size ports.TerminalSize) (string, int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", 0, fmt.Errorf("conpty spawn: resolve executable: %w", err)
@@ -63,8 +65,8 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	// the ConPTY child inherits (host_conpty_windows.go passes os.Environ()).
 	envAssignments, argv := stripEnvAssignments(argv)
 
-	// Build: <exe> pty-host <sessionID> <cwd> <shellCmd> <shellArgs...>
-	args := append([]string{"pty-host", sessionID, cwd}, argv...)
+	// Build: <exe> pty-host [--size=<cols>x<rows>] <sessionID> <cwd> <shellCmd> <shellArgs...>
+	args := ptyHostArgs(sessionID, cwd, argv, size)
 	if err := validateWindowsCommandLine(append([]string{exe}, args...)); err != nil {
 		return "", 0, fmt.Errorf("conpty spawn: %w", err)
 	}

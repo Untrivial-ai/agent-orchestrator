@@ -2886,7 +2886,7 @@ func TestConPTYReservationCleanupFailureRetainsManagerRecoveryGate(t *testing.T)
 		fakeRestartRuntime: &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}},
 		target: conpty.New(conpty.Options{
 			RunFilePath: filepath.Join(t.TempDir(), "running.json"),
-			Spawner: func(context.Context, string, string, []string, map[string]string) (string, int, error) {
+			Spawner: func(context.Context, string, string, []string, map[string]string, ports.TerminalSize) (string, int, error) {
 				return "", 0, spawnErr
 			},
 			UnregisterHost: func(context.Context, string) error { return cleanupErr },

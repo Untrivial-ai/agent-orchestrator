@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // darwinPTYConn is a native macOS pseudoterminal owned by the detached host.
@@ -32,7 +34,7 @@ type darwinPTYConn struct {
 
 const darwinPTYCloseGrace = 500 * time.Millisecond
 
-func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
+func newConPTY(cwd, shellCmd string, shellArgs []string, size ports.TerminalSize) (ptyConn, error) {
 	// shellCmd and shellArgs are the runtime launch argv assembled by AO's
 	// trusted agent adapter, not input interpreted by a shell.
 	cmd := exec.Command(shellCmd, shellArgs...) // #nosec G702 -- intentional direct argv execution
@@ -40,8 +42,8 @@ func newConPTY(cwd, shellCmd string, shellArgs []string) (ptyConn, error) {
 	cmd.Env = os.Environ()
 
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: initialConPTYColumns,
-		Rows: initialConPTYRows,
+		Cols: size.Cols,
+		Rows: size.Rows,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("darwin pty: start command: %w", err)

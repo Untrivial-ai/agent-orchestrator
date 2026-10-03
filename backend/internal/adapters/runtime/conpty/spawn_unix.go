@@ -13,12 +13,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // defaultSpawnHost launches the current AO executable as a detached pty-host.
 // Setsid keeps the host alive when the daemon exits or Electron updates, while
 // the registry lets the replacement daemon adopt it without touching the PTY.
-func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string) (string, int, error) {
+func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string, env map[string]string, size ports.TerminalSize) (string, int, error) {
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
@@ -28,7 +30,7 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	}
 
 	envAssignments, argv := stripEnvAssignments(argv)
-	args := append([]string{"pty-host", sessionID, cwd}, argv...)
+	args := ptyHostArgs(sessionID, cwd, argv, size)
 	merged := interactiveTerminalEnv(os.Environ(), env, envAssignments)
 
 	// Deliberately do not use CommandContext: once READY is received the host

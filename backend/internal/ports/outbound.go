@@ -221,7 +221,24 @@ type RuntimeConfig struct {
 	// not determine whether a terminal survives an app launch. Agent runtimes
 	// leave it disabled to retain scrollback and manual recovery.
 	ExitOnCommandCompletion bool
+	// InitialSize is the grid the PTY starts at, normally the measured grid of
+	// the terminal that requested it. Starting at the viewer's real width keeps
+	// a shell's first prompt from being laid out for a wider screen than the
+	// viewer shows (zsh's partial-line marker then leaks as a stray "%"). Zero
+	// when the caller has no viewer grid: headless agent spawns and clients that
+	// predate sized creation keep the runtime's existing startup grid.
+	InitialSize TerminalSize
 }
+
+// TerminalSize is a terminal grid in character cells. The zero value means
+// "not specified".
+type TerminalSize struct {
+	Cols uint16
+	Rows uint16
+}
+
+// IsZero reports whether no size was specified.
+func (s TerminalSize) IsZero() bool { return s.Cols == 0 && s.Rows == 0 }
 
 // RuntimeHandle identifies a live runtime instance. Its ID is opaque outside
 // the concrete runtime adapter.

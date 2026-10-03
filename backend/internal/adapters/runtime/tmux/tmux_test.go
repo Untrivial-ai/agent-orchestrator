@@ -231,9 +231,13 @@ func TestExecRunnerFallsBackWhenTempDirMissing(t *testing.T) {
 // -- command builder tests --
 
 func TestCommandBuilders(t *testing.T) {
-	if got, want := newSessionArgs("sess-1", "/tmp/ws", "/bin/sh", `echo hi; exec "${SHELL:-/bin/sh}" -i`),
+	if got, want := newSessionArgs("sess-1", "/tmp/ws", "/bin/sh", `echo hi; exec "${SHELL:-/bin/sh}" -i`, ports.TerminalSize{}),
 		[]string{"new-session", "-d", "-s", "sess-1", "-x", "220", "-y", "50", "-c", "/tmp/ws", "/bin/sh", "-c", `echo hi; exec "${SHELL:-/bin/sh}" -i`}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("newSessionArgs = %#v, want %#v", got, want)
+	}
+	if got, want := newSessionArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi", ports.TerminalSize{Cols: 93, Rows: 27}),
+		[]string{"new-session", "-d", "-s", "sess-1", "-x", "93", "-y", "27", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("newSessionArgs with size = %#v, want %#v", got, want)
 	}
 	if got, want := respawnPaneArgs("sess-1", "/tmp/ws", "/bin/sh", "echo hi"),
 		[]string{"respawn-pane", "-k", "-t", "sess-1", "-c", "/tmp/ws", "/bin/sh", "-c", "echo hi"}; !reflect.DeepEqual(got, want) {

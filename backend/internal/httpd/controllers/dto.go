@@ -1882,6 +1882,8 @@ type OpenShellTerminalRequest struct {
 	ProjectID string `json:"projectId,omitempty" description:"Project whose root the shell starts in. Omitted opens the shell in the daemon data dir."`
 	SessionID string `json:"sessionId,omitempty" description:"Agent session the shell is scoped to, so it appears only in that session's tab strip. Omitted makes it a standalone shell."`
 	Shell     string `json:"shell,omitempty" description:"Windows shell selector: auto, git-bash, pwsh, powershell, cmd, or a custom executable path. Ignored on macOS and Linux."`
+	Cols      int    `json:"cols,omitempty" minimum:"1" maximum:"65535" description:"Column count of the terminal that will display the shell, measured before creation so the shell starts at the width the user sees. Send together with rows; omitted starts the shell at the daemon's default grid."`
+	Rows      int    `json:"rows,omitempty" minimum:"1" maximum:"65535" description:"Row count of the terminal that will display the shell. Send together with cols."`
 }
 
 // UpdateShellTerminalRequest is the body of PATCH /api/v1/shell-terminals/{handleId}.

@@ -14,7 +14,7 @@ import (
 )
 
 // RunHost is the "ao pty-host" entrypoint. argv is everything after the
-// subcommand name: <sessionId> <cwd> <shellCmd> [shellArg...]
+// subcommand name: [--size=<cols>x<rows>] <sessionId> <cwd> <shellCmd> [shellArg...]
 //
 // It binds 127.0.0.1:0 (OS assigns the port), creates the native PTY, prints
 // "READY:<pid> <port>\n" to stdout (the parent process reads this to learn the
@@ -25,8 +25,13 @@ import (
 // the assigned port. A per-session random token handshake is the upgrade path
 // if multi-user isolation is needed.
 func RunHost(args []string, stdout io.Writer) int {
+	size, args, err := splitHostSizeArg(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pty-host: %v\n", err)
+		return 1
+	}
 	if len(args) < 3 {
-		fmt.Fprintf(os.Stderr, "usage: ao pty-host <sessionId> <cwd> <shellCmd> [shellArg...]\n")
+		fmt.Fprintf(os.Stderr, "usage: ao pty-host [--size=<cols>x<rows>] <sessionId> <cwd> <shellCmd> [shellArg...]\n")
 		return 1
 	}
 
@@ -53,7 +58,7 @@ func RunHost(args []string, stdout io.Writer) int {
 	}
 	port := tcpAddr.Port
 
-	pty, err := newConPTY(cwd, shellCmd, shellArgs)
+	pty, err := newConPTY(cwd, shellCmd, shellArgs, size)
 	if err != nil {
 		_ = ln.Close()
 		fmt.Fprintf(os.Stderr, "pty-host [%s]: newConPTY: %v\n", sessionID, err)
@@ -84,6 +89,7 @@ func RunHost(args []string, stdout io.Writer) int {
 		Listener:  ln,
 		PTY:       pty,
 		Ring:      ring,
+		Size:      size,
 	}
 
 	if err := Serve(ctx, cfg); err != nil {

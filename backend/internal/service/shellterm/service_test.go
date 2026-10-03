@@ -680,6 +680,20 @@ func TestOpenShellTerminalStillStartsResolvedLoginShellInProjectRoot(t *testing.
 	}
 }
 
+func TestOpenShellTerminalStartsRuntimeAtRequestedSize(t *testing.T) {
+	rt := newFakeShellRuntime()
+	projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}}
+	svc := newTestService(rt, &fakeShellTerminalStore{}, projects)
+
+	want := ports.TerminalSize{Cols: 93, Rows: 27}
+	if _, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{ProjectID: "portfolio", InitialSize: want}); err != nil {
+		t.Fatalf("OpenShellTerminal: %v", err)
+	}
+	if len(rt.created) != 1 || rt.created[0].InitialSize != want {
+		t.Fatalf("runtime creates = %+v, want one at %+v", rt.created, want)
+	}
+}
+
 func TestOpenShellTerminalRejectsUnavailableWindowsShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows shell selection only applies on Windows")

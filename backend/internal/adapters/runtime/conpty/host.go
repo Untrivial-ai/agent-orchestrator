@@ -14,11 +14,16 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+// defaultHostSize is the grid a host starts at when its creator supplied none:
+// headless agent spawns and clients that predate sized creation (see
+// ports.RuntimeConfig.InitialSize).
+var defaultHostSize = ports.TerminalSize{Cols: 220, Rows: 50}
+
 const (
-	initialConPTYColumns = 220
-	initialConPTYRows    = 50
 	// A pty-host must never let one stalled viewer block PTY output, status
 	// probes, or every other viewer. Each client gets a bounded writer queue;
 	// filling it drops only that client and lets the terminal layer re-attach.
@@ -43,6 +48,9 @@ type ServeConfig struct {
 	Listener  net.Listener // caller provides (loopback); engine owns Accept loop
 	PTY       ptyConn
 	Ring      *Ring
+	// Size is the grid the PTY was started at; the rendered surface starts in
+	// step with it.
+	Size ports.TerminalSize
 }
 
 // Serve runs the host event loop until the listener closes or Shutdown is
@@ -54,7 +62,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	h := &host{
 		cfg:       cfg,
 		clients:   make(map[net.Conn]*clientState),
-		surface:   newRenderedSurface(initialConPTYColumns, initialConPTYRows),
+		surface:   newRenderedSurface(int(cfg.Size.Cols), int(cfg.Size.Rows)),
 		shutdownC: make(chan struct{}),
 	}
 	return h.run(ctx)

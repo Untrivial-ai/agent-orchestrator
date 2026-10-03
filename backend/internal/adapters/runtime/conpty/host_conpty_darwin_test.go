@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // TestMain lets the detached-spawn integration test re-exec this test binary
@@ -26,7 +28,7 @@ func TestMain(m *testing.M) {
 func TestDarwinPTYConnStreamsResizesAndReportsExit(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `printf 'ready\n'; IFS= read -r line; printf 'received:%s\n' "$line"; exit 7`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestDarwinDefaultSpawnHostEndToEnd(t *testing.T) {
 	addr, hostPID, err := defaultSpawnHost(ctx, "spawn-e2e", t.TempDir(), []string{
 		"env", "AO_PREFIX_VALUE=prefix", "/bin/sh", "-c",
 		`printf '\033[c'; sleep 0.05; printf 'ready:%s:%s\n' "$AO_DIRECT_PTY_TEST" "$AO_PREFIX_VALUE"; IFS= read -r line; printf 'received:%s\n' "$line"; sleep 30`,
-	}, map[string]string{"AO_DIRECT_PTY_TEST": "works"})
+	}, map[string]string{"AO_DIRECT_PTY_TEST": "works"}, ports.TerminalSize{})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -137,7 +139,7 @@ func TestDarwinDefaultSpawnHostEndToEnd(t *testing.T) {
 func TestDarwinPTYCloseReapsTermIgnoringProcessGroup(t *testing.T) {
 	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{
 		"-c", `trap '' TERM; (trap '' TERM; printf 'child-ready\n'; sleep 30) & wait`,
-	})
+	}, defaultHostSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,5 +162,20 @@ func TestDarwinPTYCloseReapsTermIgnoringProcessGroup(t *testing.T) {
 	}
 	if darwinProcessGroupAlive(pgid) {
 		t.Fatalf("process group %d survived PTY close", pgid)
+	}
+}
+
+func TestNewConPTYStartsAtRequestedSize(t *testing.T) {
+	conn, err := newConPTY(t.TempDir(), "/bin/sh", []string{"-c", "sleep 30"}, ports.TerminalSize{Cols: 93, Rows: 27})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	size, err := pty.GetsizeFull(conn.(*darwinPTYConn).pty)
+	if err != nil {
+		t.Fatalf("GetsizeFull: %v", err)
+	}
+	if size.Cols != 93 || size.Rows != 27 {
+		t.Fatalf("PTY size = %dx%d, want 93x27", size.Cols, size.Rows)
 	}
 }
