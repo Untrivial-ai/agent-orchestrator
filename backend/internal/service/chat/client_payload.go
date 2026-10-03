@@ -25,7 +25,8 @@ func clientPayloadHash(msg ports.ChatUserMessage) (string, error) {
 		Origin         domain.MessageOrigin
 		AuthoredByUser bool
 		Settings       ports.ChatTurnSettings
-	}{msg.Text, content, normalizeOrigin(msg.Origin), msg.AuthoredByUser, msg.Settings})
+		Excerpts       []ports.ChatExcerptReference `json:",omitempty"`
+	}{msg.Text, content, normalizeOrigin(msg.Origin), msg.AuthoredByUser, msg.Settings, msg.Excerpts})
 	if err != nil {
 		return "", fmt.Errorf("encode client message payload: %w", err)
 	}

@@ -1,6 +1,7 @@
 import { FileText, Image as ImageIcon, Tag } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { ConversationContentSummary } from "../../types/conversation";
+import { ExcerptSelectionChip } from "./ExcerptSelectionChip";
 
 interface ConversationContentItem extends ConversationContentSummary {
 	data?: string;
@@ -25,6 +26,9 @@ export function ConversationContentItems({
 	return (
 		<ul aria-label={ariaLabel} className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
 			{content.map((item, index) => {
+				if (item.type === "excerpt" && item.excerpt) {
+					return <li key={`excerpt-${index}`}><ExcerptSelectionChip selection={item.excerpt.selection} role={item.excerpt.sourceRole} /></li>;
+				}
 				const previewableImage =
 					item.type === "image" &&
 					typeof item.data === "string" &&

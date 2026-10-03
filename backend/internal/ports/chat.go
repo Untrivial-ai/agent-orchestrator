@@ -189,6 +189,10 @@ const (
 	ChatCapabilityRollback ChatCapability = "rollback"
 	// ChatCapabilityFork means a conversation can be branched.
 	ChatCapabilityFork ChatCapability = "fork"
+	// ChatCapabilityReadOnly turns provider execution into an enforced read-only
+	// sandbox. Side chats are unavailable without it; prompt wording alone is not
+	// treated as a security boundary.
+	ChatCapabilityReadOnly ChatCapability = "read_only"
 	// ChatCapabilityPromptReplay means AO can open a fresh provider session with
 	// a durable textual transcript supplied as context. This is an approximation
 	// of fork for providers whose protocol cannot fork from a historical turn.
@@ -365,16 +369,48 @@ type ChatMCPServerConfig struct {
 // ChatInternalReplayResourceURI is reserved for AO's reconstructed edit context.
 const ChatInternalReplayResourceURI = "ao://conversation/edit-replay"
 
+// ChatExcerptResourceURIPrefix identifies AO-verified transcript excerpts. The
+// daemon resolves these from durable messages; clients never supply the resource
+// text directly.
+const ChatExcerptResourceURIPrefix = "ao://conversation-excerpt/"
+
+// ChatExcerptReference points at selected text in one durable transcript
+// message. Revision makes stale selections fail closed when streaming updates
+// replace the source text before the user sends their draft.
+type ChatExcerptReference struct {
+	ConversationID string `json:"conversationId"`
+	MessageID      string `json:"messageId"`
+	Revision       int64  `json:"revision"`
+	Text           string `json:"text"`
+}
+
+// ChatExcerptContext is frozen when the user sends a reference. It is never a
+// provider resource URI; adapters receive its readable rendering instead.
+type ChatExcerptContext struct {
+	Selection       string               `json:"selection"`
+	SourceMessageID string               `json:"sourceMessageId"`
+	SourceRole      string               `json:"sourceRole"`
+	SourceText      string               `json:"sourceText"`
+	Messages        []ChatExcerptMessage `json:"messages"`
+}
+
+// ChatExcerptMessage represents one source message included with a selection.
+type ChatExcerptMessage struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
 // ChatContent is structured prompt context. Text remains on ChatUserMessage so
 // the durable transcript has an ordinary readable message; these blocks enrich
 // what the provider receives without leaking protocol DTOs above the adapter.
 type ChatContent struct {
-	Type     string `json:"type"`
-	Data     string `json:"data,omitempty"`
-	MIMEType string `json:"mimeType,omitempty"`
-	URI      string `json:"uri,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Text     string `json:"text,omitempty"`
+	Type     string              `json:"type"`
+	Data     string              `json:"data,omitempty"`
+	MIMEType string              `json:"mimeType,omitempty"`
+	URI      string              `json:"uri,omitempty"`
+	Name     string              `json:"name,omitempty"`
+	Text     string              `json:"text,omitempty"`
+	Excerpt  *ChatExcerptContext `json:"excerpt,omitempty"`
 	// Internal distinguishes AO-owned prompt context from a user attachment.
 	// Public request DTOs never expose this bit; it is durable so edit/retry and
 	// snapshot reconstruction can hide only content AO actually synthesized.
@@ -390,6 +426,9 @@ func IsInternalReplayContent(content ChatContent) bool {
 // ChatUserMessage is one inbound request to the agent.
 type ChatUserMessage struct {
 	Text string
+	// Excerpts are verified and converted to ChatContent by the service before the
+	// controller records or delivers the message.
+	Excerpts []ChatExcerptReference
 	// Content carries native images and resources for providers that negotiated
 	// them. Drivers must reject an unsupported block rather than silently discard
 	// context the user believed they sent.
@@ -681,6 +720,20 @@ type (
 	// non-nil provider turn id copies through that turn, inclusive.
 	ChatForker interface {
 		Fork(ctx context.Context, lastProviderTurnID *string) (providerConversationID string, err error)
+	}
+	// ChatIsolatedForker creates the fork in the destination provider host. The
+	// source host and its active writer remain untouched.
+	ChatIsolatedForker interface {
+		ForkIntoHost(ctx context.Context, sourceProviderConversationID, lastProviderTurnID string, cfg ChatStartConfig) (ChatConversation, error)
+	}
+	// ChatNativeTurnID resolves a completed provider turn to its native turn ID.
+	ChatNativeTurnID interface {
+		NativeTurnID(providerTurnID string) string
+	}
+	// ChatForkDeleter removes only a provider fork ID positively registered to
+	// an AO side conversation. The caller must never pass a main thread ID.
+	ChatForkDeleter interface {
+		DeleteFork(ctx context.Context, providerConversationID string) error
 	}
 	// ChatInheritedHistory proves native ancestry and expresses the supplied
 	// replay in an ancestor's ID namespace. Nil means ancestry is unverified.

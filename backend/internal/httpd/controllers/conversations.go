@@ -60,6 +60,29 @@ type pagedConversationService interface {
 	SnapshotPage(ctx context.Context, session domain.SessionID, beforeSequence, limit int64) (chatsvc.Snapshot, error)
 }
 
+type sideChatConversationService interface {
+	ListIndependentSideChats(context.Context, domain.SessionID) ([]domain.SideConversation, error)
+	CreateIndependentSideChat(context.Context, domain.SessionID, chatsvc.SideCreateRequest) (domain.SideConversation, error)
+	SideSnapshot(context.Context, domain.SessionID, string, time.Time, int) (domain.SideSnapshot, error)
+	SendSideQuestion(context.Context, domain.SessionID, string, ports.ChatUserMessage) (domain.SideTurn, error)
+	EditQueuedSideQuestion(context.Context, domain.SessionID, string, string, string) error
+	RetrySideQuestion(context.Context, domain.SessionID, string, string) error
+	RetrySideConnection(context.Context, domain.SessionID, string) error
+	UpdateSideSettings(context.Context, domain.SessionID, string, string, string) error
+	SaveSideDraft(context.Context, domain.SessionID, string, string) error
+	SideDraft(context.Context, domain.SessionID, string) (string, error)
+	InterruptSideQuestion(context.Context, domain.SessionID, string) error
+	CompactSideChat(context.Context, domain.SessionID, string) (ports.ChatCompactionResult, error)
+	ResolveSideApproval(context.Context, domain.SessionID, string, string, string) error
+	ResolveSideInput(context.Context, domain.SessionID, string, string, ports.ChatInputResponse) error
+	CloseIndependentSideChat(context.Context, domain.SessionID, string) error
+	ClaimSideChatLaunch(context.Context, string) error
+	ExportSideChatLaunch(context.Context, string) ([]chatsvc.SideRecoveryRecord, error)
+	RecoverSideChatLaunch(context.Context, string, []chatsvc.SideRecoveryRecord) error
+	RetireSideChatLaunch(context.Context, string) error
+	WatchSideChat(context.Context, domain.SessionID, string) (string, <-chan struct{}, func(), error)
+}
+
 type reviewerConversationService interface {
 	SnapshotPageForReview(ctx context.Context, reviewID string, beforeSequence, limit int64) (chatsvc.Snapshot, error)
 	SendForOwner(ctx context.Context, owner domain.ConversationOwner, msg ports.ChatUserMessage) (domain.ConversationTurn, error)
@@ -100,6 +123,26 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/edit", c.editMessage)
 	r.Post("/sessions/{sessionId}/conversation/turns/{turnId}/retry", c.retryTurn)
 	r.Post("/sessions/{sessionId}/conversation/branches/{branchId}/activate", c.activateBranch)
+	r.Post("/sessions/{sessionId}/conversation/side-chats", c.createSideChat)
+	r.Get("/sessions/{sessionId}/conversation/side-chats", c.listSideChats)
+	r.Get("/sessions/{sessionId}/conversation/side-chats/{sideId}", c.sideSnapshot)
+	r.Get("/sessions/{sessionId}/conversation/side-chats/{sideId}/events", c.streamSideChat)
+	r.Delete("/sessions/{sessionId}/conversation/side-chats/{sideId}", c.closeSideChat)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/messages", c.sendSideQuestion)
+	r.Patch("/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}", c.editSideQuestion)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}/retry", c.retrySideQuestion)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/interrupt", c.interruptSideQuestion)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/recover", c.recoverSideChat)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/compact", c.compactSideChat)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/approvals/{requestId}/resolve", c.resolveSideApproval)
+	r.Post("/sessions/{sessionId}/conversation/side-chats/{sideId}/inputs/{requestId}/resolve", c.resolveSideInput)
+	r.Patch("/sessions/{sessionId}/conversation/side-chats/{sideId}/settings", c.sideSettings)
+	r.Get("/sessions/{sessionId}/conversation/side-chats/{sideId}/draft", c.getSideDraft)
+	r.Put("/sessions/{sessionId}/conversation/side-chats/{sideId}/draft", c.putSideDraft)
+	r.Post("/side-chats/launch/claim", c.claimSideLaunch)
+	r.Get("/side-chats/launch/state", c.exportSideLaunch)
+	r.Post("/side-chats/launch/state", c.recoverSideLaunch)
+	r.Post("/side-chats/launch/retire", c.retireSideLaunch)
 	r.Put("/sessions/{sessionId}/conversation/title", c.setTitle)
 	r.Post("/sessions/{sessionId}/conversation/mcp/reload", c.reloadMCPServers)
 	r.Get("/reviews/{reviewId}/conversation", c.reviewSnapshot)
@@ -236,6 +279,34 @@ func (c *ConversationsController) reviewInterrupt(w http.ResponseWriter, r *http
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *ConversationsController) createSideChat(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/conversation/side-chats")
+		return
+	}
+	var req CreateConversationSideChatRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	svc, ok := c.Svc.(sideChatConversationService)
+	if !ok {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/conversation/side-chats")
+		return
+	}
+	var ref *ports.ChatExcerptReference
+	if req.Reference != nil {
+		ref = &ports.ChatExcerptReference{ConversationID: req.Reference.ConversationID,
+			MessageID: req.Reference.MessageID, Revision: req.Reference.Revision, Text: req.Reference.Text}
+	}
+	side, err := svc.CreateIndependentSideChat(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")),
+		chatsvc.SideCreateRequest{IdempotencyKey: req.IdempotencyKey, Label: req.Label, Reference: ref})
+	if err != nil {
+		writeSideChatError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, CreateConversationSideChatResponse{Side: side})
 }
 
 func (c *ConversationsController) editMessage(w http.ResponseWriter, r *http.Request) {
@@ -707,7 +778,7 @@ func (c *ConversationsController) send(w http.ResponseWriter, r *http.Request) {
 	if !decodeConversationBody(w, r, &req) {
 		return
 	}
-	if req.Text == "" && len(req.Attachments) == 0 && len(req.Resources) == 0 {
+	if req.Text == "" && len(req.Attachments) == 0 && len(req.Resources) == 0 && len(req.Excerpts) == 0 {
 		// There is no keystroke concept in Chat mode: an empty body is a client
 		// bug, not a way to nudge the agent.
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
@@ -723,11 +794,23 @@ func (c *ConversationsController) send(w http.ResponseWriter, r *http.Request) {
 	}
 	text := req.Text
 	if text == "" {
-		text = fmt.Sprintf("Attached %d item(s) for context", len(content))
+		if len(req.Excerpts) > 0 {
+			text = fmt.Sprintf("Use the attached %d chat excerpt(s) as context", len(req.Excerpts))
+		} else {
+			text = fmt.Sprintf("Attached %d item(s) for context", len(content))
+		}
+	}
+	excerpts := make([]ports.ChatExcerptReference, 0, len(req.Excerpts))
+	for _, excerpt := range req.Excerpts {
+		excerpts = append(excerpts, ports.ChatExcerptReference{
+			ConversationID: excerpt.ConversationID, MessageID: excerpt.MessageID,
+			Revision: excerpt.Revision, Text: excerpt.Text,
+		})
 	}
 	turn, err := c.Svc.Send(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")), ports.ChatUserMessage{
 		Text:            text,
 		Content:         content,
+		Excerpts:        excerpts,
 		ClientMessageID: req.ClientMessageID,
 		Origin:          domain.MessageOriginHuman,
 	})
@@ -878,7 +961,11 @@ func conversationRequestID(w http.ResponseWriter, r *http.Request) (string, bool
 }
 
 func decodeConversationBody(w http.ResponseWriter, r *http.Request, into any) bool {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxConversationBody))
+	return decodeConversationBodyLimit(w, r, into, maxConversationBody)
+}
+
+func decodeConversationBodyLimit(w http.ResponseWriter, r *http.Request, into any, limit int64) bool {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit))
 	if err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
 			"INVALID_BODY", "could not read request body", nil)
@@ -910,6 +997,14 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_CONTROLLER_NOT_READY",
 			"the agent controller for this session is not running", nil)
+
+	case errors.Is(err, chatsvc.ErrExcerptInvalid):
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation",
+			"CHAT_EXCERPT_INVALID", err.Error(), nil)
+
+	case errors.Is(err, chatsvc.ErrExcerptStale):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_EXCERPT_STALE", err.Error(), nil)
 
 	case errors.Is(err, chatsvc.ErrControllerHandoff):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
@@ -1054,6 +1149,7 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 		Messages:                         make([]ConversationMessageResponse, 0, len(s.Messages)),
 		Activities:                       make([]ConversationActivityResponse, 0, len(s.Activities)),
 		BranchPoints:                     make([]ConversationBranchPointResponse, 0, len(s.BranchPoints)),
+		SideChats:                        make([]ConversationSideChatResponse, 0, len(s.SideChats)),
 		BranchMaterialization:            branchMaterializationPayload(s.ActiveBranch),
 		Settings:                         turnSettingsPayload(s.Conversation.Settings),
 		Usage:                            usagePayload(s.Usage),
@@ -1065,6 +1161,13 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 		ThreadState:                      threadStatePayload(s.Conversation.ThreadState),
 		MCPServers:                       mcpServersPayload(s.Conversation.MCPServers),
 		Capabilities:                     capabilityNames(s.Capabilities),
+	}
+	for _, branch := range s.SideChats {
+		out.SideChats = append(out.SideChats, ConversationSideChatResponse{
+			ID: branch.ID, ParentBranchID: branch.ParentBranchID, Label: branch.Label,
+			ForkAfterSequence: branch.ForkAfterSequence, Active: branch.Active,
+			CreatedAt: branch.CreatedAt.UTC().Format(time.RFC3339),
+		})
 	}
 
 	for _, turn := range s.Turns {
@@ -1154,6 +1257,23 @@ func conversationContentSummary(msg domain.ConversationMessage) ([]ConversationC
 		// person attached. Keeping it out of this public summary prevents it from
 		// appearing as a user resource when the edited message is rendered again.
 		if block.Type == "text" || ports.IsInternalReplayContent(block) {
+			continue
+		}
+		if block.Type == "excerpt" && block.Excerpt != nil {
+			excerpt := &ConversationExcerptSummaryResponse{
+				Selection: block.Excerpt.Selection, SourceRole: block.Excerpt.SourceRole,
+				SourceText: block.Excerpt.SourceText,
+			}
+			for _, related := range block.Excerpt.Messages {
+				excerpt.Messages = append(excerpt.Messages, ConversationExcerptMessageResponse{Role: related.Role, Text: related.Text})
+			}
+			summaries = append(summaries, ConversationContentSummaryResponse{Type: "excerpt", Excerpt: excerpt})
+			continue
+		}
+		if strings.HasPrefix(block.URI, ports.ChatExcerptResourceURIPrefix) {
+			summaries = append(summaries, ConversationContentSummaryResponse{
+				Type: "excerpt", Excerpt: &ConversationExcerptSummaryResponse{Selection: block.Text, SourceRole: strings.TrimSuffix(block.Name, " message"), SourceText: block.Text},
+			})
 			continue
 		}
 		name := block.Name

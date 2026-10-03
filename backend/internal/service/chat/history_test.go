@@ -530,6 +530,56 @@ func TestForkClassifiesAProviderRefusal(t *testing.T) {
 	}
 }
 
+func TestCreateSideChatForksCurrentHeadWithReadOnlyPolicy(t *testing.T) {
+	h, source, driver := newEditHarness(t, false)
+	caps := source.Capabilities()
+	caps[ports.ChatCapabilityReadOnly] = true
+	source.setCapabilities(caps)
+	completeTurn(t, h, "main context", "provider-turn-1")
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 2 })
+
+	branch, err := h.svc.CreateSideChat(context.Background(), testSession, "Why is this failing?")
+	if err != nil {
+		t.Fatalf("CreateSideChat: %v", err)
+	}
+	if branch.Purpose != domain.ConversationBranchPurposeSide || branch.ParentBranchID == "" || !branch.Active {
+		t.Fatalf("side branch = %+v", branch)
+	}
+	if branch.ForkAfterSequence != snapshot.Conversation.LatestSequence {
+		t.Fatalf("side branch fork sequence = %d, want durable head %d", branch.ForkAfterSequence, snapshot.Conversation.LatestSequence)
+	}
+	if source.lastForkAnchor() != nil {
+		t.Fatal("side chat forked at an earlier turn instead of the current head")
+	}
+	driver.mu.Lock()
+	resume := driver.resumeCalls[len(driver.resumeCalls)-1]
+	driver.mu.Unlock()
+	if resume.Permissions != ports.PermissionModeReadOnly {
+		t.Fatalf("side chat permissions = %q, want read-only", resume.Permissions)
+	}
+	if !strings.Contains(resume.SystemPrompt, "/btw side chat") || len(resume.MCPServers) != 0 {
+		t.Fatalf("side chat launch was not question-only: prompt=%q mcp=%v", resume.SystemPrompt, resume.MCPServers)
+	}
+	serviceSnapshot, err := h.svc.Snapshot(context.Background(), testSession)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(serviceSnapshot.SideChats) != 1 || serviceSnapshot.SideChats[0].ID != branch.ID || !serviceSnapshot.SideChats[0].Active {
+		t.Fatalf("snapshot side chats = %+v", serviceSnapshot.SideChats)
+	}
+	if active, err := h.svc.ActivateBranch(context.Background(), testSession, branch.ParentBranchID); err != nil {
+		t.Fatalf("ActivateBranch(main): %v", err)
+	} else if active != branch.ParentBranchID {
+		t.Fatalf("active branch = %q, want %q", active, branch.ParentBranchID)
+	}
+	driver.mu.Lock()
+	mainResume := driver.resumeCalls[len(driver.resumeCalls)-1]
+	driver.mu.Unlock()
+	if mainResume.Permissions == ports.PermissionModeReadOnly || strings.Contains(mainResume.SystemPrompt, "/btw side chat") {
+		t.Fatalf("main branch kept side-chat policy: %+v", mainResume)
+	}
+}
+
 type editDriverState struct {
 	mu           sync.Mutex
 	startCalls   int

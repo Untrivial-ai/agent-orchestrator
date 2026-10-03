@@ -79,6 +79,10 @@ describe("rankSkills", () => {
 		expect(rankSkills(skills, "").map((item) => item.value)).toHaveLength(4);
 	});
 
+	it("does not hide skills after the old fifty-row limit", () => {
+		expect(rankSkills(Array.from({ length: 75 }, (_, index) => skill(`skill-${index}`)), "")).toHaveLength(75);
+	});
+
 	// An exact/prefix match on the name has to beat a match buried mid-name,
 	// otherwise the ordering reads as arbitrary.
 	it("ranks a name prefix above a mid-name match", () => {

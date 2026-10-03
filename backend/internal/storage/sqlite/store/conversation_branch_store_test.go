@@ -140,6 +140,33 @@ func TestConversationBranchZeroStrategyPersistsAsNative(t *testing.T) {
 	}
 }
 
+func TestConversationBranchPersistsSideChatMetadata(t *testing.T) {
+	ctx := context.Background()
+	s, _, conversation := seededChatConversation(t)
+	branch := domain.ConversationBranch{
+		ID: "side-chat-1", ConversationID: conversation.ID,
+		ProviderConversationID: "thread-side-chat-1", ParentBranchID: conversation.ActiveBranchID,
+		ForkAfterSequence: 7, Purpose: domain.ConversationBranchPurposeSide, Label: "Why this test fails",
+	}
+	if err := s.CreateConversationBranch(ctx, branch, testNow.Add(time.Minute)); err != nil {
+		t.Fatalf("CreateConversationBranch: %v", err)
+	}
+	got, err := s.ConversationBranch(ctx, conversation.ID, branch.ID)
+	if err != nil {
+		t.Fatalf("ConversationBranch: %v", err)
+	}
+	if got.Purpose != domain.ConversationBranchPurposeSide || got.Label != branch.Label || got.ForkAfterSequence != 7 {
+		t.Fatalf("side chat metadata = %+v", got)
+	}
+	root, err := s.ConversationBranch(ctx, conversation.ID, conversation.ActiveBranchID)
+	if err != nil {
+		t.Fatalf("root ConversationBranch: %v", err)
+	}
+	if got.ProviderBindingID != root.ProviderBindingID {
+		t.Fatalf("side provider binding = %q, want main binding %q", got.ProviderBindingID, root.ProviderBindingID)
+	}
+}
+
 func TestConversationBranchPreservesEmptyLegacyProviderScope(t *testing.T) {
 	ctx := context.Background()
 	s, session, conversation := seededChatConversation(t)

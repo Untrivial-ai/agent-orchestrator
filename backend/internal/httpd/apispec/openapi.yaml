@@ -5228,6 +5228,621 @@ paths:
       summary: Choose the model, reasoning effort and approval mode for the next turn
       tags:
       - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats:
+    get:
+      operationId: listSessionSideChats
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideChatListResponse'
+          description: OK
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+    post:
+      operationId: createSessionConversationSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationSideChatRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateConversationSideChatResponse'
+          description: Created
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Open an independent launch-scoped read-only side chat
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}:
+    delete:
+      operationId: deleteSessionSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: ""
+      tags:
+      - conversations
+    get:
+      operationId: getSessionSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      - description: Read side turns older than this RFC3339 timestamp.
+        in: query
+        name: before
+        schema:
+          description: Read side turns older than this RFC3339 timestamp.
+          type: string
+      - in: query
+        name: limit
+        schema:
+          maximum: 500
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideChatSnapshotResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/approvals/{requestId}/resolve:
+    post:
+      operationId: resolveSessionSideChatApproval
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationApprovalRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/compact:
+    post:
+      operationId: compactSessionSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompactConversationResponse'
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/draft:
+    get:
+      operationId: getSessionSideChatDraft
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideDraftResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: ""
+      tags:
+      - conversations
+    put:
+      operationId: putSessionSideChatDraft
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideDraftRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/events:
+    get:
+      operationId: streamSessionSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            text/event-stream:
+              schema:
+                type: string
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/inputs/{requestId}/resolve:
+    post:
+      operationId: resolveSessionSideChatInput
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationInputRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/interrupt:
+    post:
+      operationId: interruptSessionSideQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/messages:
+    post:
+      operationId: sendSessionSideChatQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSideQuestionRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideQuestionResponse'
+          description: Accepted
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/recover:
+    post:
+      operationId: recoverSessionSideChat
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      responses:
+        "202":
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/settings:
+    patch:
+      operationId: updateSessionSideChatSettings
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideSettingsRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}:
+    patch:
+      operationId: editSessionQueuedSideQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSideQuestionRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/sessions/{sessionId}/conversation/side-chats/{sideId}/turns/{turnId}/retry:
+    post:
+      operationId: retrySessionSideQuestion
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Independent side chat identifier.
+        in: path
+        name: sideId
+        required: true
+        schema:
+          description: Independent side chat identifier.
+          type: string
+      - description: AO conversation turn identifier, from the snapshot's turns array.
+        in: path
+        name: turnId
+        required: true
+        schema:
+          description: AO conversation turn identifier, from the snapshot's turns
+            array.
+          type: string
+      responses:
+        "202":
+          description: Accepted
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation/skills:
     get:
       operationId: listSessionConversationSkills
@@ -8615,6 +9230,87 @@ paths:
       summary: Rename a standalone shell terminal tab
       tags:
       - shellTerminals
+  /api/v1/side-chats/launch/claim:
+    post:
+      operationId: claimSideChatLaunch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideChatLaunchClaimRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/side-chats/launch/retire:
+    post:
+      operationId: retireSideChatLaunch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideChatLaunchClaimRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+  /api/v1/side-chats/launch/state:
+    get:
+      operationId: exportSideChatLaunch
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SideChatLaunchState'
+          description: OK
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
+    post:
+      operationId: recoverSideChatLaunch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SideChatLaunchState'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: ""
+      tags:
+      - conversations
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -10751,6 +11447,8 @@ components:
       type: object
     ConversationContentSummaryResponse:
       properties:
+        excerpt:
+          $ref: '#/components/schemas/ConversationExcerptSummaryResponse'
         mimeType:
           type: string
         name:
@@ -10786,6 +11484,51 @@ components:
       - additions
       - deletions
       - status
+      type: object
+    ConversationExcerptMessageResponse:
+      properties:
+        role:
+          type: string
+        text:
+          type: string
+      required:
+      - role
+      - text
+      type: object
+    ConversationExcerptReferenceRequest:
+      properties:
+        conversationId:
+          type: string
+        messageId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        text:
+          type: string
+      required:
+      - conversationId
+      - messageId
+      - revision
+      - text
+      type: object
+    ConversationExcerptSummaryResponse:
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/ConversationExcerptMessageResponse'
+          type: array
+        selection:
+          type: string
+        sourceRole:
+          type: string
+        sourceText:
+          type: string
+      required:
+      - selection
+      - sourceRole
+      - sourceText
+      - messages
       type: object
     ConversationImageContentRequest:
       properties:
@@ -10975,6 +11718,29 @@ components:
       - uri
       - name
       type: object
+    ConversationSideChatResponse:
+      properties:
+        active:
+          type: boolean
+        createdAt:
+          type: string
+        forkAfterSequence:
+          format: int64
+          type: integer
+        id:
+          type: string
+        label:
+          type: string
+        parentBranchId:
+          type: string
+      required:
+      - id
+      - parentBranchId
+      - label
+      - forkAfterSequence
+      - active
+      - createdAt
+      type: object
     ConversationSkillResponse:
       properties:
         description:
@@ -11070,6 +11836,10 @@ components:
           type: string
         settings:
           $ref: '#/components/schemas/ConversationTurnSettingsPayload'
+        sideChats:
+          items:
+            $ref: '#/components/schemas/ConversationSideChatResponse'
+          type: array
         threadState:
           $ref: '#/components/schemas/ConversationThreadStatePayload'
         title:
@@ -11250,6 +12020,25 @@ components:
       - prompt
       - kind
       - timezone
+      type: object
+    CreateConversationSideChatRequest:
+      properties:
+        idempotencyKey:
+          type: string
+        label:
+          maxLength: 80
+          type: string
+        reference:
+          $ref: '#/components/schemas/ConversationExcerptReferenceRequest'
+      required:
+      - idempotencyKey
+      type: object
+    CreateConversationSideChatResponse:
+      properties:
+        side:
+          $ref: '#/components/schemas/SideConversation'
+      required:
+      - side
       type: object
     CreateReportRequest:
       properties:
@@ -11568,6 +12357,28 @@ components:
       - mode
       - reviewId
       - harness
+      type: object
+    DomainSideReference:
+      properties:
+        context:
+          type: string
+        conversationId:
+          type: string
+        messageId:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        selection:
+          type: string
+        sourceRole:
+          type: string
+      required:
+      - conversationId
+      - messageId
+      - revision
+      - selection
+      - sourceRole
       type: object
     EditConversationMessageRequest:
       properties:
@@ -13413,6 +14224,10 @@ components:
           type: array
         clientMessageId:
           type: string
+        excerpts:
+          items:
+            $ref: '#/components/schemas/ConversationExcerptReferenceRequest'
+          type: array
         resources:
           items:
             $ref: '#/components/schemas/ConversationResourceContentRequest'
@@ -13467,6 +14282,28 @@ components:
       - ok
       - sessionId
       - message
+      type: object
+    SendSideQuestionRequest:
+      properties:
+        attachments:
+          items:
+            $ref: '#/components/schemas/ConversationImageContentRequest'
+          type: array
+        clientMessageId:
+          type: string
+        references:
+          items:
+            $ref: '#/components/schemas/ConversationExcerptReferenceRequest'
+          type: array
+        resources:
+          items:
+            $ref: '#/components/schemas/ConversationResourceContentRequest'
+          type: array
+        text:
+          type: string
+      required:
+      - text
+      - clientMessageId
       type: object
     SessionInterfaceTransition:
       properties:
@@ -14244,6 +15081,371 @@ components:
       - handleId
       - workingDir
       - title
+      - createdAt
+      type: object
+    SideActivity:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        decisions:
+          items:
+            $ref: '#/components/schemas/SideDecision'
+          type: array
+        detail: {}
+        id:
+          type: string
+        input:
+          $ref: '#/components/schemas/SideInput'
+        kind:
+          type: string
+        requestId:
+          type: string
+        sideId:
+          type: string
+        status:
+          type: string
+        summary:
+          type: string
+        text:
+          type: string
+        turnId:
+          type: string
+      required:
+      - id
+      - sideId
+      - turnId
+      - kind
+      - status
+      - summary
+      - createdAt
+      type: object
+    SideChatLaunchClaimRequest:
+      properties:
+        appRunId:
+          type: string
+      required:
+      - appRunId
+      type: object
+    SideChatLaunchState:
+      properties:
+        appRunId:
+          type: string
+        sides:
+          items:
+            $ref: '#/components/schemas/SideRecoveryRecord'
+          type: array
+      required:
+      - appRunId
+      - sides
+      type: object
+    SideChatListResponse:
+      properties:
+        sides:
+          items:
+            $ref: '#/components/schemas/SideConversation'
+          type: array
+      required:
+      - sides
+      type: object
+    SideChatSnapshotResponse:
+      properties:
+        snapshot:
+          $ref: '#/components/schemas/SideSnapshot'
+      required:
+      - snapshot
+      type: object
+    SideContent:
+      properties:
+        data:
+          type: string
+        mimeType:
+          type: string
+        name:
+          type: string
+        text:
+          type: string
+        type:
+          type: string
+        uri:
+          type: string
+      required:
+      - type
+      type: object
+    SideConversation:
+      properties:
+        anchorTurnId:
+          type: string
+        cleanupPending:
+          type: boolean
+        contextMode:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        effort:
+          type: string
+        errorMessage:
+          type: string
+        id:
+          type: string
+        label:
+          type: string
+        mainConversationId:
+          type: string
+        model:
+          type: string
+        selectedText:
+          type: string
+        sessionId:
+          type: string
+        sourceMessageId:
+          type: string
+        sourceRevision:
+          format: int64
+          type: integer
+        state:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - sessionId
+      - mainConversationId
+      - contextMode
+      - label
+      - state
+      - createdAt
+      - updatedAt
+      type: object
+    SideDecision:
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        label:
+          type: string
+      required:
+      - id
+      - label
+      - kind
+      type: object
+    SideDraftRequest:
+      properties:
+        contentJson:
+          type: string
+      required:
+      - contentJson
+      type: object
+    SideDraftResponse:
+      properties:
+        contentJson:
+          type: string
+      required:
+      - contentJson
+      type: object
+    SideInput:
+      properties:
+        message:
+          type: string
+        mode:
+          type: string
+        schema:
+          additionalProperties: {}
+          type: object
+        url:
+          type: string
+      required:
+      - mode
+      - message
+      type: object
+    SideMessage:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        revision:
+          format: int64
+          type: integer
+        role:
+          type: string
+        sequence:
+          format: int64
+          type: integer
+        sideId:
+          type: string
+        streaming:
+          type: boolean
+        text:
+          type: string
+        turnId:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - sideId
+      - turnId
+      - role
+      - text
+      - sequence
+      - revision
+      - streaming
+      - createdAt
+      - updatedAt
+      type: object
+    SideQuestionResponse:
+      properties:
+        turn:
+          $ref: '#/components/schemas/SideTurn'
+      required:
+      - turn
+      type: object
+    SideRecoveryRecord:
+      properties:
+        activities:
+          items:
+            $ref: '#/components/schemas/SideActivity'
+          type: array
+        draft:
+          type: string
+        generation:
+          type: string
+        harness:
+          type: string
+        messages:
+          items:
+            $ref: '#/components/schemas/SideMessage'
+          type: array
+        nativeAnchorId:
+          type: string
+        providerForkId:
+          type: string
+        providerHostId:
+          type: string
+        referenceContext:
+          type: string
+        referencePending:
+          type: boolean
+        seedHistory:
+          type: string
+        side:
+          $ref: '#/components/schemas/SideConversation'
+        turns:
+          items:
+            $ref: '#/components/schemas/SideRecoveryTurn'
+          type: array
+      required:
+      - side
+      - providerHostId
+      - providerForkId
+      - nativeAnchorId
+      - harness
+      - generation
+      - referenceContext
+      - referencePending
+      - seedHistory
+      - turns
+      - messages
+      - activities
+      - draft
+      type: object
+    SideRecoveryTurn:
+      properties:
+        content:
+          items:
+            $ref: '#/components/schemas/SideContent'
+          type: array
+        turn:
+          $ref: '#/components/schemas/SideTurn'
+      required:
+      - turn
+      type: object
+    SideSettingsRequest:
+      properties:
+        effort:
+          type: string
+        model:
+          type: string
+      required:
+      - model
+      - effort
+      type: object
+    SideSnapshot:
+      properties:
+        activities:
+          items:
+            $ref: '#/components/schemas/SideActivity'
+          type: array
+        hasMore:
+          type: boolean
+        messages:
+          items:
+            $ref: '#/components/schemas/SideMessage'
+          type: array
+        side:
+          $ref: '#/components/schemas/SideConversation'
+        turns:
+          items:
+            $ref: '#/components/schemas/SideTurn'
+          type: array
+      required:
+      - side
+      - turns
+      - messages
+      - activities
+      - hasMore
+      type: object
+    SideTurn:
+      properties:
+        clientMessageId:
+          type: string
+        completedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        errorMessage:
+          type: string
+        id:
+          type: string
+        providerTurnId:
+          type: string
+        referenceContext:
+          type: string
+        references:
+          items:
+            $ref: '#/components/schemas/DomainSideReference'
+          type: array
+        retryOfTurnId:
+          type: string
+        selectionText:
+          type: string
+        sideId:
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        state:
+          type: string
+        text:
+          type: string
+      required:
+      - id
+      - sideId
+      - clientMessageId
+      - text
+      - state
       - createdAt
       type: object
     SpawnOrchestratorRequest:

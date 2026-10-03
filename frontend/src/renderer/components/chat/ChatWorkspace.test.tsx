@@ -398,6 +398,187 @@ describe("Chat message timestamps", () => {
 });
 
 describe("ChatWorkspace timeline", () => {
+	it("adds selected transcript text to the durable composer as a removable reference", async () => {
+		const snapshot = idleSnapshot(chatFixture);
+		render(<ChatWorkspace snapshot={snapshot} onSend={vi.fn()} />);
+		const message = screen.getByText(
+			"Check the worktree state and tell me what changed since the base commit.",
+		);
+		const textNode = message.firstChild;
+		if (!textNode) throw new Error("message text node is missing");
+		const removeAllRanges = vi.fn();
+		const selection = {
+			anchorNode: textNode,
+			focusNode: textNode,
+			isCollapsed: false,
+			rangeCount: 1,
+			toString: () => "worktree state",
+			getRangeAt: () => ({
+				getBoundingClientRect: () => ({ left: 100, top: 100, width: 80, height: 18 }),
+			}),
+			removeAllRanges,
+		} as unknown as Selection;
+		const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(selection);
+		try {
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+			expect(screen.getByLabelText("Referenced selection: worktree state")).toBeVisible();
+			expect(readChatSessionDraft(snapshot.sessionId).composer.excerpts).toEqual([
+				expect.objectContaining({
+					conversationId: snapshot.conversationId,
+					messageId: "m-1",
+					revision: 0,
+					text: "worktree state",
+					role: "user",
+				}),
+			]);
+			expect(removeAllRanges).toHaveBeenCalled();
+			await userEvent.click(screen.getByRole("button", { name: "Remove referenced message" }));
+			expect(screen.queryByLabelText("Referenced messages")).not.toBeInTheDocument();
+		} finally {
+			getSelection.mockRestore();
+		}
+	});
+
+	it("does not offer message controls as transcript selections", () => {
+		const snapshot = idleSnapshot(chatFixture);
+		render(<ChatWorkspace snapshot={snapshot} onSend={vi.fn()} />);
+		const control = screen.getAllByRole("button", { name: "Copy user message" })[0]!;
+		const selection = {
+			anchorNode: control,
+			focusNode: control,
+			isCollapsed: false,
+			rangeCount: 1,
+			toString: () => "Copy user message",
+		} as unknown as Selection;
+		const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(selection);
+		try {
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			expect(screen.queryByRole("button", { name: "Add to chat" })).not.toBeInTheDocument();
+		} finally {
+			getSelection.mockRestore();
+		}
+	});
+
+	it("stages an assistant selection spanning rendered Markdown formatting", async () => {
+		const snapshot = idleSnapshot({
+			...chatFixture,
+			items: chatFixture.items.map((item) =>
+				item.kind === "message" && item.id === "m-2"
+					? { ...item, text: "Use **bold** text." }
+					: item,
+			),
+		});
+		render(<ChatWorkspace snapshot={snapshot} onSend={vi.fn()} />);
+		const paragraph = screen.getByText("bold", { exact: true }).closest("p");
+		if (!paragraph?.firstChild || !paragraph.lastChild) throw new Error("formatted message is missing");
+		const selection = {
+			anchorNode: paragraph.firstChild,
+			focusNode: paragraph.lastChild,
+			isCollapsed: false,
+			rangeCount: 1,
+			toString: () => " Use bold text ",
+			getRangeAt: () => ({ getBoundingClientRect: () => ({ left: 100, top: 100, width: 80, height: 18 }) }),
+			removeAllRanges: vi.fn(),
+		} as unknown as Selection;
+		const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(selection);
+		try {
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			await userEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+			expect(screen.getByLabelText("Referenced messages")).toHaveTextContent("Use bold text");
+			expect(readChatSessionDraft(snapshot.sessionId).composer.excerpts?.[0]?.text).toBe(" Use bold text ");
+		} finally {
+			getSelection.mockRestore();
+		}
+	});
+
+	it("does not capture a code-block toolbar as source text", () => {
+		render(<ChatWorkspace snapshot={idleSnapshot(chatFixture)} onSend={vi.fn()} />);
+		const control = screen.getAllByRole("button", { name: "Copy code" })[0]!;
+		const selection = {
+			anchorNode: control,
+			focusNode: control,
+			isCollapsed: false,
+			rangeCount: 1,
+			toString: () => "Copy code",
+			getRangeAt: () => ({ getBoundingClientRect: () => ({ left: 100, top: 100, width: 80, height: 18 }) }),
+		} as unknown as Selection;
+		const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(selection);
+		try {
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			expect(screen.queryByRole("button", { name: "Add to chat" })).not.toBeInTheDocument();
+		} finally {
+			getSelection.mockRestore();
+		}
+	});
+
+	it("offers the exact selected transcript reference to the side chat", async () => {
+		const snapshot = idleSnapshot(chatFixture);
+		const onCreateSideChat = vi.fn().mockResolvedValue({ id: "side-1" });
+		render(<ChatWorkspace snapshot={snapshot} onCreateSideChat={onCreateSideChat} />);
+		const message = screen.getByText(
+			"Check the worktree state and tell me what changed since the base commit.",
+		);
+		const textNode = message.firstChild;
+		if (!textNode) throw new Error("message text node is missing");
+		const selection = {
+			anchorNode: textNode,
+			focusNode: textNode,
+			isCollapsed: false,
+			rangeCount: 1,
+			toString: () => "what changed",
+			getRangeAt: () => ({ getBoundingClientRect: () => ({ left: 100, top: 100, width: 80, height: 18 }) }),
+			removeAllRanges: vi.fn(),
+		} as unknown as Selection;
+		const getSelection = vi.spyOn(window, "getSelection").mockReturnValue(selection);
+		try {
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			await userEvent.click(screen.getByRole("button", { name: "Add to side chat" }));
+			expect(onCreateSideChat).toHaveBeenCalledWith(expect.objectContaining({ text: "what changed", messageId: "m-1" }));
+			expect(readChatSessionDraft(snapshot.sessionId).composer.excerpts).toBeUndefined();
+		} finally {
+			getSelection.mockRestore();
+		}
+	});
+
+	it("keeps both selection actions on one line inside the pane near its right edge", () => {
+		const geometry = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			const width = this.dataset.testid === "selection-action-toolbar" ? 180 : 240;
+			return { left: 0, top: 0, width, height: 200 } as DOMRect;
+		});
+		try {
+			render(<ChatWorkspace snapshot={idleSnapshot(chatFixture)} onCreateSideChat={vi.fn()} />);
+			const message = screen.getByText("Check the worktree state and tell me what changed since the base commit.");
+			const selection = {
+				anchorNode: message.firstChild,
+				focusNode: message.firstChild,
+				isCollapsed: false,
+				rangeCount: 1,
+				toString: () => "sun",
+				getRangeAt: () => ({ getBoundingClientRect: () => ({ left: 232, top: 100, width: 6, height: 18 }) }),
+			} as unknown as Selection;
+			vi.spyOn(window, "getSelection").mockReturnValue(selection);
+			fireEvent.mouseUp(screen.getByRole("log", { name: "Conversation" }));
+			const toolbar = screen.getByTestId("selection-action-toolbar");
+			const left = Number.parseFloat(toolbar.style.left);
+			expect(toolbar).toHaveClass("flex-nowrap", "whitespace-nowrap");
+			expect(screen.getByRole("button", { name: "Add to chat" })).toHaveClass("whitespace-nowrap");
+			expect(screen.getByRole("button", { name: "Add to side chat" })).toHaveClass("whitespace-nowrap");
+			expect(left).toBeGreaterThanOrEqual(8);
+			expect(left + 180).toBeLessThanOrEqual(240 - 8);
+		} finally {
+			geometry.mockRestore();
+			vi.mocked(window.getSelection).mockRestore();
+		}
+	});
+
+	it("does not show a standalone side-chat creation button", () => {
+		const onCreateSideChat = vi.fn().mockResolvedValue({ id: "side-1" });
+		render(<ChatWorkspace snapshot={idleSnapshot(chatFixture)} onCreateSideChat={onCreateSideChat} />);
+		expect(screen.queryByRole("button", { name: "New /btw" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Read-only")).not.toBeInTheDocument();
+	});
+
 	it("shows a local human echo until the matching durable turn arrives", () => {
 		const snapshot = idleSnapshot(chatFixtureEmpty);
 		const localEchos = [
@@ -570,13 +751,13 @@ describe("ChatWorkspace timeline", () => {
 		const view = render(<ChatWorkspace snapshot={reported} />);
 		const composer = screen.getByLabelText("Message the agent").closest("form") as HTMLElement;
 		const gauge = within(composer).getByRole("progressbar", { name: "Context window used" });
-		expect(gauge).toHaveAttribute("aria-valuetext", "18,055 / 258,400 tokens (7%)");
+		expect(gauge).toHaveAttribute("aria-valuetext", `${(18_055).toLocaleString()} / ${(258_400).toLocaleString()} tokens (7%)`);
 		gauge.focus();
 		fireEvent.click(gauge.querySelector("svg") as SVGSVGElement);
 		expect(gauge).toHaveFocus();
 
 		view.rerender(<ChatWorkspace snapshot={{ ...reported, usage: { ...reported.usage, contextUsed: 129_200 } }} />);
-		expect(within(composer).getByRole("progressbar", { name: "Context window used" })).toHaveAttribute("aria-valuetext", "129,200 / 258,400 tokens (50%)");
+		expect(within(composer).getByRole("progressbar", { name: "Context window used" })).toHaveAttribute("aria-valuetext", `${(129_200).toLocaleString()} / ${(258_400).toLocaleString()} tokens (50%)`);
 	});
 
 	it("refreshes the owning workspace after renaming the primary chat tab", async () => {

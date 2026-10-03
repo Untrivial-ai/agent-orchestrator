@@ -27,6 +27,8 @@ func (c *conversation) nativeID(id string) string {
 	return strings.TrimPrefix(id, c.scopePrefix())
 }
 
+func (c *conversation) NativeTurnID(id string) string { return c.nativeID(id) }
+
 func (c *conversation) scopedEvent(event ports.ChatEvent) ports.ChatEvent {
 	event.NativeTurnID = event.ProviderTurnID
 	if c.providerScopeID == "" {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -29,7 +30,7 @@ const threadWithRenderedHistory = `{"thread":{"id":"thread-1","turns":[` +
 func openConversation(t *testing.T) (*conversation, *scriptedServer) {
 	t.Helper()
 	d, srv := newTestDriver(t)
-	conv, err := d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: "/tmp/ws"})
+	conv, err := d.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -355,6 +356,64 @@ func TestForkThroughTurnSendsLastTurnID(t *testing.T) {
 	}
 	if _, present := params["cwd"]; present {
 		t.Fatal("fork must inherit the source cwd")
+	}
+}
+
+func TestForkIntoIndependentHostUsesSourceThreadAndExactAnchor(t *testing.T) {
+	driver, server := newTestDriver(t)
+	server.reply("thread/fork", `{"thread":{"id":"side-thread"},"model":"gpt-test","reasoningEffort":"medium"}`)
+	workspace := t.TempDir()
+	conv, err := driver.ForkIntoHost(context.Background(), "main-thread", "completed-turn", ports.ChatStartConfig{
+		WorkspacePath: workspace, Model: "gpt-test", Effort: "medium", ProviderScopeID: "side-1", ProviderIDsScoped: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conv.Close() })
+	if got := conv.ProviderConversationID(); got != "side-thread" {
+		t.Fatalf("provider conversation = %q", got)
+	}
+	fork := server.awaitFrame(func(f frame) bool { return f.Method == "thread/fork" })
+	var params map[string]any
+	if err := json.Unmarshal(fork.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["threadId"] != "main-thread" || params["lastTurnId"] != "completed-turn" || params["cwd"] != workspace {
+		t.Fatalf("fork source and anchor = %#v", params)
+	}
+	if server.sentMethod("thread/resume") || server.sentMethod("thread/start") {
+		t.Fatal("independent host unexpectedly resumed or started another thread")
+	}
+}
+
+func TestAnchoredForkDoesNotBlockMainSend(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("turn/start", `{"turn":{"id":"main-next-turn"}}`)
+	anchor := "completed-turn"
+	forkDone := make(chan error, 1)
+	go func() {
+		_, err := conv.Fork(context.Background(), &anchor)
+		forkDone <- err
+	}()
+	fork := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/fork" })
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{Text: "Continue the main chat"})
+		sendDone <- err
+	}()
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("main send while fork is pending: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("main send waited for an anchored fork response")
+	}
+
+	srv.push(`{"id":` + string(*fork.ID) + `,"result":{"thread":{"id":"thread-2"}}}`)
+	if err := <-forkDone; err != nil {
+		t.Fatalf("anchored fork: %v", err)
 	}
 }
 

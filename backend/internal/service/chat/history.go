@@ -71,7 +71,125 @@ var (
 	// ErrBranchProviderMismatch refuses a historical branch whose opaque provider
 	// conversation id belongs to an earlier agent ownership epoch.
 	ErrBranchProviderMismatch = errors.New("conversation branch belongs to a different agent provider")
+	// ErrSideChatUnsupported refuses /btw unless the driver can both fork native
+	// context and enforce a read-only sandbox.
+	ErrSideChatUnsupported = errors.New("chat driver cannot open a read-only side chat")
 )
+
+const sideChatSystemPrompt = `You are answering in AO's /btw side chat. This conversation is question-only and read-only. Do not edit files, run commands that change state, resolve approvals, create tasks, or take external actions. You may inspect available context and explain, compare, summarize, or suggest. If asked to perform an action, describe how it could be done instead.`
+
+// CreateSideChat forks the active provider context at its current head, reopens
+// the child under an enforced read-only policy, and durably marks it as /btw.
+func (s *Service) CreateSideChat(ctx context.Context, id domain.SessionID, label string) (domain.ConversationBranch, error) {
+	gate := s.controllerGate(domain.SessionConversationOwner(id))
+	if err := gate.lock(ctx); err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	defer gate.unlock()
+	if _, err := s.requireChatSession(ctx, id); err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	source, err := s.Controller(id)
+	if err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	if !source.Capabilities().Has(ports.ChatCapabilityReadOnly) {
+		return domain.ConversationBranch{}, ErrSideChatUnsupported
+	}
+	forker, ok := source.conv.(ports.ChatForker)
+	if !ok {
+		return domain.ConversationBranch{}, ErrSideChatUnsupported
+	}
+	activeBranch, err := s.store.ConversationBranch(ctx, source.conversation.ID, source.conversation.ActiveBranchID)
+	if err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	if domain.NormalizeConversationBranchPurpose(activeBranch.Purpose) == domain.ConversationBranchPurposeSide {
+		return domain.ConversationBranch{}, ErrSideChatUnsupported
+	}
+	durableConversation, err := s.store.ConversationForSession(ctx, id)
+	if err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	if durableConversation.ID != source.conversation.ID {
+		return domain.ConversationBranch{}, fmt.Errorf(
+			"active controller conversation %q does not match durable conversation %q",
+			source.conversation.ID, durableConversation.ID,
+		)
+	}
+	if err := source.BeginIdleBranchHandoff(ctx); err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	abortSource := true
+	defer func() {
+		if abortSource {
+			source.AbortHandoff()
+		}
+	}()
+	cfg, driver, err := s.branchLaunchConfig(source)
+	if err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	providerConversationID, err := forker.Fork(ctx, nil)
+	if err != nil {
+		return domain.ConversationBranch{}, classify(fmt.Errorf("fork side chat: %w", err))
+	}
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nativeEditHandoffLimit)
+	defer cancel()
+	if err := source.closeForBranchHandoff(operationCtx); err != nil {
+		return domain.ConversationBranch{}, fmt.Errorf("close source before side chat: %w", err)
+	}
+	restore := func(cause error) (domain.ConversationBranch, error) {
+		if restoreErr := s.restoreClosedSourceController(operationCtx, id, source, activeBranch, cfg, driver); restoreErr != nil {
+			cause = errors.Join(cause, restoreErr)
+		} else {
+			abortSource = false
+		}
+		return domain.ConversationBranch{}, cause
+	}
+	launchEnv, err := s.prepareBranchControllerEnv(operationCtx, cfg)
+	if err != nil {
+		return restore(err)
+	}
+	readOnlyPrompt := strings.TrimSpace(cfg.SystemPrompt + "\n\n" + sideChatSystemPrompt)
+	provider, err := driver.Resume(operationCtx, ports.ChatResumeConfig{
+		SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
+		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
+		Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeReadOnly,
+		SystemPrompt: readOnlyPrompt, ProviderScopeID: activeBranch.ProviderScopeID,
+		ProviderIDsScoped:     activeBranch.ProviderIDsScoped,
+		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: nil,
+	})
+	if err != nil {
+		return restore(fmt.Errorf("resume read-only side chat: %w", err))
+	}
+	if strings.TrimSpace(label) == "" {
+		label = "Side chat"
+	}
+	branch := domain.ConversationBranch{
+		ID: s.newID(), ConversationID: source.conversation.ID, SessionID: id,
+		ProviderConversationID: providerConversationID, ParentBranchID: activeBranch.ID,
+		ForkAfterSequence: durableConversation.LatestSequence, CreatedAt: s.now(),
+		Strategy:        domain.ConversationBranchStrategyNative,
+		ProviderScopeID: activeBranch.ProviderScopeID, ProviderIDsScoped: activeBranch.ProviderIDsScoped,
+		Purpose: domain.ConversationBranchPurposeSide, Label: strings.TrimSpace(label),
+	}
+	generation := s.newID()
+	conversation := source.conversation
+	conversation.ActiveBranchID = branch.ID
+	conversation.Settings.ApprovalMode = domain.PermissionModeReadOnly
+	replacement := newController(id, source.owner(), conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+	if err := s.store.CreateAndActivateConversationBranch(operationCtx, id, branch, generation, s.now()); err != nil {
+		_ = cleanupUnpublishedConversation(provider, true)
+		return restore(fmt.Errorf("activate side chat: %w", err))
+	}
+	if err := s.installBranchController(operationCtx, id, source, replacement, activeBranch.ID); err != nil {
+		return domain.ConversationBranch{}, err
+	}
+	abortSource = false
+	branch.Active = true
+	return branch, nil
+}
 
 // providerRefusal is satisfied by driver errors that mean "the provider said no"
 // rather than "the call did not get through".
@@ -903,10 +1021,10 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 		SessionID: cfg.SessionID, ProviderConversationID: branch.ProviderConversationID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Effort: cfg.Effort,
-		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		Permissions: branchPermissions(branch, cfg.Permissions), SystemPrompt: branchSystemPrompt(branch, cfg.SystemPrompt),
 		ProviderScopeID:       branch.ProviderScopeID,
 		ProviderIDsScoped:     branch.ProviderIDsScoped,
-		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: branchMCPServers(branch, cfg.MCPServers),
 	})
 	if err != nil {
 		resumeErr := fmt.Errorf("resume conversation branch %s: %w", branchID, err)
@@ -921,6 +1039,9 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	generation := s.newID()
 	conversation := source.conversation
 	conversation.ActiveBranchID = branch.ID
+	if domain.NormalizeConversationBranchPurpose(branch.Purpose) == domain.ConversationBranchPurposeSide {
+		conversation.Settings.ApprovalMode = domain.PermissionModeReadOnly
+	}
 	replacement := newController(id, source.owner(), conversation, generation, source.harness, provider, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	if err := s.store.ActivateConversationBranch(operationCtx, id, conversation.ID, branch.ID,
 		branch.ProviderConversationID, generation, s.now()); err != nil {
@@ -939,6 +1060,27 @@ func (s *Service) activateBranchLocked(ctx context.Context, id domain.SessionID,
 	}
 	abortSource = false
 	return branch.ID, nil
+}
+
+func branchPermissions(branch domain.ConversationBranch, fallback domain.PermissionMode) domain.PermissionMode {
+	if domain.NormalizeConversationBranchPurpose(branch.Purpose) == domain.ConversationBranchPurposeSide {
+		return domain.PermissionModeReadOnly
+	}
+	return fallback
+}
+
+func branchSystemPrompt(branch domain.ConversationBranch, base string) string {
+	if domain.NormalizeConversationBranchPurpose(branch.Purpose) != domain.ConversationBranchPurposeSide {
+		return base
+	}
+	return strings.TrimSpace(base + "\n\n" + sideChatSystemPrompt)
+}
+
+func branchMCPServers(branch domain.ConversationBranch, servers []ports.ChatMCPServerConfig) []ports.ChatMCPServerConfig {
+	if domain.NormalizeConversationBranchPurpose(branch.Purpose) == domain.ConversationBranchPurposeSide {
+		return nil
+	}
+	return servers
 }
 
 func (s *Service) branchLaunchConfig(
@@ -1008,10 +1150,10 @@ func (s *Service) restoreClosedSourceController(
 		SessionID: cfg.SessionID, ProviderConversationID: providerConversationID,
 		DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: launchEnv,
 		Model: cfg.Model, Effort: cfg.Effort,
-		Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
+		Permissions: branchPermissions(branch, cfg.Permissions), SystemPrompt: branchSystemPrompt(branch, cfg.SystemPrompt),
 		ProviderScopeID:       branch.ProviderScopeID,
 		ProviderIDsScoped:     branch.ProviderIDsScoped,
-		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: cfg.MCPServers,
+		AdditionalDirectories: cfg.AdditionalDirectories, MCPServers: branchMCPServers(branch, cfg.MCPServers),
 	})
 	if err != nil {
 		return fmt.Errorf("resume source after failed native edit: %w", err)

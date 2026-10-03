@@ -141,7 +141,7 @@ export const MermaidBlock = memo(function MermaidBlock({
 
 	return (
 		<div className="chat-code group/code my-2.5 overflow-hidden rounded-lg border border-border bg-surface">
-			<div className="flex items-center gap-2 border-b border-border bg-raised/40 px-2.5 py-1">
+			<div data-chat-selection-exclude="" className="flex items-center gap-2 border-b border-border bg-raised/40 px-2.5 py-1">
 				<span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
 					mermaid
 				</span>
@@ -194,6 +194,7 @@ export const MermaidBlock = memo(function MermaidBlock({
 					    HTML sink in the chat surface, and link clicks inside
 					    it are intercepted, never navigated. */}
 					<div
+						data-chat-selection-exclude=""
 						data-testid="mermaid-diagram"
 						role="img"
 						aria-label="Mermaid diagram"

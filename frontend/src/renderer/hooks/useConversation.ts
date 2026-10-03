@@ -59,11 +59,13 @@ type WireMessage = components["schemas"]["ConversationMessageResponse"];
 type WireActivity = components["schemas"]["ConversationActivityResponse"];
 type WireImageContent = components["schemas"]["ConversationImageContentRequest"];
 type WireResourceContent = components["schemas"]["ConversationResourceContentRequest"];
+type WireExcerptReference = components["schemas"]["ConversationExcerptReferenceRequest"];
 
 export interface ConversationSendInput {
 	text: string;
 	attachments?: WireImageContent[];
 	resources?: WireResourceContent[];
+	excerpts?: WireExcerptReference[];
 	/** Caller-owned durable idempotency key used for crash-safe retries. */
 	clientMessageId?: string;
 }
@@ -122,6 +124,7 @@ type ConversationDispatchTrackingBySession = Record<string, ConversationDispatch
 export type ConversationLocalEcho = {
 	clientMessageId: string;
 	text: string;
+	excerpts?: WireExcerptReference[];
 	createdAt: string;
 	/** Filled after the daemon accepts the send, then used for exact reconciliation. */
 	turnId?: string;
@@ -470,6 +473,7 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			addConversationLocalEcho(queryClient, stateKey(variables.targetSessionId), {
 				clientMessageId: variables.clientMessageId,
 				text: variables.input.text,
+				excerpts: variables.input.excerpts,
 				createdAt: new Date().toISOString(),
 			});
 			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
@@ -943,6 +947,22 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		},
 		onSettled: invalidate,
 	});
+	const createSideChat = useMutation({
+		mutationFn: async (label?: string) => {
+			if (!sessionId) throw new Error("No conversation session is selected.");
+			if (hostId) throw new Error("Side chats are currently available only for local AO sessions.");
+			const { data, error } = await clientForSessionHost(hostId).POST(
+				"/api/v1/sessions/{sessionId}/conversation/side-chats",
+				{
+					params: { path: { sessionId } },
+					body: { label, idempotencyKey: crypto.randomUUID() },
+				},
+			);
+			if (error) throw error;
+			return data;
+		},
+		onSettled: invalidate,
+	});
 	const acknowledgeAcceptedTurn = useCallback(
 		(turnId: string) => {
 			if (!sessionId) return;
@@ -1080,6 +1100,9 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 		activateBranch: (branchId: string) => activateBranch.mutateAsync(branchId),
 		activateBranchPending: activateBranch.isPending,
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
+		createSideChat: (label?: string) => createSideChat.mutateAsync(label),
+		createSideChatPending: createSideChat.isPending,
+		createSideChatError: createSideChat.error ? apiErrorMessage(createSideChat.error) : undefined,
 		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
 			try {
 				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
@@ -1131,7 +1154,8 @@ export function useConversationCommands(sessionId: string | undefined, hostId?: 
 			(send.isPending && sendTargetsCurrentSession) ||
 			resolve.isPending ||
 			resolveInput.isPending ||
-			(interrupt.isPending && interruptTargetsCurrentSession),
+			(interrupt.isPending && interruptTargetsCurrentSession) ||
+			createSideChat.isPending,
 		error:
 			(sendTargetsCurrentSession && send.error) ||
 			resolve.error ||
@@ -1547,6 +1571,14 @@ export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 			previousBranchId: point.previousBranchId || undefined,
 			nextBranchId: point.nextBranchId || undefined,
 		})),
+		sideChats: (wire.sideChats ?? []).map((sideChat) => ({
+			id: sideChat.id,
+			parentBranchId: sideChat.parentBranchId,
+			label: sideChat.label,
+			forkAfterSequence: sideChat.forkAfterSequence,
+			active: sideChat.active,
+			createdAt: sideChat.createdAt,
+		})),
 		turns: (wire.turns ?? []).map((turn) => ({
 			id: turn.id,
 			state: turn.state as TurnState,
@@ -1673,6 +1705,12 @@ function toMessage(wire: WireMessage): ConversationMessage {
 			mimeType: item.mimeType || undefined,
 			uri: item.uri || undefined,
 			name: item.name || undefined,
+			excerpt: item.excerpt ? {
+				selection: item.excerpt.selection,
+				sourceRole: item.excerpt.sourceRole,
+				sourceText: item.excerpt.sourceText,
+				messages: item.excerpt.messages,
+			} : undefined,
 		})),
 		editAvailable: wire.editAvailable ?? undefined,
 		streaming: wire.streaming,

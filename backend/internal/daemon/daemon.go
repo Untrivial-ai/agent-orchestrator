@@ -451,6 +451,7 @@ func Run() error {
 		Activity: lcStack.LCM,
 		Log:      log,
 		NewID:    uuid.NewString,
+		AppRunID: cfg.AppRunID,
 		OnAccountChanged: func(sessionID domain.SessionID, generation string, harness domain.AgentHarness) {
 			if harness != domain.HarnessCodex || agentSvc == nil || agentSvc.CodexAccountSwitchInProgress() {
 				return
@@ -484,6 +485,9 @@ func Run() error {
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
+	if err := chatSvc.InitializeSideChats(ctx); err != nil {
+		log.Warn("side chat launch initialization failed", "error", err)
+	}
 	modelDiscoverer := modelcatalog.Discoverer{
 		CodexModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error) {
 			return codexModelDriver.DiscoverModels(listCtx, request.WorkingDir, request.Env)
