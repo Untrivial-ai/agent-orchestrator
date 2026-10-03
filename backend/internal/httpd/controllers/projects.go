@@ -200,7 +200,7 @@ func (c *ProjectsController) remove(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "DELETE", "/api/v1/projects/{id}")
 		return
 	}
-	result, err := c.Mgr.Remove(r.Context(), projectID(r))
+	result, err := c.Mgr.Remove(r.Context(), projectID(r), r.URL.Query().Get("force") == "true")
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return

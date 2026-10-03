@@ -9077,7 +9077,10 @@ export interface operations {
     };
     removeProject: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, force-remove protected AO-managed session workspaces after an explicit user confirmation. Tracked changes and new non-ignored files are saved under refs/ao/preserved/<session-id>; Git-ignored files are not saved and may be deleted. Never applies to the source repository. */
+                force?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Project identifier (registry key). */
@@ -9107,6 +9110,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

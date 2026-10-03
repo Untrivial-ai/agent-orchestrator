@@ -22,6 +22,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/reqid"
+	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 // Manager is the controller-facing contract for the /api/v1/projects surface.
@@ -56,13 +58,14 @@ type Manager interface {
 
 	// Remove unregisters a project, stopping its sessions and reclaiming
 	// managed workspaces.
-	Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error)
+	Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error)
 }
 
 // SessionTeardowner is the narrow session-service surface project removal
 // needs: stop live project sessions and reclaim managed terminal workspaces.
 type SessionTeardowner interface {
-	TeardownProject(ctx context.Context, project domain.ProjectID) error
+	TeardownProject(ctx context.Context, project domain.ProjectID) (sessionsvc.ProjectTeardownOutcome, error)
+	ForceTeardownProject(ctx context.Context, project domain.ProjectID) error
 }
 
 // Service implements project registration and lookup use-cases for controllers.
@@ -821,7 +824,7 @@ func resolveDefaultBranch(ctx context.Context, path string) string {
 // Remove stops live project sessions, reclaims safe managed workspaces, then
 // archives the project registration. The original repository path and durable
 // session/history rows are preserved.
-func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error) {
+func (m *Service) Remove(ctx context.Context, id domain.ProjectID, force bool) (RemoveResult, error) {
 	if err := validateProjectID(id); err != nil {
 		return RemoveResult{}, err
 	}
@@ -833,8 +836,20 @@ func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult
 		return RemoveResult{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	if m.sessions != nil {
-		if err := m.sessions.TeardownProject(ctx, id); err != nil {
+		outcome, err := m.sessions.TeardownProject(ctx, id)
+		if err != nil {
 			return RemoveResult{}, err
+		}
+		if outcome.Blocked {
+			if !force {
+				return RemoveResult{}, apierr.Conflict("PROJECT_REMOVE_BLOCKED",
+					"AO could not safely remove one or more session workspaces. Review the blockers and recovery steps before retrying.",
+					projectRemoveBlockedDetails(outcome))
+			}
+			if err := m.sessions.ForceTeardownProject(ctx, id); err != nil {
+				m.logger.Error("project: forced workspace teardown failed", "projectID", id, "error", err)
+				return RemoveResult{}, projectRemoveForceBlocked(err, outcome)
+			}
 		}
 	}
 	ok, err = m.store.ArchiveProject(ctx, string(id), time.Now())
@@ -845,6 +860,58 @@ func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult
 		return RemoveResult{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
 	}
 	return RemoveResult{ProjectID: id, RemovedStorageDir: false}, nil
+}
+
+// projectRemoveBlockedDetails builds the 409 envelope details for
+// PROJECT_REMOVE_BLOCKED: the structured blockers that caused the refusal,
+// plus recovery hints the confirmation UI can surface. StashUncommitted
+// captures tracked and non-ignored files, but never Git-ignored files.
+func projectRemoveBlockedDetails(outcome sessionsvc.ProjectTeardownOutcome) map[string]any {
+	blockers := outcome.Blockers
+	if blockers == nil {
+		blockers = []sessionsvc.ProjectTeardownBlocker{}
+	}
+	forceSupported := true
+	for _, blocker := range blockers {
+		if blocker.Class == "workspace_registry_drift" {
+			forceSupported = false
+		}
+	}
+	recovery := "Retry after reviewing the blockers. Force removal saves tracked changes and new files not ignored by Git under refs/ao/preserved/<session-id>; Git-ignored files in removed AO workspaces are deleted. The original project folder is never deleted."
+	if !forceSupported {
+		recovery = "A saved workspace no longer matches the project's registered repositories. Restore that repository registration or move the retained workspace to safety before retrying."
+	}
+	return map[string]any{
+		"blockers":                 blockers,
+		"forceSupported":           forceSupported,
+		"preservesUncommittedWork": false,
+		"ignoredFilesMayBeDeleted": true,
+		"recovery":                 recovery,
+	}
+}
+
+func projectRemoveForceBlocked(err error, outcome sessionsvc.ProjectTeardownOutcome) error {
+	details := projectRemoveBlockedDetails(outcome)
+	details["forceSupported"] = false
+	blockers := append([]sessionsvc.ProjectTeardownBlocker(nil), outcome.Blockers...)
+	message := "AO could not confirm that every session stopped and its workspace was preserved. The project remains registered; close running sessions and retry."
+	recovery := "Close any remaining session processes or terminals, check the retained workspace, then retry project removal. The original project folder has not been deleted."
+	var drift *sessionmanager.WorkspaceRegistryDriftError
+	if errors.As(err, &drift) {
+		message = "A saved workspace no longer matches a registered project repository. AO left it intact and kept the project registered."
+		recovery = "Restore the missing repository registration or move the retained workspace to safety before retrying project removal."
+		blockers = append(blockers, sessionsvc.ProjectTeardownBlocker{
+			SessionID: drift.SessionID, Class: "workspace_registry_drift",
+			Reason:        "saved workspace no longer matches a registered project repository",
+			WorkspacePath: drift.WorkspacePath,
+		})
+		details["repoName"] = drift.RepoName
+	} else {
+		blockers = append(blockers, sessionsvc.ProjectTeardownBlocker{Class: "force_teardown_failed", Reason: "session or workspace teardown could not be confirmed"})
+	}
+	details["blockers"] = blockers
+	details["recovery"] = recovery
+	return apierr.Conflict("PROJECT_REMOVE_FORCE_BLOCKED", message, details)
 }
 
 func (m *Service) suggestID(ctx context.Context, base domain.ProjectID) domain.ProjectID {

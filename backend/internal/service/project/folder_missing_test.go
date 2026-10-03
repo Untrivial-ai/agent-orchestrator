@@ -212,7 +212,7 @@ func TestFolderMissing_RemoveAfterExternalDeletion(t *testing.T) {
 	}
 
 	// Remove must succeed even though the folder is gone.
-	rm, err := m.Remove(ctx, "ao")
+	rm, err := m.Remove(ctx, "ao", false)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}

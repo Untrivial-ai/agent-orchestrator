@@ -261,7 +261,7 @@ type CloneProjectHandler = (input: {
 	signal?: AbortSignal;
 }) => Promise<void>;
 type InitializeProjectHandler = (path: string) => Promise<void>;
-type RemoveProjectHandler = (projectId: string) => Promise<void>;
+type RemoveProjectHandler = (projectId: string, force?: boolean) => Promise<void>;
 type ImportValidationResult = components["schemas"]["ImportValidationResult"];
 type RepoGitStatus = components["schemas"]["RepoGitStatus"];
 
@@ -765,6 +765,94 @@ describe("Sidebar", () => {
 		expect(await screen.findByText("Failed to remove project")).toBeInTheDocument();
 		expect(screen.queryByRole("dialog", { name: "Remove project" })).not.toBeInTheDocument();
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
+	it("opens the force confirmation with blockers and retries onRemoveProject(id, true)", async () => {
+		const user = userEvent.setup();
+		const blocked = new Error("AO could not safely remove one or more session workspaces.") as Error & {
+			code?: string;
+			details?: Record<string, unknown>;
+		};
+		blocked.code = "PROJECT_REMOVE_BLOCKED";
+		blocked.details = {
+			blockers: [
+				{ class: "workspace_dirty", reason: "workspace has uncommitted changes" },
+				{ class: "session_kill_failed", reason: "session teardown failed; the process may still be running" },
+			],
+		};
+		const onRemoveProject = vi.fn().mockRejectedValueOnce(blocked).mockResolvedValueOnce(undefined) as RemoveProjectHandler;
+		renderSidebar({ onRemoveProject });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+		await screen.findByRole("dialog", { name: "Remove project" });
+		await user.click(screen.getByRole("button", { name: "Remove" }));
+
+		const forceDialog = await screen.findByRole("dialog", { name: "Delete protected workspace?" });
+		expect(forceDialog).toBeInTheDocument();
+		expect(within(forceDialog).getByText(/Files Git ignores.*not saved/i)).toBeInTheDocument();
+		expect(within(forceDialog).getByTestId("force-remove-blockers")).toHaveTextContent(
+			"workspace has uncommitted changes",
+		);
+		expect(within(forceDialog).getByTestId("force-remove-blockers")).toHaveTextContent(
+			"session teardown failed; the process may still be running",
+		);
+		expect(onRemoveProject).toHaveBeenCalledTimes(1);
+		expect(onRemoveProject).toHaveBeenCalledWith("proj-1");
+
+		await user.click(within(forceDialog).getByRole("button", { name: "Delete project and workspace" }));
+		await waitFor(() => expect(onRemoveProject).toHaveBeenCalledTimes(2));
+		expect(onRemoveProject).toHaveBeenNthCalledWith(2, "proj-1", true);
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog", { name: "Delete protected workspace?" })).not.toBeInTheDocument(),
+		);
+	});
+
+	it("shows recovery guidance without a force option for registry drift", async () => {
+		const user = userEvent.setup();
+		const blocked = new Error("Workspace cannot be safely removed") as Error & {
+			code?: string;
+			details?: Record<string, unknown>;
+		};
+		blocked.code = "PROJECT_REMOVE_BLOCKED";
+		blocked.details = {
+			forceSupported: false,
+			recovery: "Restore the missing repository registration before retrying.",
+			blockers: [{ class: "workspace_registry_drift", reason: "saved workspace no longer matches a registered project repository" }],
+		};
+		const onRemoveProject = vi.fn().mockRejectedValueOnce(blocked) as RemoveProjectHandler;
+		renderSidebar({ onRemoveProject });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+		await user.click(screen.getByRole("button", { name: "Remove" }));
+
+		expect(await screen.findByText("Restore the missing repository registration before retrying.")).toBeInTheDocument();
+		expect(screen.queryByRole("dialog", { name: "Delete protected workspace?" })).not.toBeInTheDocument();
+		expect(onRemoveProject).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows recovery guidance after confirmed force removal is blocked", async () => {
+		const user = userEvent.setup();
+		const blocked = new Error("Workspace cannot be safely removed") as Error & { code?: string };
+		blocked.code = "PROJECT_REMOVE_BLOCKED";
+		const forceBlocked = new Error("Forced removal could not finish") as Error & {
+			code?: string;
+			details?: Record<string, unknown>;
+		};
+		forceBlocked.code = "PROJECT_REMOVE_FORCE_BLOCKED";
+		forceBlocked.details = { recovery: "Move the retained child workspace to safety before retrying." };
+		const onRemoveProject = vi.fn().mockRejectedValueOnce(blocked).mockRejectedValueOnce(forceBlocked) as RemoveProjectHandler;
+		renderSidebar({ onRemoveProject });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+		await user.click(screen.getByRole("button", { name: "Remove" }));
+		const forceDialog = await screen.findByRole("dialog", { name: "Delete protected workspace?" });
+		await user.click(within(forceDialog).getByRole("button", { name: "Delete project and workspace" }));
+
+		expect(await screen.findByText("Move the retained child workspace to safety before retrying.")).toBeInTheDocument();
+		expect(onRemoveProject).toHaveBeenNthCalledWith(2, "proj-1", true);
 	});
 
 	it("requests a new task for the project from the kebab menu", async () => {

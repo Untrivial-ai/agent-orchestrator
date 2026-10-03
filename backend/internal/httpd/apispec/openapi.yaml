@@ -2807,6 +2807,18 @@ paths:
         schema:
           description: Project identifier (registry key).
           type: string
+      - description: When true, force-remove protected AO-managed session workspaces
+          after an explicit user confirmation. Tracked changes and new non-ignored
+          files are saved under refs/ao/preserved/<session-id>; Git-ignored files
+          are not saved and may be deleted. Never applies to the source repository.
+        in: query
+        name: force
+        schema:
+          description: When true, force-remove protected AO-managed session workspaces
+            after an explicit user confirmation. Tracked changes and new non-ignored
+            files are saved under refs/ao/preserved/<session-id>; Git-ignored files
+            are not saved and may be deleted. Never applies to the source repository.
+          type: boolean
       responses:
         "200":
           content:
@@ -2826,6 +2838,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
         "500":
           content:
             application/json:

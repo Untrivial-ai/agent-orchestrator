@@ -240,6 +240,22 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	}
 	return out, nil
 }
+
+type orderedSessionStore struct {
+	*fakeStore
+	ids []domain.SessionID
+}
+
+func (s *orderedSessionStore) ListSessions(_ context.Context, project domain.ProjectID) ([]domain.SessionRecord, error) {
+	var out []domain.SessionRecord
+	for _, id := range s.ids {
+		if rec := s.sessions[id]; rec.ProjectID == project {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
 	if f.listAllErr != nil {
 		return nil, f.listAllErr
@@ -4560,9 +4576,282 @@ func TestCleanup_SkipsWorkspaceReleaseWhenShellTerminalsWontClose(t *testing.T) 
 	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
 		t.Fatalf("skipped = %+v, want mer-1 reported", res.Skipped)
 	}
+	if res.Skipped[0].Class != "shell_terminal_open" {
+		t.Fatalf("class = %q, want shell_terminal_open", res.Skipped[0].Class)
+	}
 	if ws.destroyed != 0 {
 		t.Fatal("workspace must not be destroyed while a scoped shell is still alive")
 	}
+}
+
+// ForceTeardownProject must prove the process is dead and stash uncommitted
+// work before ForceDestroy runs — never delete a workspace under a live
+// process, and never discard dirty work without a stash ref first.
+func TestForceTeardownProject_StashesBeforeForceDestroyAndProvesProcessDead(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sharedLog = &[]string{}
+	ws.sharedLog = st.sharedLog
+	st.sessions["mer-1"] = mkLive("mer-1")
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+
+	calls := *st.sharedLog
+	var stash, force, cleared bool
+	for _, call := range calls {
+		switch {
+		case strings.HasPrefix(call, "StashUncommitted:"):
+			if force {
+				t.Fatalf("stash after ForceDestroy in order %v", calls)
+			}
+			stash = true
+		case strings.HasPrefix(call, "ForceDestroy:"):
+			if !stash {
+				t.Fatalf("ForceDestroy before StashUncommitted in order %v", calls)
+			}
+			force = true
+		case strings.HasPrefix(call, "DeleteSessionWorktrees:"):
+			if !force {
+				t.Fatalf("DeleteSessionWorktrees before ForceDestroy in order %v", calls)
+			}
+			cleared = true
+		}
+	}
+	if rt.destroyed != 1 {
+		t.Fatalf("runtime destroys = %d, want 1 (process must be proven dead first)", rt.destroyed)
+	}
+	if !stash || !force || !cleared {
+		t.Fatalf("stash=%v force=%v cleared=%v calls=%v, want stash then force then clear markers", stash, force, cleared, calls)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("row must be marked terminated after confirmed teardown")
+	}
+	if marks := m.lcm.(*fakeLCM).terminated["mer-1"]; marks != 1 {
+		t.Fatalf("MarkTerminated calls = %d, want 1", marks)
+	}
+}
+
+func TestForceTeardownProject_DoesNotDeleteSharedPathBeforeSuccessorStops(t *testing.T) {
+	m, st, rt, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/shared"})
+	successor := mkLive("mer-2")
+	successor.Metadata.WorkspacePath = "/ws/shared"
+	st.sessions[successor.ID] = successor
+	m.store = &orderedSessionStore{fakeStore: st, ids: []domain.SessionID{"mer-1", "mer-2"}}
+	rt.destroyErr = errors.New("successor still running")
+	if _, err := m.Kill(ctx, successor.ID); err == nil {
+		t.Fatal("successor Kill must fail while its process is still running")
+	}
+	if result, err := m.Cleanup(ctx, "mer"); err != nil || len(result.Skipped) != 1 || result.Skipped[0].Class != "workspace_in_use" {
+		t.Fatalf("normal Cleanup = %+v, %v; want shared path protected", result, err)
+	}
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err == nil || !strings.Contains(err.Error(), "successor still running") {
+		t.Fatalf("ForceTeardownProject error = %v, want successor stop failure", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("shared workspace deleted while successor is live: %v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_StashesDirtyChildBeforeDestroyingRoot(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repos/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	st.sessions["mer-1"] = mkLive("mer-1")
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", WorktreePath: "/ws/mer-1/api"},
+	}
+	ws.stashRef = "refs/ao/preserved/mer-1"
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+	childStashed, rootDestroyed, childDestroyed := false, false, false
+	for _, call := range ws.calls {
+		switch call {
+		case "StashUncommitted:api":
+			if rootDestroyed {
+				t.Fatalf("dirty child stash after root destruction: %v", ws.calls)
+			}
+			childStashed = true
+		case "ForceDestroy:api":
+			if !childStashed {
+				t.Fatalf("dirty child destroyed before stash: %v", ws.calls)
+			}
+			childDestroyed = true
+		case "ForceDestroy:__root__":
+			if !childStashed || !childDestroyed {
+				t.Fatalf("root destroyed before child stash and teardown: %v", ws.calls)
+			}
+			rootDestroyed = true
+		}
+	}
+	if !rootDestroyed || !childDestroyed {
+		t.Fatalf("missing nested teardown calls: %v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_RegistryDriftRetainsWorkspace(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repos/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "removed-child", WorktreePath: "/ws/mer-1/removed-child"},
+	}
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	var drift *WorkspaceRegistryDriftError
+	if !errors.As(err, &drift) || drift.SessionID != "mer-1" || drift.RepoName != "removed-child" || drift.WorkspacePath != "/ws/mer-1/removed-child" {
+		t.Fatalf("ForceTeardownProject error = %v, want structured child registry drift", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("drift must not delete any nested worktree: %v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_OnlyOrphanedChildRowRetainsWorkspace(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repos/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID: "mer-1", RepoName: "removed-child", WorktreePath: "/ws/mer-1/removed-child",
+	}}
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	var drift *WorkspaceRegistryDriftError
+	if !errors.As(err, &drift) || drift.RepoName != "removed-child" {
+		t.Fatalf("ForceTeardownProject error = %v, want orphaned-child registry drift", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("orphaned child must not be removed through root fallback: %v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_StaleChildRetainsParentWorkspace(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repos/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: "/ws/mer-1"},
+		{SessionID: "mer-1", RepoName: "api", WorktreePath: "/ws/mer-1/api"},
+	}
+	ws.stashHook = func() {
+		if ws.stashCalls == 1 {
+			ws.stashErr = ports.ErrWorkspaceStale
+		}
+	}
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("root must be retained when nested child cannot be stashed: %v", ws.calls)
+	}
+}
+
+// A runtime that cannot be destroyed means the process may still be alive;
+// ForceTeardownProject must refuse to touch the worktree in that case.
+func TestForceTeardownProject_RuntimeDestroyFailureStopsBeforeForceDestroy(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	rt.destroyErr = errors.New("runtime still running")
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	if err == nil || !strings.Contains(err.Error(), "runtime") {
+		t.Fatalf("err = %v, want runtime destroy failure", err)
+	}
+	if ws.forceDestroyErr != nil && ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("ForceDestroy must not run when runtime destroy fails; calls=%v", ws.calls)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("ForceDestroy ran despite runtime failure: %v", ws.calls)
+		}
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("row must not be marked terminated when the process cannot be proven dead")
+	}
+}
+
+func TestForceTeardownProject_TerminatedRowStillRequiresRuntimeShutdown(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec := mkLive("mer-1")
+	rec.IsTerminated = true
+	st.sessions[rec.ID] = rec
+	rt.destroyErr = errors.New("runtime still running")
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err == nil || !strings.Contains(err.Error(), "runtime still running") {
+		t.Fatalf("ForceTeardownProject error = %v, want runtime destroy failure", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("terminated row does not prove runtime stopped; calls=%v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_StaleWorkspaceSkipsDestructiveRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.stashErr = ports.ErrWorkspaceStale
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("unregistered/replaced workspace must not be deleted without preservation: %v", ws.calls)
+	}
+}
+
+// An open shell terminal must gate force teardown the same way Kill/Cleanup
+// gate normal teardown: deleting the directory under a live shell is unsafe.
+func TestForceTeardownProject_ShellTerminalFailureStopsBeforeForceDestroy(t *testing.T) {
+	m, st, _, ws := newManager()
+	m.SetShellTerminalCloser(&fakeShellTerminalCloser{err: errors.New("shellterm-1: still alive")})
+	st.sessions["mer-1"] = mkLive("mer-1")
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	if err == nil || !strings.Contains(err.Error(), "shell terminal") {
+		t.Fatalf("err = %v, want shell terminal failure", err)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("ForceDestroy ran despite open shell: %v", ws.calls)
+		}
+	}
+}
+
+// A missing source repository must not keep a stale project registered:
+// force cleanup logs and continues so ArchiveProject can still run.
+func TestForceTeardownProject_ToleratesMissingRepository(t *testing.T) {
+	m, st, rt, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.forceDestroyErr = fmt.Errorf("gitworktree: repository is no longer on disk: %w", ports.ErrWorkspaceRepoUnavailable)
+	ws.stashErr = ports.ErrWorkspaceRepoUnavailable
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject with missing repo = %v, want nil so project can unregister", err)
+	}
+	if rt.destroyed != 0 {
+		t.Fatalf("runtime destroys = %d for already-terminated session, want 0", rt.destroyed)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("already-terminated row should stay terminated")
+	}
+}
+
+// Stub so the workspace fake can expose whether ForceDestroy ran without
+// relying on sharedLog in tests that do not wire one.
+func (w *fakeWorkspace) callsHasPrefix(prefix string) bool {
+	for _, call := range w.calls {
+		if strings.HasPrefix(call, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCleanup_ReportsSkippedWorkspaces: a refused teardown must be visible in
@@ -4585,6 +4874,9 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	if res.Skipped[0].Reason != "workspace has uncommitted changes" {
 		t.Fatalf("reason = %q", res.Skipped[0].Reason)
 	}
+	if res.Skipped[0].Class != "workspace_dirty" {
+		t.Fatalf("class = %q, want workspace_dirty", res.Skipped[0].Class)
+	}
 
 	// A non-dirty teardown failure is reported too — but with a fixed public
 	// reason: the raw cause carries internal filesystem paths and belongs in
@@ -4596,6 +4888,9 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	}
 	if len(res.Skipped) != 1 || res.Skipped[0].Reason != "workspace teardown failed" {
 		t.Fatalf("skipped = %v, want fixed teardown-failed reason", res.Skipped)
+	}
+	if res.Skipped[0].Class != "workspace_teardown_failed" {
+		t.Fatalf("class = %q, want workspace_teardown_failed", res.Skipped[0].Class)
 	}
 	if strings.Contains(res.Skipped[0].Reason, "disk on fire") {
 		t.Fatalf("raw internal error leaked into public reason: %q", res.Skipped[0].Reason)
