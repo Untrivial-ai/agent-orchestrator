@@ -1,7 +1,11 @@
 package acp
 
 import (
+	"context"
+	"reflect"
+	"sort"
 	"testing"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -136,3 +140,61 @@ func TestApplyAcceptedConfigOptionIgnoresUnknownID(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// The provider binding owns how its model list is presented, so an authoritative
+// catalog replacement must go through the same ordering as session setup —
+// otherwise the picker reverts to the agent's order on the first model switch.
+func TestReplaceConfigOptionsAppliesChoiceOrder(t *testing.T) {
+	c := &conversation{capabilities: make(ports.ChatCapabilities)}
+	c.orderChoices = func(optionID string, choices []ports.ChatConfigOptionChoice) {
+		if optionID != "model" {
+			return
+		}
+		sort.Slice(choices, func(i, j int) bool { return choices[i].Value < choices[j].Value })
+	}
+
+	c.replaceConfigOptions([]acpsdk.SessionConfigOption{
+		selectOption("model", "Model", "sonnet", "sonnet", "haiku", "opus"),
+	})
+
+	if len(c.configOptions) != 1 {
+		t.Fatalf("got %d options, want 1", len(c.configOptions))
+	}
+	got := make([]string, 0, 3)
+	for _, choice := range c.configOptions[0].Choices {
+		got = append(got, choice.Value)
+	}
+	if !reflect.DeepEqual(got, []string{"haiku", "opus", "sonnet"}) {
+		t.Fatalf("choices = %v, want the binding's order", got)
+	}
+}
+
+// A provider ordering hook is an extension point and may inspect conversation
+// state. Session setup must not invoke it while holding the conversation lock.
+func TestStartInvokesChoiceOrderOutsideConversationLock(t *testing.T) {
+	c := &conversation{
+		capabilities: make(ports.ChatCapabilities),
+		events:       make(chan ports.ChatEvent, 1),
+	}
+	c.orderChoices = func(string, []ports.ChatConfigOptionChoice) {
+		if _, err := c.ListConfigOptions(context.Background()); err != nil {
+			t.Errorf("ListConfigOptions: %v", err)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		c.start(
+			"session-1", make(ports.ChatCapabilities), nil, nil, nil,
+			ports.PermissionModeDefault, nil,
+			[]acpsdk.SessionConfigOption{selectOption("model", "Model", "sonnet", "sonnet", "opus")},
+			nil, nil,
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("start deadlocked while the ordering hook inspected conversation state")
+	}
+}

@@ -137,7 +137,7 @@ func (c *conversation) SetConfigOption(
 // notification and session setup — so an empty list means the session really
 // has no options and is applied as given.
 func (c *conversation) replaceConfigOptions(options []acpsdk.SessionConfigOption) {
-	normalized := normalizeConfigOptions(options)
+	normalized := c.orderedOptions(normalizeConfigOptions(options))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.configOptions = normalized
@@ -465,4 +465,19 @@ func cloneConfigOptions(options []ports.ChatConfigOption) []ports.ChatConfigOpti
 		}
 	}
 	return out
+}
+
+// orderedOptions applies the provider binding's choice ordering to a freshly
+// normalized catalog. ACP agents report their model list in whatever order
+// their own picker uses; the binding decides how AO presents it.
+func (c *conversation) orderedOptions(options []ports.ChatConfigOption) []ports.ChatConfigOption {
+	if c.orderChoices == nil {
+		return options
+	}
+	for i := range options {
+		if len(options[i].Choices) > 0 {
+			c.orderChoices(options[i].ID, options[i].Choices)
+		}
+	}
+	return options
 }

@@ -16,12 +16,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -42,7 +44,13 @@ type claudeLaunchAuthenticator interface {
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
-	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
+	return &checkpointDriver{
+		plugin: plugin, ChatDriver: acpdriver.New(claudeACPConfig(plugin, log, onAuthRejected), log),
+	}
+}
+
+func claudeACPConfig(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) acpdriver.Config {
+	return acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		// A live rejection is the ground truth that outranks any cached
 		// verdict, so drop the cache the moment one arrives. This is also the
@@ -51,6 +59,7 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		// credential, no network call, and no provider knowledge.
 		OnAuthRejected:        claudeAuthRejected(onAuthRejected),
 		PromptResponseFailure: claudePromptResponseFailure,
+		OrderChoices:          claudeOrderChoices,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,
@@ -109,7 +118,7 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		SessionMeta:    claudeSessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
-	}, log)}
+	}
 }
 
 func validateClaudeLaunchAuth(ctx context.Context, plugin claudePlugin, workingDir string, env map[string]string, log *slog.Logger) error {
@@ -415,4 +424,44 @@ func requireNodeVersion(ctx context.Context, node string) error {
 		return fmt.Errorf("claude-agent-acp requires Node %d+; found %q", minimumNodeMajor, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// claudeOrderChoices presents the chat model picker in the same order as the
+// session-launch catalog: newest family first, newest version within it. Claude
+// Code advertises availableModels in its own picker order, which is neither
+// alphabetical nor by recency, so the chat list drifted from the settings list.
+//
+// Only the model option is reordered. Every other option — approval modes,
+// output styles — carries meaning in the order the agent reports it.
+func claudeOrderChoices(optionID string, choices []ports.ChatConfigOptionChoice) {
+	if optionID != "model" || len(choices) < 2 {
+		return
+	}
+	for _, choice := range choices {
+		if choice.Group != "" || choice.GroupName != "" {
+			return
+		}
+	}
+	models := make([]ports.AgentModelInfo, 0, len(choices))
+	for _, choice := range choices {
+		models = append(models, ports.AgentModelInfo{ID: choice.Value, Label: choice.Name})
+	}
+	rank := make(map[string]int, len(models))
+	for index, model := range modelcatalog.SortClaudeNewestFirst(models) {
+		if _, seen := rank[model.ID]; !seen {
+			rank[model.ID] = index
+		}
+	}
+	sort.SliceStable(choices, func(i, j int) bool {
+		// A "Default (recommended)" entry is the agent's own lead choice, not a
+		// model in the family order. Keep it at the top where Claude puts it.
+		if left, right := isClaudeDefaultChoice(choices[i]), isClaudeDefaultChoice(choices[j]); left != right {
+			return left
+		}
+		return rank[choices[i].Value] < rank[choices[j].Value]
+	})
+}
+
+func isClaudeDefaultChoice(choice ports.ChatConfigOptionChoice) bool {
+	return strings.EqualFold(strings.TrimSpace(choice.Value), "default")
 }

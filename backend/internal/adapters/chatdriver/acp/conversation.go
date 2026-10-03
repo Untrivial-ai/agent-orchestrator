@@ -108,6 +108,7 @@ type conversation struct {
 	turnDiffTurnID     string
 	providerFailure    *ports.ChatEvent
 	configOptions      []ports.ChatConfigOption
+	orderChoices       func(string, []ports.ChatConfigOptionChoice)
 	skills             []ports.ChatSkill
 	skillsKnown        bool
 	closed             bool
@@ -177,6 +178,7 @@ func newConversation(
 	providerScopeID string,
 	extensionFor ClientExtensionHandler,
 	extensionAliases map[string]string,
+	orderChoices func(string, []ports.ChatConfigOptionChoice),
 ) *conversation {
 	reverseAliases := make(map[string]string, len(extensionAliases))
 	for method, alias := range extensionAliases {
@@ -197,6 +199,7 @@ func newConversation(
 		events:           make(chan ports.ChatEvent, eventBuffer),
 		extensionFor:     extensionFor,
 		extensionMethods: reverseAliases,
+		orderChoices:     orderChoices,
 	}
 	legacyWire, sdkWriter, sdkReader := newLegacyACPTransport(proc.stdin, proc.stdout)
 	c.legacyWire = legacyWire
@@ -277,6 +280,10 @@ func (c *conversation) start(
 	models *legacySessionModelState,
 	modes *acpsdk.SessionModeState,
 ) {
+	var normalized []ports.ChatConfigOption
+	if len(configOptions) > 0 || models != nil || modes != nil {
+		normalized = c.orderedOptions(normalizeSessionOptions(configOptions, models, modes))
+	}
 	c.mu.Lock()
 	c.sessionID = sessionID
 	c.reportedSessionID = sessionID
@@ -286,7 +293,7 @@ func (c *conversation) start(
 	// the catalog when the response actually carries one, so an early update is
 	// not lost to an empty response snapshot.
 	if len(configOptions) > 0 || models != nil || modes != nil {
-		c.configOptions = normalizeSessionOptions(configOptions, models, modes)
+		c.configOptions = normalized
 	}
 	if len(c.configOptions) > 0 {
 		c.capabilities[ports.ChatCapabilityConfigOptions] = true

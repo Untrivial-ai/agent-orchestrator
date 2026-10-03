@@ -343,7 +343,7 @@ func discoverClaudeCatalog(
 		}
 		normalized := normalize(models)
 		if len(normalized) > 0 {
-			base.Models = applyClaudeConfiguredDefault(normalized, settings.Model)
+			base.Models = SortClaudeNewestFirst(applyClaudeConfiguredDefault(normalized, settings.Model))
 			base.Source = "provider"
 			return base, nil
 		}
@@ -356,9 +356,9 @@ func discoverClaudeCatalog(
 }
 
 func claudeFallbackModels(settings agentcreds.ClaudeSettings) []ports.AgentModelInfo {
-	static := normalize(claudeCodeModels())
+	static := SortClaudeNewestFirst(normalize(claudeCodeModels()))
 	if strings.TrimSpace(settings.Env["ANTHROPIC_BASE_URL"]) == "" {
-		return applyClaudeConfiguredDefault(static, settings.Model)
+		return SortClaudeNewestFirst(applyClaudeConfiguredDefault(static, settings.Model))
 	}
 
 	configured := []string{
@@ -390,6 +390,9 @@ func claudeFallbackModels(settings agentcreds.ClaudeSettings) []ports.AgentModel
 	for _, item := range static {
 		appendModel(item)
 	}
+	// Deliberately unsorted: on a custom gateway the configured env models are
+	// the ones that actually resolve, so they stay ahead of the static aliases
+	// (which are already in family order from above).
 	return applyClaudeConfiguredDefault(models, settings.Model)
 }
 
@@ -807,7 +810,7 @@ func discoveryConfigInputs(ctx context.Context, agentID, workingDir string, env 
 		return "provider=" + provider + ";model=" + selected
 	}
 	if agentID == "claude-code" {
-		return "config=" + claudeCodeDiscoveryFingerprint(ctx, workingDir, env)
+		return "order=" + claudeCatalogOrderFingerprint() + ";config=" + claudeCodeDiscoveryFingerprint(ctx, workingDir, env)
 	}
 	if agentID == "deepseek-harness" {
 		// Not routed through configDiscoveryFingerprint: the profile is what the
@@ -1196,4 +1199,154 @@ func normalize(models []ports.AgentModelInfo) []ports.AgentModelInfo {
 		return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label)
 	})
 	return out
+}
+
+// claudeCatalogOrderAlgorithm invalidates cached Claude catalogs when the
+// sort-key rules change. The family list is hashed into the fingerprint
+// separately, so adding or reordering a family invalidates itself.
+const claudeCatalogOrderAlgorithm = "3"
+
+// claudeFamilyOrder lists the Claude model families newest-first. The picker
+// groups Claude models by family in this order and sorts each group by version,
+// so the latest Fable leads, then the latest Opus, and so on down the tier.
+// Families outside this list sort after the known ones, by label.
+//
+// Family beats version deliberately: versions are per-family counters, so a
+// plain numeric sort would float Fable 5.1 above Opus 5 on a decimal and mix
+// the families together. Refresh this list when a new family ships.
+var claudeFamilyOrder = []string{"fable", "opus", "sonnet", "haiku"}
+
+func claudeCatalogOrderFingerprint() string {
+	input := claudeCatalogOrderAlgorithm + "\x00" + strings.Join(claudeFamilyOrder, "\x00")
+	sum := sha256.Sum256([]byte(input))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+// claudeSnapshotDate matches the trailing YYYYMMDD of a pinned model ID
+// (claude-opus-4-5-20251101). It is a release date, not a version component.
+var claudeSnapshotDate = regexp.MustCompile(`^\d{8}$`)
+
+// claudeIDSeparator splits a model ID into tokens across every spelling the
+// providers use: claude-opus-4-5, us.anthropic.claude-opus-4-5-v1:0 and the
+// Vertex claude-opus-4-5@20251101 all tokenize the same way.
+var claudeIDSeparator = regexp.MustCompile(`[^a-z0-9]+`)
+
+// claudeSortKey is the per-model ordering key: family tier, bare-alias and
+// bracketed-variant tiers, then the version and snapshot read out of the ID.
+type claudeSortKey struct {
+	family   int
+	alias    bool
+	variant  bool
+	version  []int
+	snapshot int
+}
+
+// SortClaudeNewestFirst orders the Claude catalog so the newest model of each
+// family leads its group, with the families themselves in claudeFamilyOrder.
+// The configured default stays pinned at the top, and a bare alias (opus,
+// sonnet) outranks every pinned snapshot in its family because Claude Code
+// resolves the alias to the newest build by definition. The function sorts
+// models in place and returns the same slice.
+func SortClaudeNewestFirst(models []ports.AgentModelInfo) []ports.AgentModelInfo {
+	keys := make(map[string]claudeSortKey, len(models))
+	for _, item := range models {
+		keys[item.ID] = claudeModelSortKey(item)
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		left, right := models[i], models[j]
+		if left.IsDefault != right.IsDefault {
+			return left.IsDefault
+		}
+		a, b := keys[left.ID], keys[right.ID]
+		if a.family != b.family {
+			return a.family < b.family
+		}
+		if a.alias != b.alias {
+			return a.alias
+		}
+		// Bracketed aliases such as opus[1m] are variants, not the rolling bare
+		// alias. Keep pinned snapshots ahead of them so a future snapshot cannot
+		// be permanently hidden below an unversioned variant.
+		if a.variant != b.variant {
+			return !a.variant
+		}
+		if cmp := compareVersions(a.version, b.version); cmp != 0 {
+			return cmp > 0
+		}
+		if a.snapshot != b.snapshot {
+			return a.snapshot > b.snapshot
+		}
+		// Keep ordering deterministic when the provider reports equivalent IDs.
+		return strings.ToLower(left.Label) < strings.ToLower(right.Label)
+	})
+	return models
+}
+
+func claudeModelSortKey(item ports.AgentModelInfo) claudeSortKey {
+	id := strings.ToLower(strings.TrimSpace(item.ID))
+	if rank, ok := claudeFamilyRank(id); ok {
+		return claudeSortKey{family: rank, alias: true}
+	}
+	variantFamily := ""
+	if cut := strings.IndexAny(id, "[("); cut > 0 {
+		variantFamily = strings.TrimSpace(id[:cut])
+	}
+	family, version, snapshot := claudeFamilyVersion(claudeIDSeparator.Split(id, -1))
+	if family < 0 {
+		family, version, snapshot = claudeFamilyVersion(claudeIDSeparator.Split(strings.ToLower(item.Label), -1))
+	}
+	if family < 0 {
+		return claudeSortKey{family: len(claudeFamilyOrder)}
+	}
+	variantRank, variant := claudeFamilyRank(variantFamily)
+	return claudeSortKey{
+		family: family, variant: variant && variantRank == family,
+		version: version, snapshot: snapshot,
+	}
+}
+
+// claudeFamilyVersion finds the first known family token and reads the numeric
+// segments that follow it as the version, stopping at a release date or any
+// non-numeric segment: claude-opus-4-5-20251101 is Opus 4.5, not 4.5.20251101,
+// and us.anthropic.claude-opus-4-5-v1:0 stops before the provider revision.
+func claudeFamilyVersion(tokens []string) (int, []int, int) {
+	for index, token := range tokens {
+		rank, ok := claudeFamilyRank(token)
+		if !ok {
+			continue
+		}
+		version := make([]int, 0, 2)
+		snapshot := 0
+		for _, part := range tokens[index+1:] {
+			if claudeSnapshotDate.MatchString(part) {
+				snapshot, _ = strconv.Atoi(part)
+				break
+			}
+			segment, err := strconv.Atoi(part)
+			if err != nil {
+				break
+			}
+			version = append(version, segment)
+		}
+		if len(version) == 0 {
+			for cursor := index - 1; cursor >= 0; cursor-- {
+				segment, err := strconv.Atoi(tokens[cursor])
+				if err != nil {
+					break
+				}
+				version = append([]int{segment}, version...)
+			}
+		}
+		return rank, version, snapshot
+	}
+	return -1, nil, 0
+}
+
+func claudeFamilyRank(token string) (int, bool) {
+	for index, family := range claudeFamilyOrder {
+		if token == family {
+			return index, true
+		}
+	}
+	return 0, false
 }

@@ -1524,6 +1524,33 @@ describe("TaskComposer", () => {
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5 Codex");
 	});
 
+	it.each(["text", "mode"] as const)("preselects the last-used %s catalog entry", async (selectionMode) => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode,
+						models: [
+							{ id: "recent", label: "Recently Used", lastUsedAt: "2026-10-01T12:00:00Z" },
+							{ id: "provider-default", label: "Provider Default", isDefault: true },
+						],
+						allowCustom: selectionMode !== "mode",
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Recently Used");
+	});
+
 	it("clears a stale model while the newly selected agent catalog resolves", async () => {
 		let resolveClaudeCatalog!: (value: {
 			data: {
