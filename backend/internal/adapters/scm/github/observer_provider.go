@@ -396,7 +396,10 @@ author{ login avatarUrl }
 mergeCommit{ oid }
 commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state contexts(first:CONTEXT_LIMIT){ nodes{
   __typename
-  ... on CheckRun { name status conclusion detailsUrl url databaseId }
+  ... on CheckRun {
+    name status conclusion detailsUrl url databaseId
+    checkSuite{ workflowRun{ runNumber runAttempt workflow{ databaseId } } }
+  }
   ... on StatusContext { context state targetUrl }
 } pageInfo{ hasNextPage endCursor } } } } } }
 `, "CONTEXT_LIMIT", strconv.Itoa(scmBatchCheckContextLimit))
@@ -443,7 +446,10 @@ func buildCheckContextsQuery(ref ports.SCMPRRef, cursor string) string {
 repo: repository(owner:%s,name:%s){ pullRequest(number:%d){
   commits(last:1){ nodes{ commit{ statusCheckRollup{ contexts(first:%d, after:%s){ nodes{
     __typename
-    ... on CheckRun { name status conclusion detailsUrl url databaseId }
+    ... on CheckRun {
+      name status conclusion detailsUrl url databaseId
+      checkSuite{ workflowRun{ runNumber runAttempt workflow{ databaseId } } }
+    }
     ... on StatusContext { context state targetUrl }
   } pageInfo{ hasNextPage endCursor } } } } } }
 } }
@@ -477,9 +483,10 @@ func pageInfoEndCursor(connection map[string]any) string {
 }
 
 func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMObservation {
-	checks := scmChecksFromGraphQL(pr)
+	ciProjection := githubCIProjectionFromGraphQL(pr)
+	checks := ciProjection.scmChecks()
 	failed := failedSCMChecks(checks)
-	ci := string(ciSummaryFromRollupState(pr))
+	ci := string(ciProjection.summaryWithRollupFallback())
 	prURL := firstNonEmpty(str(pr["url"]), ref.URL)
 	review := string(reviewDecisionFromGraphQL(pr))
 	providerMergeable := str(pr["mergeable"])
@@ -542,49 +549,12 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 	return obs
 }
 
-func ciSummaryFromRollupState(pr map[string]any) domain.CIState {
-	roll := statusRollup(pr)
-	if roll == nil {
-		return domain.CIUnknown
-	}
-	return mapRollupState(str(roll["state"]))
-}
-
 func scmContextsPaginated(pr map[string]any) bool {
 	return pageInfoHasMore(statusContexts(pr))
 }
 
 func scmChecksFromGraphQL(pr map[string]any) []ports.SCMCheckObservation {
-	roll := statusRollup(pr)
-	contexts, _ := roll["contexts"].(map[string]any)
-	rawNodes := nodes(contexts["nodes"])
-	out := make([]ports.SCMCheckObservation, 0, len(rawNodes))
-	for _, n := range rawNodes {
-		typ := str(n["__typename"])
-		var ch ports.SCMCheckObservation
-		switch typ {
-		case "CheckRun":
-			ch.Name = str(n["name"])
-			ch.Status = string(checkStatusFromGraphQL(n))
-			ch.Conclusion = strings.ToLower(str(n["conclusion"]))
-			ch.URL = firstNonEmpty(str(n["detailsUrl"]), str(n["url"]))
-			if id := int64(num(n["databaseId"])); id > 0 {
-				ch.ProviderID = strconv.FormatInt(id, 10)
-			}
-		case "StatusContext":
-			ch.Name = str(n["context"])
-			ch.Status = string(checkStatusFromGraphQL(n))
-			ch.Conclusion = strings.ToLower(str(n["state"]))
-			ch.URL = str(n["targetUrl"])
-		default:
-			continue
-		}
-		if ch.Name == "" {
-			continue
-		}
-		out = append(out, ch)
-	}
-	return out
+	return githubCIProjectionFromGraphQL(pr).scmChecks()
 }
 
 func failedSCMChecks(checks []ports.SCMCheckObservation) []ports.SCMCheckObservation {
