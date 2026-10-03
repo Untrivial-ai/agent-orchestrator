@@ -6,6 +6,7 @@ import es from "./es.json";
 import fr from "./fr.json";
 import de from "./de.json";
 import ptBR from "./pt-BR.json";
+import ru from "./ru.json";
 import type { AppLocale } from "./locales";
 
 /** English is the source-of-truth catalog; keys are typed from it. */
@@ -17,6 +18,7 @@ export const esMessages = es;
 export const frMessages = fr;
 export const deMessages = de;
 export const ptBRMessages = ptBR;
+export const ruMessages = ru;
 
 export type MessageKey = {
 	[K in keyof typeof enMessages]: typeof enMessages[K] extends string ? K : never;
@@ -40,6 +42,7 @@ const catalogs: Record<AppLocale, MessageCatalog> = {
 	fr: frMessages as unknown as MessageCatalog,
 	de: deMessages as unknown as MessageCatalog,
 	"pt-BR": ptBRMessages as unknown as MessageCatalog,
+	ru: ruMessages as unknown as MessageCatalog,
 };
 
 export function catalogFor(locale: AppLocale): MessageCatalog {
