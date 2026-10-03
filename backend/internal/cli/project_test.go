@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 )
 
 type projectCapture struct {
@@ -449,5 +453,194 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 	}
 	if strings.Contains(out, "Type the project id") || !strings.Contains(out, "removed project demo") {
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
+	}
+}
+
+func TestProjectRepos_SingleText(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"ws","name":"WS","kind":"workspace","path":"/ws","workspaceRepos":[{"name":"api","relativePath":"api","repo":"https://example.com/api.git","defaultBranch":"dev","gitStatus":"ready"},{"name":"cli","relativePath":"cli","repo":"https://example.com/cli.git","defaultBranch":"main","gitStatus":"ready"}]}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodGet || capture.path != "/api/v1/projects/ws" {
+		t.Fatalf("request = %s %s, want GET /api/v1/projects/ws", capture.method, capture.path)
+	}
+	for _, want := range []string{"NAME", "STATUS", "api", "cli", "dev", "main", "ready", "https://example.com/api.git"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestProjectRepos_SingleJSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"ws","name":"WS","kind":"workspace","path":"/ws","workspaceRepos":[{"name":"api","relativePath":"api","repo":"https://example.com/api.git","defaultBranch":"dev","gitStatus":"ready"}]}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got projectReposResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if got.ProjectID != "ws" || len(got.Repos) != 1 || got.Repos[0].Name != "api" || got.Repos[0].DefaultBranch != "dev" || got.Repos[0].GitStatus != "ready" {
+		t.Fatalf("repos json = %#v, want ws/api dev ready", got)
+	}
+}
+
+func TestProjectRepos_NonWorkspace(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"demo","name":"Demo","kind":"single_repo","path":"/repo/demo"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "demo")
+	if err == nil {
+		t.Fatal("expected non-workspace error")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if !strings.Contains(err.Error(), "not a workspace project") {
+		t.Fatalf("error = %v, want not-a-workspace", err)
+	}
+}
+
+func TestProjectRepos_LegacyEmptyKindIsSingleRepo(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"legacy","name":"Legacy","path":"/repo/legacy"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "legacy")
+	if err == nil {
+		t.Fatal("expected non-workspace error for legacy response without kind")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if !strings.Contains(err.Error(), "not a workspace project") {
+		t.Fatalf("error = %v, want not-a-workspace", err)
+	}
+	if !strings.Contains(err.Error(), "single_repo") {
+		t.Fatalf("error = %v, want normalized single_repo kind", err)
+	}
+}
+
+func TestProjectRepos_TooManyArgs(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, Deps{}, "project", "repos", "a", "b")
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+}
+
+func TestProjectRepos_AllAggregatesWorkspaceProjects(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			_, _ = io.WriteString(w, `{"projects":[{"id":"ws","name":"WS","kind":"workspace"},{"id":"solo","name":"Solo","kind":"single_repo"}]}`)
+		case "/api/v1/projects/ws":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"ws","name":"WS","kind":"workspace","path":"/ws","workspaceRepos":[{"name":"api","relativePath":"api","repo":"https://example.com/api.git","defaultBranch":"main"}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got projectAllReposResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if len(got.Projects) != 1 || got.Projects[0].ProjectID != "ws" || len(got.Projects[0].Repos) != 1 {
+		t.Fatalf("all repos json = %#v, want one workspace entry", got)
+	}
+}
+
+func TestProjectGet_WorkspaceReposShowDefaultBranch(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusOK, `{"status":"ok","project":{"id":"ws","name":"WS","kind":"workspace","path":"/ws","workspaceRepos":[{"name":"api","relativePath":"api","repo":"https://example.com/api.git","defaultBranch":"dev"}]}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "get", "ws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "api: api (https://example.com/api.git) [dev]") {
+		t.Fatalf("output missing bracketed default branch:\n%s", out)
+	}
+}
+
+// workspaceReposContractManager serves a real projectsvc.Project through the
+// real controllers/router so the hand-mirrored CLI DTOs are exercised against
+// the actual producer wire shape. A JSON-tag rename on either side empties
+// DefaultBranch here while the hand-written JSON tests above still pass.
+type workspaceReposContractManager struct {
+	fakeProjectManager
+}
+
+func (m *workspaceReposContractManager) Get(_ context.Context, id domain.ProjectID) (projectsvc.GetResult, error) {
+	project := projectsvc.Project{
+		ID:   id,
+		Name: "WS",
+		Kind: domain.ProjectKindWorkspace,
+		Path: "/ws",
+		WorkspaceRepos: []projectsvc.WorkspaceRepo{
+			{Name: "api", RelativePath: "api", Repo: "https://example.com/api.git", DefaultBranch: "dev", GitStatus: "ready"},
+		},
+	}
+	return projectsvc.GetResult{Status: "ok", Project: &project}, nil
+}
+
+func TestProjectRepos_WorkspaceDefaultBranchContract(t *testing.T) {
+	startDriftTestDaemon(t, &fakeSessionService{}, &workspaceReposContractManager{})
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got projectReposResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if len(got.Repos) != 1 || got.Repos[0].DefaultBranch != "dev" {
+		t.Fatalf("contract repos = %#v, want one repo with defaultBranch dev", got)
+	}
+
+	textOut, textErrOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repos", "ws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, textErrOut)
+	}
+	if !strings.Contains(textOut, "dev") {
+		t.Fatalf("text output missing producer defaultBranch:\n%s", textOut)
 	}
 }
