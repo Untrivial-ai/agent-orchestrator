@@ -25,7 +25,9 @@ import (
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
 )
 
 const minimumNodeMajor = 22
@@ -38,10 +40,15 @@ type claudeLaunchAuthenticator interface {
 	ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error)
 }
 
+// UsageRouteFunc receives the billing route a Claude Chat session launched
+// with. Chat installs no AO hooks, so this is the only way usage attribution
+// learns the route; without it every Chat turn stays unpriced.
+type UsageRouteFunc func(sessionID domain.SessionID, route string)
+
 // New constructs the Claude Code ACP driver over the existing Claude agent
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
-func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
+func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func(), onUsageRoute UsageRouteFunc) ports.ChatDriver {
 	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		// A live rejection is the ground truth that outranks any cached
@@ -100,6 +107,9 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 				}
 			}
 			env := claudeACPLaunchEnv(cfg.Env, claudeBinary, cfg.Model, models)
+			if onUsageRoute != nil && cfg.SessionID != "" {
+				onUsageRoute(cfg.SessionID, claudeLaunchUsageRoute(ctx, cfg.WorkspacePath, env))
+			}
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,
@@ -110,6 +120,15 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
 	}, log)}
+}
+
+// claudeLaunchUsageRoute names the route of the process about to launch: the
+// daemon environment it inherits, then Claude's settings files, then the
+// explicit launch environment, which is the precedence Claude credential
+// discovery already uses for the same launch.
+func claudeLaunchUsageRoute(ctx context.Context, workingDir string, env map[string]string) string {
+	settings := agentcreds.ResolveClaudeSettings(ctx, workingDir, env, agentcreds.ResolveOptions{})
+	return pricing.ClaudeRouteFromEnv(func(key string) string { return settings.RouteEnv[key] })
 }
 
 func validateClaudeLaunchAuth(ctx context.Context, plugin claudePlugin, workingDir string, env map[string]string, log *slog.Logger) error {

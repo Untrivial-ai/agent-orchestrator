@@ -179,3 +179,33 @@ func TestWorkspaceGatewayDoesNotInheritAmbientCredentials(t *testing.T) {
 		t.Fatal("workspace gateway inherited stored credentials")
 	}
 }
+
+// Break caught: provider selection is deliberately read from the launch
+// environment only for credential discovery, but Claude Code applies a
+// settings file's env block to itself, so a Bedrock flag set there still routes
+// the session. Usage attribution needs that route, including flags spelled as
+// JSON booleans, without changing what credential discovery sees.
+func TestClaudeSettingsRouteEnvIncludesSettingsFiles(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	writeClaudeSettingsFixture(t, filepath.Join(home, ".claude", "settings.json"),
+		`{"env":{"CLAUDE_CODE_USE_BEDROCK":true,"ANTHROPIC_BASE_URL":"https://user.example"}}`)
+	writeClaudeSettingsFixture(t, filepath.Join(workspace, ".claude", "settings.local.json"),
+		`{"env":{"CLAUDE_CODE_USE_VERTEX":"1"}}`)
+	opts := ResolveOptions{Env: envFrom(map[string]string{"HOME": home, "CLAUDE_CODE_USE_FOUNDRY": "1"})}
+
+	settings := ResolveClaudeSettings(context.Background(), workspace, map[string]string{
+		"ANTHROPIC_BASE_URL": "https://explicit.example",
+	}, opts)
+	want := map[string]string{
+		"CLAUDE_CODE_USE_BEDROCK": "true",
+		"CLAUDE_CODE_USE_VERTEX":  "1",
+		"CLAUDE_CODE_USE_FOUNDRY": "1",
+		"ANTHROPIC_BASE_URL":      "https://explicit.example",
+	}
+	if !reflect.DeepEqual(settings.RouteEnv, want) {
+		t.Fatalf("RouteEnv = %#v, want %#v", settings.RouteEnv, want)
+	}
+	if _, ok := settings.Env["CLAUDE_CODE_USE_BEDROCK"]; ok {
+		t.Fatalf("settings-file provider flag leaked into credential Env: %#v", settings.Env)
+	}
+}

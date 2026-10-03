@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,6 +78,9 @@ import (
 // reconcile: hookless resume transcripts and silently lost fsnotify watches
 // are healed on this cadence even when no event or hook fires.
 const usageReconcileTick = 3 * time.Minute
+
+// usageLaunchRouteTimeout bounds recording one Chat launch's billing route.
+const usageLaunchRouteTimeout = 30 * time.Second
 
 // sentryEnvironment maps the daemon's app version to a Sentry environment so a
 // nightly/edge build's issues do not mix with stable release health.
@@ -378,13 +382,34 @@ func Run() error {
 	// selected runtime, routed git/scratch workspaces, the per-session agent
 	// resolver (AO_AGENT validated here for compatibility), and the agent
 	// messenger, then mount it on the API.
-	var agentSvc *agentsvc.Service
+	var (
+		agentSvc       *agentsvc.Service
+		usageCollector *usagesvc.Collector
+		// Chat controllers may launch from another goroutine before usage
+		// collection is wired below, so the route callback reads it atomically.
+		launchRouteCollector atomic.Pointer[usagesvc.Collector]
+	)
 	chatDrivers := chatdriverregistry.Build(log, func() {
 		if agentSvc == nil {
 			return
 		}
 		agentSvc.InvalidateAgentAuthentication(string(domain.HarnessClaudeCode))
 		agentSvc.RecheckAgent(string(domain.HarnessClaudeCode))
+	}, func(sessionID domain.SessionID, route string) {
+		collector := launchRouteCollector.Load()
+		if collector == nil {
+			return
+		}
+		// Off the launch path: recording waits on the collector lock, which a
+		// reconcile pass can hold for a while, and a Chat start must not.
+		go func() {
+			routeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageLaunchRouteTimeout)
+			defer cancel()
+			if err := collector.RecordLaunchRoute(routeCtx, sessionID, route); err != nil &&
+				!errors.Is(err, usagesvc.ErrUsageSessionNotFound) {
+				log.Warn("usage: record chat launch route", "session", sessionID, "err", err)
+			}
+		}()
 	})
 
 	// Daemon-owned preferences. The store's type is field-compatible with the
@@ -652,9 +677,8 @@ func Run() error {
 	// SetShellTerminalCloser).
 	sessMgr.SetShellTerminalCloser(shellTermSvc)
 	var (
-		usageCollector *usagesvc.Collector
-		usagePipeline  *usagepipeline.Pipeline
-		usagePricing   *usagePricingRuntime
+		usagePipeline *usagepipeline.Pipeline
+		usagePricing  *usagePricingRuntime
 	)
 	if pricingRuntime, pricingErr := newUsagePricingRuntime(usagePricingRuntimeConfig{
 		DataDir: cfg.DataDir,
@@ -688,6 +712,7 @@ func Run() error {
 		if usagePricing != nil {
 			usageCollector.OnRouteResolved(usagePricing.RepairLegacyAttribution)
 		}
+		launchRouteCollector.Store(usageCollector)
 		ingestorConfig := usagepipeline.IngestorConfig{}
 		if usagePricing != nil {
 			ingestorConfig.Pricing = usagePricing.Manager()

@@ -124,6 +124,10 @@ type Collector struct {
 	mu                      sync.Mutex
 	// Guarded separately from mu, which RecordHook holds across the whole hook.
 	routeMu sync.RWMutex
+	// launchRoutes remembers the route each Claude Chat session last launched
+	// with, so a binding created after the launch is born attributed. Guarded
+	// by routeMu.
+	launchRoutes map[domain.SessionID]string
 }
 
 // OnRouteResolved registers the handler called the first time a binding learns
@@ -143,6 +147,71 @@ func (c *Collector) routeResolvedHandler() func() {
 	c.routeMu.RLock()
 	defer c.routeMu.RUnlock()
 	return c.notifyRouteResolved
+}
+
+func (c *Collector) launchRoute(sessionID domain.SessionID) string {
+	c.routeMu.RLock()
+	defer c.routeMu.RUnlock()
+	return c.launchRoutes[sessionID]
+}
+
+// RecordLaunchRoute records the billing route a Claude Chat session launched
+// with. Chat runs no AO hooks, so without this its bindings never learn a
+// route and live ingestion leaves every turn unpriced until a daemon restart
+// lets the legacy repairer infer one. Bindings that already exist without a
+// route take it now and trigger the same repair a hook would; bindings created
+// later take it when they are created. A route a hook already recorded is
+// never replaced.
+func (c *Collector) RecordLaunchRoute(ctx context.Context, sessionID domain.SessionID, route string) error {
+	route = pricing.TrustedClaudeRoute(boundedUsageMetadata(route))
+	if c == nil || route == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	session, ok, err := c.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrUsageSessionNotFound, sessionID)
+	}
+	if session.Harness != domain.HarnessClaudeCode {
+		return nil
+	}
+	c.routeMu.Lock()
+	if c.launchRoutes == nil {
+		c.launchRoutes = make(map[domain.SessionID]string)
+	}
+	c.launchRoutes[sessionID] = route
+	c.routeMu.Unlock()
+
+	bindings, err := c.store.ListUsageBindingsForSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	now := c.now().UTC()
+	resolved := false
+	for _, binding := range bindings {
+		if binding.Harness != domain.HarnessClaudeCode || strings.TrimSpace(binding.ProviderHint) != "" {
+			continue
+		}
+		// Passing the binding's own state and error code back through the
+		// upsert leaves them as they are; only the empty hint changes.
+		binding.ProviderHint = route
+		binding.UpdatedAt = now
+		if _, err := c.store.UpsertUsageBinding(ctx, binding); err != nil {
+			return err
+		}
+		resolved = true
+	}
+	if resolved {
+		if notify := c.routeResolvedHandler(); notify != nil {
+			notify()
+		}
+	}
+	return nil
 }
 
 // NewCollector constructs a transcript source registrar.
@@ -614,12 +683,16 @@ func (c *Collector) backfillSession(ctx context.Context, session domain.SessionR
 	if path == "" {
 		lastErrorCode = domain.UsageErrorSourceDiscoveryPending
 	}
+	providerHint := existing.ProviderHint
+	if providerHint == "" {
+		providerHint = c.launchRoute(session.ID)
+	}
 	binding, err := c.store.UpsertUsageBinding(ctx, domain.UsageBindingRecord{
 		SessionID:      session.ID,
 		Harness:        session.Harness,
 		NativeRootID:   nativeID,
 		InitialModelID: existing.InitialModelID,
-		ProviderHint:   existing.ProviderHint,
+		ProviderHint:   providerHint,
 		State:          state,
 		LastErrorCode:  lastErrorCode,
 		UpdatedAt:      now,
@@ -1527,6 +1600,7 @@ func (c *Collector) upsertContinuationBinding(
 		SessionID:    session.ID,
 		Harness:      session.Harness,
 		NativeRootID: nativeID,
+		ProviderHint: c.launchRoute(session.ID),
 		State:        state,
 		UpdatedAt:    now,
 	})

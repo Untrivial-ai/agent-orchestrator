@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -15,6 +16,12 @@ type ClaudeSettings struct {
 	Env                      map[string]string `json:"-"`
 	Model                    string            `json:"-"`
 	WorkspaceProviderRouting bool              `json:"-"`
+	// RouteEnv holds the routing inputs as Claude Code itself will see them,
+	// settings files included. It is kept apart from Env because credential
+	// discovery deliberately takes provider selection from the launch
+	// environment only, while usage attribution must name the route the
+	// launched process actually takes.
+	RouteEnv map[string]string `json:"-"`
 }
 
 // Only these environment keys may be read from a Claude settings file. Other
@@ -38,11 +45,23 @@ var claudeProviderEnvKeys = []string{
 	"GOOGLE_OAUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
 }
 
+// claudeRouteEnvKeys select the API surface Claude Code sends requests to.
+// Claude Code applies a settings file's env block to its own process, so any
+// of them may come from there.
+var claudeRouteEnvKeys = []string{
+	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_BASE_URL",
+}
+
 // ResolveClaudeSettings merges user < project < project-local settings, then
 // explicit project/session environment. Process environment is the fallback.
 // Missing, malformed, or oversized files are ignored without exposing contents.
 func ResolveClaudeSettings(ctx context.Context, workingDir string, explicitEnv map[string]string, opts ResolveOptions) ClaudeSettings {
-	resolved := ClaudeSettings{Env: make(map[string]string)}
+	resolved := ClaudeSettings{Env: make(map[string]string), RouteEnv: make(map[string]string)}
+	for _, key := range claudeRouteEnvKeys {
+		if value := opts.env(key); value != "" {
+			resolved.RouteEnv[key] = value
+		}
+	}
 	for _, keys := range [][]string{claudeSettingsEnvKeys, claudeProviderEnvKeys} {
 		for _, key := range keys {
 			if value := opts.env(key); value != "" {
@@ -85,6 +104,14 @@ func ResolveClaudeSettings(ctx context.Context, workingDir string, explicitEnv m
 		}
 		for key, value := range settings.Env {
 			resolved.Env[key] = value
+		}
+		for key, value := range settings.RouteEnv {
+			resolved.RouteEnv[key] = value
+		}
+	}
+	for _, key := range claudeRouteEnvKeys {
+		if value, ok := explicitEnv[key]; ok {
+			resolved.RouteEnv[key] = strings.TrimSpace(value)
 		}
 	}
 	for _, keys := range [][]string{claudeSettingsEnvKeys, claudeProviderEnvKeys} {
@@ -140,12 +167,38 @@ func readClaudeSettings(ctx context.Context, path string) ClaudeSettings {
 	if json.Unmarshal(raw, &payload) != nil {
 		return ClaudeSettings{}
 	}
-	resolved := ClaudeSettings{Model: strings.TrimSpace(payload.Model), Env: make(map[string]string)}
+	resolved := ClaudeSettings{
+		Model: strings.TrimSpace(payload.Model), Env: make(map[string]string), RouteEnv: make(map[string]string),
+	}
 	for _, key := range claudeSettingsEnvKeys {
 		var value string
 		if rawValue, ok := payload.Env[key]; ok && json.Unmarshal(rawValue, &value) == nil {
 			resolved.Env[key] = strings.TrimSpace(value)
 		}
 	}
+	for _, key := range claudeRouteEnvKeys {
+		if rawValue, ok := payload.Env[key]; ok {
+			resolved.RouteEnv[key] = settingsEnvString(rawValue)
+		}
+	}
 	return resolved
+}
+
+// settingsEnvString reads one env value the way Claude Code applies it:
+// settings files commonly spell flags as JSON booleans or numbers rather than
+// strings, and those still reach the process environment.
+func settingsEnvString(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		return strings.TrimSpace(value)
+	}
+	var flag bool
+	if json.Unmarshal(raw, &flag) == nil {
+		return strconv.FormatBool(flag)
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return number.String()
+	}
+	return ""
 }

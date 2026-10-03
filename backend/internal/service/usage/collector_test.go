@@ -1175,6 +1175,99 @@ func TestCollectorBackfillsChatSessionFromProviderConversationID(t *testing.T) {
 	}
 }
 
+// Break caught: Claude Chat runs no AO hooks, so its bindings never learned a
+// billing route and live ingestion left every Chat turn unpriced until a daemon
+// restart. The route the Chat driver launched with must reach bindings that
+// already exist, and must reopen repair for the events they already hold.
+func TestCollectorRecordsClaudeChatLaunchRouteOnExistingBindings(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-chat-route"
+	session := collectorTestChatSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: t.TempDir()}, nil)
+	resolved := 0
+	collector.OnRouteResolved(func() { resolved++ })
+	ctx := context.Background()
+
+	mustNoError(t, collector.BackfillActive(ctx), "backfill chat usage")
+	binding, ok, err := store.GetUsageBinding(ctx, session.ID, session.Harness, nativeID)
+	if err != nil || !ok || binding.ProviderHint != "" {
+		t.Fatalf("binding before launch route=%+v ok=%v err=%v", binding, ok, err)
+	}
+
+	mustNoError(t, collector.RecordLaunchRoute(ctx, session.ID, "anthropic"), "record launch route")
+	updated, _, err := store.GetUsageBinding(ctx, session.ID, session.Harness, nativeID)
+	mustNoError(t, err)
+	if updated.ProviderHint != "anthropic" || updated.State != binding.State ||
+		updated.LastErrorCode != binding.LastErrorCode {
+		t.Fatalf("binding after launch route=%+v, before=%+v", updated, binding)
+	}
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d, want 1", resolved)
+	}
+
+	// A relaunch repeats the route; it must not rescan legacy sources again.
+	mustNoError(t, collector.RecordLaunchRoute(ctx, session.ID, "anthropic"), "repeat launch route")
+	if resolved != 1 {
+		t.Fatalf("route resolutions = %d after a repeat launch, want it to stay 1", resolved)
+	}
+}
+
+// Break caught: the Chat launch usually reports its route before the provider
+// conversation id exists, so the binding is created afterwards. That binding
+// has to be born with the route, or its first turns are stored unpriced.
+func TestCollectorAppliesClaudeChatLaunchRouteToLaterBindings(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-chat-later"
+	session := collectorTestChatSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: t.TempDir()}, nil)
+	ctx := context.Background()
+
+	mustNoError(t, collector.RecordLaunchRoute(ctx, session.ID, "bedrock"), "record launch route")
+	mustNoError(t, collector.BackfillActive(ctx), "backfill chat usage")
+	binding, ok, err := store.GetUsageBinding(ctx, session.ID, session.Harness, nativeID)
+	if err != nil || !ok || binding.ProviderHint != "bedrock" {
+		t.Fatalf("binding=%+v ok=%v err=%v, want bedrock route", binding, ok, err)
+	}
+}
+
+func TestCollectorLaunchRouteNeverReplacesARecordedRoute(t *testing.T) {
+	store := collectorTestStore(t)
+	const nativeID = "native-hooked-route"
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, nativeID, false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+	ctx := context.Background()
+	mustNoError(t, collector.RecordHook(ctx, session.ID, HookSignal{
+		Harness:         domain.HarnessClaudeCode,
+		Event:           "session-start",
+		NativeSessionID: nativeID,
+		ProviderHint:    "zai",
+	}), "record hook")
+
+	mustNoError(t, collector.RecordLaunchRoute(ctx, session.ID, "anthropic"), "record launch route")
+	binding, _, err := store.GetUsageBinding(ctx, session.ID, session.Harness, nativeID)
+	mustNoError(t, err)
+	if binding.ProviderHint != "zai" {
+		t.Fatalf("provider hint = %q, want the hook's zai route kept", binding.ProviderHint)
+	}
+}
+
+func TestCollectorLaunchRouteIgnoresUntrustedRoutesAndOtherHarnesses(t *testing.T) {
+	store := collectorTestStore(t)
+	ctx := context.Background()
+	claude := collectorTestChatSession(t, store, domain.HarnessClaudeCode, "native-untrusted", false)
+	codex := collectorTestChatSession(t, store, domain.HarnessCodex, "native-codex-route", false)
+	collector := NewCollector(store, SourceRoots{}, nil)
+
+	mustNoError(t, collector.RecordLaunchRoute(ctx, claude.ID, "https://proxy.example?key=secret"), "untrusted route")
+	mustNoError(t, collector.RecordLaunchRoute(ctx, codex.ID, "anthropic"), "codex route")
+	if got := collector.launchRoute(claude.ID); got != "" {
+		t.Fatalf("untrusted launch route recorded as %q", got)
+	}
+	if got := collector.launchRoute(codex.ID); got != "" {
+		t.Fatalf("codex launch route recorded as %q", got)
+	}
+}
+
 func TestCollectorReconcilesCodexSourceCreatedAfterDaemonStart(t *testing.T) {
 	store := collectorTestStore(t)
 	session := collectorTestSession(t, store, domain.HarnessCodex, "native-late", false)

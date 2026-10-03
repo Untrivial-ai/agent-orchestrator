@@ -287,7 +287,7 @@ func TestCapabilityProbeDoesNotUseDaemonGlobalClaudeAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("AO_CLAUDE_ACP_COMMAND", executable)
-	_, err = New(&rejectedClaudePlugin{binary: executable}, nil, nil).Probe(context.Background())
+	_, err = New(&rejectedClaudePlugin{binary: executable}, nil, nil, nil).Probe(context.Background())
 	if err != nil {
 		t.Fatalf("Probe error = %v, want capability probe independent of global auth", err)
 	}
