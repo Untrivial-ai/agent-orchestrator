@@ -321,7 +321,7 @@ describe("CenterPane toolbar session label", () => {
 		expect(screen.getByText("terminal body")).toHaveAttribute("data-input-disabled", "true");
 	});
 
-	it("renders a connected transfer arrow and a coupled, wrapping lifecycle", () => {
+	it("renders a dotted curved handoff with a single toast step", () => {
 		agentSwitchMocks.mutation.input = {
 			idempotencyKey: "switch-request-visuals",
 			model: "",
@@ -333,31 +333,20 @@ describe("CenterPane toolbar session label", () => {
 		renderCenterPane({ session: worker });
 
 		const card = screen.getByTestId("agent-switch-transition-card");
-		const arrow = within(card).getByTestId("agent-switch-transfer-arrow");
-		const shaft = within(arrow).getByTestId("agent-switch-transfer-shaft");
-		const arrowIcon = within(arrow).getByTestId("agent-switch-transfer-arrow-icon");
-		expect(arrowIcon).toHaveClass("lucide-arrow-right", "text-foreground/55");
-		expect(arrowIcon.querySelector(".agent-switch-transfer-pulse")).toBeNull();
-		expect(shaft.querySelector(".agent-switch-transfer-pulse")).not.toBeNull();
+		const visual = within(card).getByTestId("agent-switch-handoff-visual");
+		const curve = within(visual).getByTestId("agent-switch-handoff-curve");
+		expect(curve.querySelector(".agent-switch-handoff-flow")).not.toBeNull();
+		expect(curve.querySelector(".agent-switch-handoff-orb")).not.toBeNull();
+		expect(within(visual).getByTestId("agent-switch-handoff-active-label")).toHaveTextContent("Preparing handoff");
 
 		const statusGroup = within(card).getByTestId("agent-switch-status-group");
-		const progress = within(statusGroup).getByRole("list", { name: "Switching…" });
-		expect(within(statusGroup).getAllByText("Preparing handoff")).toHaveLength(2);
-		expect(statusGroup).toContainElement(progress);
-		for (const label of [
-			"Preparing handoff",
-			"Stopping source agent",
-			"Starting target agent",
-			"Delivering context",
-		]) {
-			expect(within(progress).getByText(label)).toHaveClass(
-				"max-w-16",
-				"break-words",
-				"whitespace-normal",
-				"text-center",
-			);
-			expect(within(progress).getByText(label)).not.toHaveClass("truncate");
-		}
+		expect(statusGroup).toHaveTextContent("Switching from Claude Code to Codex");
+		// The handoff visual is a single toast now, not a full progress track: only
+		// the active stage is rendered, one at a time.
+		const toast = within(card).getByTestId("agent-switch-handoff-toast");
+		expect(visual).toContainElement(toast);
+		expect(toast).toHaveAttribute("data-step", "preparing");
+		expect(within(toast).getByTestId("agent-switch-handoff-toast-label")).toHaveTextContent("Preparing handoff");
 	});
 
 	it("shows one terminal scrim while the selector is open during admission", () => {
@@ -436,11 +425,11 @@ describe("CenterPane toolbar session label", () => {
 		renderCenterPane({ session: { ...worker, activeAgentSwitch: activeSwitch } });
 
 		const status = screen.getByRole("status", { name: "Switching from Claude Code to Codex" });
-		expect(within(status).getAllByText("Preparing handoff").length).toBeGreaterThan(0);
-		expect(within(status).getAllByText("Preparing handoff").at(-1)?.closest("li")).toHaveAttribute(
-			"aria-current",
-			"step",
-		);
+		// Scope to the toast: the card description also reads "Preparing handoff",
+		// so a whole-overlay text query would match it too.
+		const toast = within(status).getByTestId("agent-switch-handoff-toast");
+		expect(toast).toHaveAttribute("data-step", "preparing");
+		expect(within(toast).getByTestId("agent-switch-handoff-toast-label")).toHaveTextContent("Preparing handoff");
 	});
 
 	it("uses the matching history row to enrich the active session summary", () => {
@@ -559,7 +548,8 @@ describe("CenterPane toolbar session label", () => {
 
 		const status = screen.getByRole("status");
 		expect(status).not.toHaveAttribute("aria-busy");
-		expect(status.querySelector(".agent-switch-transfer-pulse")).not.toBeInTheDocument();
+		expect(status.querySelector(".agent-switch-handoff-flow")).not.toBeInTheDocument();
+		expect(status.querySelector(".agent-switch-handoff-orb")).not.toBeInTheDocument();
 		expect(screen.getByRole("alert")).toBeInTheDocument();
 	});
 

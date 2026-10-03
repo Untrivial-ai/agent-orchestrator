@@ -27,6 +27,7 @@ import { isConcreteModelID } from "../lib/agent-model-choices";
 import { AGENT_LABELS, AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
+import { AgentSwitchHandoffVisual } from "./AgentSwitchHandoffVisual";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Button } from "./ui/button";
@@ -425,6 +426,15 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 						</div>
 					) : (
 						<form className="flex flex-col gap-3 px-4 pb-4 pt-4" onSubmit={submit}>
+							{admissionPending ? (
+								<div data-testid="switch-agent-dialog-handoff">
+									<AgentSwitchHandoffVisual
+										fromHarness={session.provider}
+										targetHarness={targetHarness}
+										stage="preparing"
+									/>
+								</div>
+							) : null}
 						{error || projectQuery.error || modelWarning ? (
 							<div>
 								{error ? (

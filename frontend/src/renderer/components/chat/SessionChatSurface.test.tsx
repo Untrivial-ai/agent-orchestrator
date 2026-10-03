@@ -748,10 +748,11 @@ describe("SessionChatSurface link routing", () => {
 		expect(screen.getByTestId("chat-agent-input")).toHaveAttribute("data-disabled", "true");
 		expect(screen.getByTestId("chat-agent-switch-status")).toHaveAttribute("data-outcome", outcome);
 		if (outcome === "in_progress") {
-			const progress = screen.getByRole("list", { name: "Switching…" });
-			expect(progress.querySelector('[aria-current="step"]')).toHaveTextContent("Starting target agent");
+			const toast = screen.getByTestId("agent-switch-handoff-toast");
+			expect(toast).toHaveAttribute("data-step", "starting_target");
+			expect(screen.getByTestId("agent-switch-handoff-toast-label")).toHaveTextContent("Starting target agent");
 		} else {
-			expect(screen.queryByRole("list", { name: "Switching…" })).not.toBeInTheDocument();
+			expect(screen.queryByTestId("agent-switch-handoff-toast")).not.toBeInTheDocument();
 		}
 	});
 

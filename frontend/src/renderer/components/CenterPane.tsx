@@ -1,5 +1,4 @@
 import {
-	ArrowRight,
 	CheckCircle2,
 	Pencil,
 	TriangleAlert,
@@ -53,7 +52,7 @@ import {
 	type WorkspaceSession,
 } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
-import { AgentSwitchProgressTrack } from "./AgentSwitchProgressTrack";
+import { AgentSwitchHandoffVisual } from "./AgentSwitchHandoffVisual";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalTabFrame } from "./TerminalTabFrame";
 import { TerminalPane } from "./TerminalPane";
@@ -885,31 +884,16 @@ function AgentSwitchTerminalOverlay({
 					className="flex max-w-lg animate-modal-in flex-col items-center gap-5 rounded-xl border border-border-strong bg-surface/95 px-8 py-6 text-center shadow-xl shadow-black/20 motion-reduce:animate-none"
 					data-testid="agent-switch-transition-card"
 				>
-					<div className="flex items-center gap-5 sm:gap-7">
-						<SwitchingAgentMark harness={agentSwitch.fromHarness} />
-						<div
-							aria-hidden="true"
-							className="relative h-4 w-20 shrink-0 text-accent sm:w-28"
-							data-testid="agent-switch-transfer-arrow"
-						>
-							<ArrowRight
-								className="absolute inset-0 size-full text-foreground/55"
-								data-testid="agent-switch-transfer-arrow-icon"
-								strokeWidth={1.5}
-							/>
-							<span
-								className="absolute inset-y-[7px] left-0 right-3 overflow-hidden"
-								data-testid="agent-switch-transfer-shaft"
-							>
-								<span className="agent-switch-transfer-pulse absolute inset-y-0 w-10 bg-gradient-to-r from-transparent via-accent to-transparent" />
-							</span>
-						</div>
-						<SwitchingAgentMark harness={agentSwitch.targetHarness} />
-					</div>
+					<AgentSwitchHandoffVisual
+						fromHarness={agentSwitch.fromHarness}
+						targetHarness={agentSwitch.targetHarness}
+						stage={presentation.stage}
+					/>
+					{/* The handoff visual owns the step legend now; the legacy
+					    AgentSwitchProgressTrack would render a second identical row. */}
 					<div className="flex w-full flex-col items-center" data-testid="agent-switch-status-group">
 						<p className="font-mono text-control font-medium text-foreground">{title}</p>
 						<p className="mt-2 text-caption leading-4 text-muted-foreground">{description}</p>
-						<AgentSwitchProgressTrack stage={presentation.stage} />
 					</div>
 				</div>
 			)}
@@ -943,17 +927,6 @@ function AgentSwitchTerminalStrip({
 			>
 				{t("terminal.backToAgent")}
 			</button>
-		</div>
-	);
-}
-
-function SwitchingAgentMark({ harness }: { harness: string }) {
-	return (
-		<div className="flex min-w-20 flex-col items-center gap-2">
-			<span className="grid size-14 place-items-center rounded-xl border border-border-strong bg-surface/90 shadow-lg shadow-black/20">
-				<AgentAvatar className="size-8" decorative provider={harness} />
-			</span>
-			<span className="text-caption font-medium text-muted-foreground">{agentLabel(harness)}</span>
 		</div>
 	);
 }

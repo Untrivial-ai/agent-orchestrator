@@ -1898,8 +1898,129 @@ textarea,
 	}
 }
 
-.agent-switch-transfer-pulse {
-	animation: agent-switch-transfer 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+.agent-switch-handoff-curve {
+	overflow: visible;
+}
+
+/* Static dotted guide. --color-border-strong is only 4% white, which reads as
+   nothing at a 1.5px dashed stroke, so tint the foreground instead; it stays
+   legible in both themes. */
+.agent-switch-handoff-track {
+	stroke: color-mix(in srgb, var(--color-foreground) 14%, transparent);
+}
+
+/* Marching dots trailing the orb. status-working is the app's in-progress
+   colour (the chat banner's spinner already uses it); --color-accent is a
+   near-white neutral, which read as a blown-out white smear in the glow. */
+.agent-switch-handoff-flow {
+	stroke: var(--color-status-working);
+	opacity: 0.9;
+	animation: agent-switch-handoff-dash 1.1s linear infinite;
+}
+
+.agent-switch-handoff-orb {
+	fill: var(--color-status-working);
+	filter: drop-shadow(0 0 4px color-mix(in srgb, var(--color-status-working) 70%, transparent));
+}
+
+.agent-switch-handoff-orb-halo {
+	fill: var(--color-status-working);
+	opacity: 0.2;
+}
+
+/* Toast: one stage at a time, sitting under the agents/curve row. The orb pulses
+   while the stage works, resolves to a green tick on completion, and the next
+   stage's label then eases in. */
+.agent-switch-handoff-toast {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 1.5rem;
+	padding: 0.125rem 0.5rem;
+}
+
+.agent-switch-handoff-toast-orb {
+	display: grid;
+	place-items: center;
+	width: 1.25rem;
+	height: 1.25rem;
+	border-radius: 9999px;
+	border: 1px solid var(--color-border-strong);
+	background: var(--color-surface);
+	color: var(--color-success);
+	transition:
+		border-color 280ms var(--ease-out),
+		background-color 280ms var(--ease-out);
+}
+
+.agent-switch-handoff-toast[data-phase="resolved"] .agent-switch-handoff-toast-orb {
+	border-color: var(--color-success);
+	background: color-mix(in srgb, var(--color-success) 16%, transparent);
+}
+
+.agent-switch-handoff-toast[data-phase="resolved"] .agent-switch-handoff-toast-orb svg {
+	animation: agent-switch-handoff-tick 280ms var(--ease-out);
+}
+
+.agent-switch-handoff-toast-label {
+	font-size: 0.625rem;
+	line-height: 0.75rem;
+	color: var(--color-foreground);
+	animation: agent-switch-handoff-toast-in 300ms var(--ease-out);
+	transition: opacity 180ms var(--ease-out);
+}
+
+.agent-switch-handoff-toast[data-phase="resolved"] .agent-switch-handoff-toast-label {
+	opacity: 0;
+}
+
+@keyframes agent-switch-handoff-tick {
+	from {
+		opacity: 0;
+		transform: scale(0.4);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@keyframes agent-switch-handoff-toast-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.agent-switch-handoff-orb-core {
+	display: block;
+	width: 0.5rem;
+	height: 0.5rem;
+	border-radius: 9999px;
+	background: var(--color-status-working);
+	animation: agent-switch-handoff-orb-breathe 1.3s ease-in-out infinite;
+}
+
+@keyframes agent-switch-handoff-dash {
+	to {
+		stroke-dashoffset: -14;
+	}
+}
+
+@keyframes agent-switch-handoff-orb-breathe {
+	0%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 0.45;
+		transform: scale(0.6);
+	}
 }
 
 .agent-switch-progress-step:not(:last-child)::before {
@@ -1962,6 +2083,34 @@ textarea,
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.agent-switch-handoff-flow {
+		animation: none;
+	}
+
+	/* Without animateMotion the orb would freeze at the path origin; drop it.
+	   The step core stays visible as a static dot so the current step is still marked. */
+	.agent-switch-handoff-orb,
+	.agent-switch-handoff-orb-halo {
+		display: none;
+	}
+
+	.agent-switch-handoff-orb-core {
+		animation: none;
+	}
+
+	.agent-switch-handoff-toast-orb svg {
+		animation: none;
+	}
+
+	.agent-switch-handoff-toast-label {
+		animation: none;
+		opacity: 1;
+	}
+
+	.agent-switch-handoff-toast[data-phase="resolved"] .agent-switch-handoff-toast-label {
+		opacity: 1;
+	}
+
 	.agent-switch-transfer-pulse {
 		left: calc(50% - 1.25rem);
 		opacity: 0.85;

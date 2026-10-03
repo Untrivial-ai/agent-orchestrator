@@ -46,6 +46,7 @@ import { can } from "../../types/conversation";
 import type { ConversationSnapshot } from "../../types/conversation";
 import type { TerminalTarget } from "../../types/terminal";
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
+import { AgentSwitchHandoffVisual } from "../AgentSwitchHandoffVisual";
 import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
 import { ChatWorkspace } from "./ChatWorkspace";
 import { hasProviderPermissionMode } from "./TurnSettingsBar";
@@ -613,6 +614,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 			/>
 			{shownSwitchPresentation ? (
 				<ChatAgentSwitchStatus
+					agentSwitch={agentSwitch}
 					auxiliaryActive={Boolean(reviewerTarget || shellTarget)}
 					onDismiss={
 						shownSwitchPresentation.outcome === "failure" && agentSwitch
@@ -627,10 +629,12 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 });
 
 function ChatAgentSwitchStatus({
+	agentSwitch,
 	auxiliaryActive,
 	onDismiss,
 	presentation,
 }: {
+	agentSwitch?: AgentSwitchSummary;
 	auxiliaryActive: boolean;
 	onDismiss?: () => void;
 	presentation: AgentSwitchPresentation;
@@ -687,7 +691,18 @@ function ChatAgentSwitchStatus({
 					<p className="mt-0.5 text-pretty text-xs leading-relaxed text-muted-foreground">
 						{t(presentation.descriptionKey, presentation.values)}
 					</p>
-					{inProgress ? <AgentSwitchProgressTrack stage={presentation.stage} /> : null}
+					{inProgress && agentSwitch ? (
+						<div className="mt-2">
+							<AgentSwitchHandoffVisual
+								fromHarness={agentSwitch.fromHarness}
+								targetHarness={agentSwitch.targetHarness}
+								stage={presentation.stage}
+								variant="compact"
+							/>
+						</div>
+					) : inProgress ? (
+						<AgentSwitchProgressTrack stage={presentation.stage} />
+					) : null}
 				</div>
 				{onDismiss ? (
 					<button
