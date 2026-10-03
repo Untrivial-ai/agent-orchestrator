@@ -13,6 +13,7 @@ import { I18nextProvider } from "react-i18next";
 import { appI18n } from "../../src/renderer/i18n";
 import { TooltipProvider } from "../../src/renderer/components/ui/tooltip";
 import { AssistantMessage } from "../../src/renderer/components/chat/ChatTimelineItems";
+import { ChatMarkdown } from "../../src/renderer/components/chat/ChatMarkdown";
 import { ChatWorkspace } from "../../src/renderer/components/chat/ChatWorkspace";
 import { chatFixtureLongHistory } from "../../src/renderer/lib/chat-fixture";
 import { highlight } from "../../src/renderer/lib/code-highlight";
@@ -56,6 +57,26 @@ function assistant(text: string, streaming = true): ConversationMessage {
 }
 
 export const performanceHarness = {
+	async markdown() {
+		const prefix = "```text\n" + "completed code line\n".repeat(2000) + "```\n\n";
+		render(<ChatMarkdown text={prefix + "Answer"} streaming />);
+		await frame();
+		const samples: number[] = [];
+		for (let index = 0; index < 40; index++) {
+			const started = performance.now();
+			render(<ChatMarkdown text={prefix + "Answer" + " more".repeat(index + 1)} streaming />);
+			samples.push(performance.now() - started);
+			await frame();
+		}
+		return {
+			prefixCharacters: prefix.length,
+			updates: samples.length,
+			totalRenderMs: samples.reduce((sum, value) => sum + value, 0),
+			maxRenderMs: Math.max(...samples),
+			samples,
+			exact: document.querySelector(".chat-md p")?.textContent === "Answer" + " more".repeat(40),
+		};
+	},
 	async events() {
 		const original = window.EventSource;
 		const sources: BenchSource[] = [];
