@@ -16,7 +16,7 @@ func normalizeAdditionalDirectories(cwd string, directories []string, supported 
 		return nil, nil
 	}
 	if !supported {
-		return nil, fmt.Errorf("ACP agent does not support additional workspace directories")
+		return nil, nil
 	}
 	seen := map[string]struct{}{filepath.Clean(cwd): {}}
 	out := make([]string, 0, len(directories))
