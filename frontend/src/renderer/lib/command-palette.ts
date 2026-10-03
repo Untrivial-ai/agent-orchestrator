@@ -24,6 +24,7 @@ import { appI18n, type MessageKey } from "../i18n";
 export type CommandGroupId = "current" | "attention" | "projects" | "sessions" | "prs" | "global";
 
 export type NavigateTarget =
+	| { to: "/" }
 	| { to: "/settings" }
 	| { to: "/projects/$projectId"; params: { projectId: string } }
 	| { to: "/projects/$projectId/settings"; params: { projectId: string } }
@@ -343,6 +344,13 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 		}
 	}
 
+	items.push({
+		id: "global-home",
+		group: "global",
+		title: t("shell.goHome"),
+		keywords: ["home", "start", "get started", "clone", "import", "standalone"],
+		action: { kind: "navigate", target: { to: "/" } },
+	});
 	items.push({
 		id: "global-new-project",
 		group: "global",

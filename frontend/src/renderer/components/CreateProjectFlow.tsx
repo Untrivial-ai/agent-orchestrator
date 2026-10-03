@@ -8,7 +8,6 @@ import {
 	CircleDashed,
 	ChevronRight,
 	Cloud,
-	Bot,
 	Folder,
 	FolderClosed,
 	Folders,
@@ -17,6 +16,7 @@ import {
 	Globe,
 	LoaderCircle,
 	Lock,
+	MessageSquarePlus,
 	X,
 	XCircle,
 } from "lucide-react";
@@ -1852,7 +1852,7 @@ function ImportSourcePicker({
 						{onCreateStandaloneAgent ? (
 							<button type="button" className="group flex min-h-[76px] items-center gap-3 px-3.5 py-3 text-left hover:bg-accent/50" aria-label={t("home.newStandaloneAgent")} disabled={disabled} onClick={createStandaloneAgent}>
 								<span className="grid w-9 shrink-0 place-items-center text-muted-foreground group-hover:text-foreground">
-									<Bot className="size-5" aria-hidden="true" />
+									<MessageSquarePlus className="size-5" aria-hidden="true" strokeWidth={1.8} />
 								</span>
 								<span><span className="block text-sm font-medium">{t("home.newStandaloneAgent")}</span><span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">{t("createProject.standaloneDesc")}</span></span>
 							</button>

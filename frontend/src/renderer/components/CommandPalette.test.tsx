@@ -3,7 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceSummary } from "../types/workspace";
+import { STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -18,6 +18,7 @@ const workspaceSubscriptionMock = vi.hoisted(() => vi.fn());
 const createProjectFlowMock = vi.hoisted(() => ({
 	props: null as null | {
 		existingProjectPaths?: readonly string[];
+		onCreateStandaloneAgent?: () => void;
 		onOpenExistingProject?: (path: string) => void | Promise<void>;
 	},
 	lastOpenSignal: 0,
@@ -626,6 +627,17 @@ describe("CommandPalette actions", () => {
 		expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
 	});
 
+	it("navigates home from search and closes", async () => {
+		ctx.params = { projectId: "proj-1" };
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "home" } });
+		fireEvent.keyDown(input, { key: "Enter" });
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
 	it("toggles the theme and closes", async () => {
 		renderPalette();
 		act(() => useUiStore.getState().setCommandPaletteOpen(true));
@@ -644,6 +656,17 @@ describe("CommandPalette actions", () => {
 		fireEvent.click(screen.getByText("New project"));
 		await waitFor(() => expect(choosePathMock).toHaveBeenCalledTimes(1));
 		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("offers standalone agent creation from the new-project picker", async () => {
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.click(screen.getByText("New project"));
+		await waitFor(() => expect(createProjectFlowMock.props?.onCreateStandaloneAgent).toBeTypeOf("function"));
+
+		act(() => createProjectFlowMock.props?.onCreateStandaloneAgent?.());
+		expect(useUiStore.getState().newTaskRequest?.projectId).toBe(STANDALONE_WORKSPACE_ID);
 	});
 
 	it("opens an already registered project selected by the import flow", async () => {

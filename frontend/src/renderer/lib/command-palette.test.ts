@@ -137,6 +137,13 @@ describe("buildCommands grouping", () => {
 	});
 });
 
+describe("buildCommands global", () => {
+	it("offers a Go to home command that navigates to the root route", () => {
+		const home = buildCommands({ workspaces: [] }).find((item) => item.id === "global-home");
+		expect(home).toMatchObject({ group: "global", action: { kind: "navigate", target: { to: "/" } } });
+	});
+});
+
 describe("buildCommands attention", () => {
 	it("includes ready-to-merge AND attention-needing sessions, ordered merge-first", () => {
 		const items = buildCommands({ workspaces: workspaces() });
