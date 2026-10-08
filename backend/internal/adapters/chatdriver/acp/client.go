@@ -803,6 +803,17 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 		copyDetail(detailMap, terminal, "signal", "signal")
 	}
 	if activityKind == domain.ActivityKindCommand {
+		// OpenCode includes the shell result in rawOutput.metadata.exit, even
+		// when ACP marks the tool call completed. Preserve it separately from
+		// output text; an explicit terminal_exit remains authoritative.
+		if _, exists := detailMap["exitCode"]; !exists {
+			if raw, ok := tool.rawOutput.(map[string]any); ok {
+				if exit, ok := number(nestedMap(raw, "metadata")["exit"]); ok &&
+					!math.IsNaN(exit) && !math.IsInf(exit, 0) && math.Trunc(exit) == exit {
+					detailMap["exitCode"] = exit
+				}
+			}
+		}
 		if rawCommand := rawCommandFromInput(tool.rawInput); rawCommand != "" {
 			// The neutral command-detail contract (`detail.command`) is what the
 			// chat timeline renders as the row's subject. rawInput is a
@@ -818,6 +829,11 @@ func (c *conversation) toolEvent(turnID string, tool *toolState, completed bool)
 	}
 	detail, _ := json.Marshal(detailMap)
 	status := activityStatusFromTool(tool.status)
+	if completed && activityKind == domain.ActivityKindCommand && status == domain.ActivityStatusCompleted {
+		if exit, ok := number(detailMap["exitCode"]); ok && exit != 0 {
+			status = domain.ActivityStatusFailed
+		}
+	}
 	kind := ports.ChatEventActivityStarted
 	if completed {
 		kind = ports.ChatEventActivityCompleted

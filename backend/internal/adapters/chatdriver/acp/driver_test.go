@@ -2613,6 +2613,60 @@ func TestRawCommandFromInput(t *testing.T) {
 	}
 }
 
+func TestToolEventPreservesCommandExitCode(t *testing.T) {
+	intPtr := func(value int) *int { return &value }
+	for _, tt := range []struct {
+		name         string
+		raw          string
+		kind         acpsdk.ToolKind
+		status       acpsdk.ToolCallStatus
+		terminalExit *int
+		wantExit     *int
+		wantStatus   domain.ActivityStatus
+	}{
+		{"nonzero shell exit", `{"output":"command output\n","metadata":{"exit":7}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, intPtr(7), domain.ActivityStatusFailed},
+		{"successful shell exit", `{"output":"command output\n","metadata":{"exit":0}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, intPtr(0), domain.ActivityStatusCompleted},
+		{"missing exit", `{"output":"command output\n","metadata":{}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, nil, domain.ActivityStatusCompleted},
+		{"null exit", `{"output":"command output\n","metadata":{"exit":null}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, nil, domain.ActivityStatusCompleted},
+		{"string exit", `{"output":"command output\n","metadata":{"exit":"7"}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, nil, domain.ActivityStatusCompleted},
+		{"fractional exit", `{"output":"command output\n","metadata":{"exit":1.5}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, nil, nil, domain.ActivityStatusCompleted},
+		{"non-command metadata", `{"output":"command output\n","metadata":{"exit":7}}`, acpsdk.ToolKindRead, acpsdk.ToolCallStatusCompleted, nil, nil, domain.ActivityStatusCompleted},
+		{"provider failure stays failed", `{"output":"command output\n","metadata":{"exit":0}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusFailed, nil, intPtr(0), domain.ActivityStatusFailed},
+		{"terminal exit takes precedence", `{"output":"command output\n","metadata":{"exit":7}}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, intPtr(0), intPtr(0), domain.ActivityStatusCompleted},
+		{"terminal nonzero exit", `{"output":"command output\n"}`, acpsdk.ToolKindExecute, acpsdk.ToolCallStatusCompleted, intPtr(7), intPtr(7), domain.ActivityStatusFailed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw any
+			if err := json.Unmarshal([]byte(tt.raw), &raw); err != nil {
+				t.Fatal(err)
+			}
+			tool := &toolState{id: "command-1", kind: tt.kind, status: tt.status, rawOutput: raw, rawInput: map[string]any{"command": "printf test; exit 7"}}
+			if tt.terminalExit != nil {
+				tool.meta = map[string]any{"terminal_exit": map[string]any{"exit_code": *tt.terminalExit}}
+			}
+			conv := &conversation{}
+			event := conv.toolEvent("turn-1", tool, true)
+			if event.Kind != ports.ChatEventActivityCompleted || event.ActivityStatus != tt.wantStatus {
+				t.Fatalf("event kind/status = %s/%s, want completed/%s", event.Kind, event.ActivityStatus, tt.wantStatus)
+			}
+			var detail map[string]any
+			if err := json.Unmarshal(event.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantExit == nil {
+				if _, exists := detail["exitCode"]; exists {
+					t.Fatalf("unexpected exitCode: %#v", detail["exitCode"])
+				}
+			} else if detail["exitCode"] != float64(*tt.wantExit) {
+				t.Fatalf("exitCode = %#v, want %d", detail["exitCode"], *tt.wantExit)
+			}
+			if detail["output"] != "command output\n" {
+				t.Fatalf("output changed: %#v", detail["output"])
+			}
+		})
+	}
+}
+
 func TestToolOutputTextNormalizesProviderDefinedRawOutput(t *testing.T) {
 	tests := []struct {
 		name string
