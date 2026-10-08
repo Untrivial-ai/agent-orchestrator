@@ -309,6 +309,10 @@ function safariAccessError(): Error {
 }
 
 async function readSmallJSON(file: string, maxBytes: number): Promise<unknown> {
+	return JSON.parse(await readSmallText(file, maxBytes));
+}
+
+async function readSmallText(file: string, maxBytes: number): Promise<string> {
 	const metadata = await lstat(file);
 	if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > maxBytes) {
 		throw new Error("Browser metadata exceeds the size limit.");
@@ -318,7 +322,15 @@ async function readSmallJSON(file: string, maxBytes: number): Promise<unknown> {
 	try {
 		const opened = await handle.stat();
 		if (!opened.isFile() || opened.size > maxBytes) throw new Error("Browser metadata exceeds the size limit.");
-		return JSON.parse(await handle.readFile("utf8"));
+		const bytes = Buffer.alloc(maxBytes + 1);
+		let length = 0;
+		while (length < bytes.length) {
+			const { bytesRead } = await handle.read(bytes, length, bytes.length - length, null);
+			if (bytesRead === 0) break;
+			length += bytesRead;
+		}
+		if (length > maxBytes) throw new Error("Browser metadata exceeds the size limit.");
+		return bytes.subarray(0, length).toString("utf8");
 	} finally {
 		await handle.close().catch(() => undefined);
 	}
@@ -364,19 +376,69 @@ async function discoverChromiumProfiles(descriptor: BrowserDescriptor, root: str
 }
 
 async function discoverFirefoxProfiles(descriptor: BrowserDescriptor, root: string): Promise<InternalSourceProfile[]> {
+	const registered = new Map<string, { name: string; default: boolean }>();
+	try {
+		const text = await readSmallText(path.join(root, "profiles.ini"), LOCAL_STATE_MAX_BYTES);
+		const sections: Array<{ section: string; values: Map<string, string> }> = [];
+		let current: typeof sections[number] | undefined;
+		for (const raw of text.split(/\r?\n/)) {
+			const line = raw.trim();
+			if (!line || line.startsWith(";") || line.startsWith("#")) continue;
+			if (line.startsWith("[")) {
+				current = /^\[[^\[\]]+\]$/.test(line) ? { section: line.slice(1, -1), values: new Map() } : undefined;
+				if (current) sections.push(current);
+				continue;
+			}
+			const equals = line.indexOf("=");
+			if (current && equals > 0) current.values.set(line.slice(0, equals).trim(), line.slice(equals + 1).trim());
+		}
+		const installDefaults = new Set<string>();
+		for (const { section, values } of sections) {
+			if (/^Install[0-9a-f]+$/i.test(section)) {
+				const directory = values.get("Default");
+				if (!directory) continue;
+				const candidate = path.resolve(root, directory);
+				if (!contained(root, candidate)) continue;
+				const profileRoot = await existingRealDirectory(candidate);
+				if (profileRoot && contained(root, profileRoot)) installDefaults.add(profileRoot);
+				continue;
+			}
+			if (!/^Profile\d+$/.test(section)) continue;
+			const name = values.get("Name");
+			const directory = values.get("Path");
+			const relative = values.get("IsRelative");
+			if (!name || !directory || !["0", "1"].includes(relative ?? "")) continue;
+			if (path.isAbsolute(directory) !== (relative === "0")) continue;
+			const candidate = path.resolve(root, directory);
+			if (!contained(root, candidate)) continue;
+			const profileRoot = await existingRealDirectory(candidate);
+			if (!profileRoot || !contained(root, profileRoot)) continue;
+			registered.set(profileRoot, { name, default: values.get("Default") === "1" });
+		}
+		for (const [profileRoot, metadata] of registered) {
+			if (installDefaults.has(profileRoot)) metadata.default = true;
+		}
+	} catch {
+		registered.clear();
+	}
 	const profileParent = (await existingRealDirectory(path.join(root, "Profiles"))) ?? root;
-	const entries = await readdir(profileParent, { withFileTypes: true }).catch(() => []);
+	const entries = contained(root, profileParent) ? await readdir(profileParent, { withFileTypes: true }).catch(() => []) : [];
+	const directories = new Set([
+		...registered.keys(),
+		...entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(profileParent, entry.name)),
+	]);
 	const profiles: InternalSourceProfile[] = [];
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		const profileRoot = await existingRealDirectory(path.join(profileParent, entry.name));
+	for (const directory of directories) {
+		const profileRoot = await existingRealDirectory(directory);
 		if (!profileRoot || !contained(root, profileRoot) || !(await hasImportableDatabase(profileRoot, "firefox"))) continue;
-		const dot = entry.name.indexOf(".");
-		const suffix = dot >= 0 ? entry.name.slice(dot + 1) : entry.name;
+		const basename = path.basename(profileRoot);
+		const dot = basename.indexOf(".");
+		const suffix = dot >= 0 ? basename.slice(dot + 1) : basename;
+		const metadata = registered.get(profileRoot);
 		profiles.push({
 			id: opaqueSourceId(`${descriptor.id}:profile`, profileRoot),
-			name: suffix || entry.name,
-			default: /default|release/i.test(suffix),
+			name: metadata?.name ?? (suffix || basename),
+			default: metadata?.default ?? /default|release/i.test(suffix),
 			root: profileRoot,
 		});
 	}

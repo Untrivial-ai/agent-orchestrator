@@ -261,6 +261,91 @@ async function createSafariFixture(root: string): Promise<{ library: string; nam
 }
 
 describe("BrowserProfileImportService", () => {
+	it.each(["linux", "darwin", "win32"] as const)("uses registered Firefox names and defaults on %s without changing source files", async (platform) => {
+		const root = await fixtureRoot();
+		const browserRoot = platform === "linux" ? path.join(root, ".mozilla", "firefox")
+			: platform === "darwin" ? path.join(root, "Library", "Application Support", "Firefox")
+				: path.join(root, "Mozilla", "Firefox");
+		const directory = platform === "linux" ? "abc123.Work" : "Profiles/abc123.Work";
+		const absolute = path.join(browserRoot, "nested", "xyz.default-release");
+		for (const profile of [path.join(browserRoot, directory), absolute]) {
+			await mkdir(profile, { recursive: true });
+			const db = new Database(path.join(profile, "places.sqlite"));
+			db.exec("CREATE TABLE moz_places (url TEXT)");
+			db.close();
+		}
+		const registry = `; Firefox registry\r\n[General]\r\nStartWithLastProfile=1\r\n[Profile0]\r\nName=Client Research\r\nIsRelative=1\r\nPath=${directory}\r\nDefault=1\r\n[Profile1]\r\nName=Personal=Archive\r\nIsRelative=0\r\nPath=${absolute}\r\n`;
+		await writeFile(path.join(browserRoot, "profiles.ini"), registry);
+		const before = await Promise.all([directory, path.relative(browserRoot, absolute)].map((dir) => readFile(path.join(browserRoot, dir, "places.sqlite"))));
+		const stateDir = path.join(root, "ao-state");
+		const service = new BrowserProfileImportService({
+			stateDir, profileStore: new BrowserProfileStore({ stateDir }), historyStore: new BrowserHistoryStore({ stateDir }),
+			platform, homeDir: root, env: { APPDATA: root }, fromPartition: vi.fn(),
+		});
+		const discovery = await service.discover();
+		expect(discovery.sources.find((source) => source.name === "Firefox")?.profiles).toEqual([
+			{ id: expect.stringMatching(/^[a-f0-9]{32}$/), name: "Client Research", default: true },
+			{ id: expect.stringMatching(/^[a-f0-9]{32}$/), name: "Personal=Archive", default: false },
+		]);
+		expect(JSON.stringify(discovery)).not.toContain(root);
+		expect(await readFile(path.join(browserRoot, "profiles.ini"), "utf8")).toBe(registry);
+		expect(await Promise.all([directory, path.relative(browserRoot, absolute)].map((dir) => readFile(path.join(browserRoot, dir, "places.sqlite"))))).toEqual(before);
+	});
+
+	it.each(["relative", "absolute", "escape", "symlink"])("validates %s Firefox install defaults and deduplicates registered aliases", async (kind) => {
+		const root = await fixtureRoot();
+		const browserRoot = path.join(root, ".mozilla", "firefox");
+		const profileRoot = path.join(browserRoot, "Profiles", "abc.default-release");
+		await mkdir(profileRoot, { recursive: true });
+		const db = new Database(path.join(profileRoot, "places.sqlite"));
+		db.exec("CREATE TABLE moz_places (url TEXT)");
+		db.close();
+		await symlink(profileRoot, path.join(browserRoot, "linked"));
+		await symlink(profileRoot, path.join(root, "outside"));
+		const selected = kind === "relative" ? "Profiles/abc.default-release" : kind === "absolute" ? profileRoot
+			: kind === "escape" ? "../../outside" : "linked";
+		await writeFile(path.join(browserRoot, "profiles.ini"), `[InstallABC123]\nDefault=${selected}\nLocked=1\n[Profile0]\nName=Client Research\nIsRelative=1\nPath=Profiles/abc.default-release\n[Profile1]\nName=Client Research\nIsRelative=0\nPath=${profileRoot}\n[Profile2]\nName=Client Research\nIsRelative=1\nPath=./Profiles/abc.default-release\n`);
+		const stateDir = path.join(root, "ao-state");
+		const service = new BrowserProfileImportService({
+			stateDir, profileStore: new BrowserProfileStore({ stateDir }), historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "linux", homeDir: root, env: {}, fromPartition: vi.fn(),
+		});
+		expect((await service.discover()).sources[0]?.profiles).toEqual([
+			{ id: expect.stringMatching(/^[a-f0-9]{32}$/), name: "Client Research", default: kind === "relative" || kind === "absolute" },
+		]);
+	});
+
+	it.each(["missing", "malformed", "oversized", "symlink", "escape", "profile-symlink"])("safely falls back from a %s Firefox registry", async (kind) => {
+		const root = await fixtureRoot();
+		const browserRoot = path.join(root, ".mozilla", "firefox");
+		for (const profile of [path.join(browserRoot, "abc.Work"), path.join(root, "outside")]) {
+			await mkdir(profile, { recursive: true });
+			const db = new Database(path.join(profile, "places.sqlite"));
+			db.exec("CREATE TABLE moz_places (url TEXT)");
+			db.close();
+		}
+		const file = path.join(browserRoot, "profiles.ini");
+		if (kind === "malformed") await writeFile(file, "[Profile0\nName=Wrong\nIsRelative=1\nPath=abc.Work\nDefault=1");
+		if (kind === "oversized") await writeFile(file, "x".repeat(5 * 1024 * 1024));
+		if (kind === "symlink") {
+			await writeFile(path.join(root, "registry"), "[Profile0]\nName=Wrong\nIsRelative=1\nPath=abc.Work\nDefault=1");
+			await symlink(path.join(root, "registry"), file);
+		}
+		if (kind === "escape") await writeFile(file, `[Profile0]\nName=Outside\nIsRelative=1\nPath=../../outside\n[Profile1]\nName=Outside absolute\nIsRelative=0\nPath=${path.join(root, "outside")}\n`);
+		if (kind === "profile-symlink") {
+			await symlink(path.join(root, "outside"), path.join(browserRoot, "linked"));
+			await writeFile(file, "[Profile0]\nName=Outside\nIsRelative=1\nPath=linked\n");
+		}
+		const stateDir = path.join(root, "ao-state");
+		const service = new BrowserProfileImportService({
+			stateDir, profileStore: new BrowserProfileStore({ stateDir }), historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "linux", homeDir: root, env: {}, fromPartition: vi.fn(),
+		});
+		expect((await service.discover()).sources[0]?.profiles).toEqual([
+			{ id: expect.stringMatching(/^[a-f0-9]{32}$/), name: "Work", default: false },
+		]);
+	});
+
 	it("does not probe Safari protected data during general discovery or another browser import", async () => {
 		const root = await fixtureRoot();
 		await createSafariFixture(root);
