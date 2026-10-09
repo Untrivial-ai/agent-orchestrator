@@ -408,13 +408,14 @@ const EditorBridge = forwardRef<
 	ComposerEditorHandle,
 	{
 		disabled?: boolean;
+		enterSends: boolean;
 		/** Staged paths of the images attached right now. */
 		attachedImages: () => string[];
 		onChange: (snapshot: ComposerEditorSnapshot) => void;
 		onComplete: (snapshot: ComposerEditorSnapshot, key: "Enter" | "Tab") => string | undefined;
 		onEnter: (snapshot: ComposerEditorSnapshot, event: globalThis.KeyboardEvent) => boolean;
 	}
->(function EditorBridge({ disabled, attachedImages, onChange, onComplete, onEnter }, ref) {
+>(function EditorBridge({ disabled, enterSends, attachedImages, onChange, onComplete, onEnter }, ref) {
 	const [editor] = useLexicalComposerContext();
 
 	useEffect(() => editor.setEditable(!disabled), [disabled, editor]);
@@ -487,7 +488,8 @@ const EditorBridge = forwardRef<
 			// bubble listener. A prevented event was already handled there and must not
 			// also insert a newline or a second completion token.
 			if (event?.defaultPrevented) return true;
-			if (event?.isComposing || event?.shiftKey || editor.isComposing()) return false;
+			if (event?.isComposing || event?.keyCode === 229 || event?.shiftKey || editor.isComposing()) return false;
+			if (key === "Enter" && !enterSends && !event?.metaKey && !event?.ctrlKey) return false;
 			const snapshot = editorSnapshot();
 			const value = onComplete(snapshot, key);
 			if (snapshot.trigger && value) {
@@ -508,7 +510,10 @@ const EditorBridge = forwardRef<
 		const removeEnter = editor.registerCommand(
 			KEY_ENTER_COMMAND,
 			(event) => {
-				if (event?.isComposing || event?.shiftKey || editor.isComposing()) return false;
+				// Claim only the editor command: the browser must still confirm the IME
+				// candidate, without Lexical inserting a newline or selecting a suggestion.
+				if (event?.isComposing || event?.keyCode === 229) return true;
+				if (event?.shiftKey || editor.isComposing()) return false;
 				if (complete(event, "Enter")) return true;
 				return false;
 			},
@@ -523,7 +528,7 @@ const EditorBridge = forwardRef<
 			removeEnter();
 			removeTab();
 		};
-	}, [editor, onComplete, onEnter]);
+	}, [editor, enterSends, onComplete, onEnter]);
 
 	return null;
 });
@@ -556,6 +561,7 @@ export const ComposerEditor = forwardRef<
 	ComposerEditorHandle,
 	{
 		disabled?: boolean;
+		enterSends: boolean;
 		/** Hides the text while a send is in flight; the draft is still held for recovery. */
 		concealed?: boolean;
 		label: string;
@@ -574,6 +580,7 @@ export const ComposerEditor = forwardRef<
 >(function ComposerEditor(
 	{
 		disabled,
+		enterSends,
 		concealed,
 		label,
 		placeholder,
@@ -655,6 +662,7 @@ export const ComposerEditor = forwardRef<
 				<EditorBridge
 					ref={ref}
 					disabled={disabled}
+					enterSends={enterSends}
 					attachedImages={attachedImages}
 					onChange={onChange}
 					onComplete={onComplete}

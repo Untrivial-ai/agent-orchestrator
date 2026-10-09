@@ -4,7 +4,8 @@ import { act, fireEvent, render as rtlRender, screen, waitFor, within } from "@t
 import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useUiStore } from "../../stores/ui-store";
 import { ChatComposer } from "./ChatComposer";
 import { sendReferenceToChat } from "../../lib/chat-context-bus";
 import { attachmentURL } from "./messageAttachments";
@@ -89,6 +90,102 @@ function clipboardData(files: File[]) {
 const png = (name = "shot.png") =>
 	new File([new Uint8Array([137, 80, 78, 71])], name, { type: "image/png" });
 const textFile = (name = "notes.txt") => new File(["hello"], name, { type: "text/plain" });
+
+beforeEach(() => useUiStore.setState({ chatSendKeyMode: "enter" }));
+
+describe("send key preference", () => {
+	it("inserts a newline on Enter in the Cmd/Ctrl+Enter mode", async () => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const { onSend, field } = renderComposer();
+		await typeInComposer(field, "one");
+		await userEvent.keyboard("{Enter}");
+		await typeInComposer(field, "two");
+
+		expect(onSend).not.toHaveBeenCalled();
+		expect(composerWireText(field)).toBe("one\ntwo");
+	});
+
+	it.each(["Meta", "Control"])("sends/queues with %s+Enter in newline mode, even when steering is available", async (modifier) => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const onSteer = vi.fn();
+		const { onSend, field } = renderComposer({ willQueue: true, canSteer: true, onSteer });
+		await typeInComposer(field, "queue this draft");
+		await userEvent.keyboard(`{${modifier}>}{Enter}{/${modifier}}`);
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledWith("queue this draft"));
+		expect(onSteer).not.toHaveBeenCalled();
+	});
+
+	// Cmd/Ctrl is held to send in newline mode, so the send control must not flip
+	// to a steer while the user reaches for Enter.
+	it("keeps the send control queueing while a modifier is held in newline mode", async () => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const onSteer = vi.fn();
+		const { onSend, field } = renderComposer({ willQueue: true, canSteer: true, onSteer });
+		await typeInComposer(field, "queue this click");
+		act(() => {
+			window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+		});
+
+		expect(screen.queryByRole("button", { name: "Steer message" })).toBeNull();
+		await userEvent.click(screen.getByRole("button", { name: "Queue message" }));
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledWith("queue this click"));
+		expect(onSteer).not.toHaveBeenCalled();
+	});
+
+	it("keeps Shift+Enter as a newline in newline mode", async () => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const { onSend, field } = renderComposer();
+		await typeInComposer(field, "one");
+		await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+		await typeInComposer(field, "two");
+
+		expect(onSend).not.toHaveBeenCalled();
+		expect(composerWireText(field)).toBe("one\ntwo");
+	});
+
+	it("inserts a newline instead of selecting an open suggestion on bare Enter", async () => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const { onSend, field } = renderComposer({ skills: SKILLS });
+		await typeInComposer(field, "/rev");
+		expect(screen.getByRole("listbox")).toBeInTheDocument();
+		await userEvent.keyboard("{Enter}");
+
+		expect(onSend).not.toHaveBeenCalled();
+		expect(field.querySelector("[data-composer-token]")).toBeNull();
+		expect(composerWireText(field)).toBe("/rev\n");
+	});
+
+	it.each(["Meta", "Control"])("selects an open suggestion on %s+Enter in newline mode", async (modifier) => {
+		useUiStore.getState().setChatSendKeyMode("mod-enter");
+		const { onSend, field } = renderComposer({ skills: SKILLS });
+		await typeInComposer(field, "/rev");
+		await userEvent.keyboard(`{${modifier}>}{Enter}{/${modifier}}`);
+
+		expect(onSend).not.toHaveBeenCalled();
+		expect(field.querySelector('[data-composer-token="skill"]')).toHaveTextContent("/review");
+	});
+
+	it.each([
+		{ action: "send", button: "Send message", props: {} },
+		{ action: "queue", button: "Queue message", props: { willQueue: true } },
+		{ action: "save edit", button: "Send message", props: { editingQueuedTurnId: "queued-1" } },
+		{ action: "insert", button: "Send message", props: { skills: SKILLS } },
+	])("updates the $action hint immediately when the preference changes", async ({ action, button, props }) => {
+		const user = userEvent.setup();
+		const { field } = renderComposer(props);
+		await typeInComposer(field, action === "insert" ? "/rev" : "hello");
+		await user.hover(screen.getByRole("button", { name: button }));
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(`Enter to ${action}; Shift+Enter for newline`);
+
+		act(() => useUiStore.getState().setChatSendKeyMode("mod-enter"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent(`Cmd/Ctrl+Enter to ${action}; Enter for newline`);
+
+		act(() => useUiStore.getState().setChatSendKeyMode("enter"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent(`Enter to ${action}; Shift+Enter for newline`);
+	});
+});
 
 /* ---- the keyboard contract the composer already had ---------------------- */
 

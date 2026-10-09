@@ -4,7 +4,7 @@ import type { ThemePreference, ThemeStyle } from "../../lib/theme";
 import type { AppLocale } from "../../i18n";
 import { useLocaleStore } from "../../stores/locale-store";
 import { useSoundNotificationsStore } from "../../stores/sound-notifications-store";
-import { useUiStore } from "../../stores/ui-store";
+import { useUiStore, type ChatSendKeyMode } from "../../stores/ui-store";
 import { useTelemetryPolicyStore } from "../../stores/telemetry-policy-store";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { useTerminalShellStore } from "../../stores/terminal-shell-store";
@@ -155,6 +155,12 @@ export function GeneralSettingsSection({
 	const setDeveloperMode = useUiStore((state) => state.setDeveloperMode);
 	const terminalCopyOnSelect = useUiStore((state) => state.terminalCopyOnSelect);
 	const setTerminalCopyOnSelect = useUiStore((state) => state.setTerminalCopyOnSelect);
+	const chatSendKeyMode = useUiStore((state) => state.chatSendKeyMode);
+	const setChatSendKeyMode = useUiStore((state) => state.setChatSendKeyMode);
+	const chatSendKeyOptions = [
+		{ value: "enter", label: t("settings.chatSendKey.enter") },
+		{ value: "mod-enter", label: t("settings.chatSendKey.modEnter") },
+	] satisfies SettingsOption<ChatSendKeyMode>[];
 
 	const themeOptions = [
 		{ value: "light", label: t("settings.theme.light") },
@@ -214,6 +220,14 @@ export function GeneralSettingsSection({
 			{/* Sessions */}
 			<SettingsSection title={t("settings.sessions")} grouped>
 				<SessionInterfaceRow />
+				<SettingsRow label={t("settings.chatSendKey.label")}>
+					<SettingsOptionMenu
+						aria-label={t("settings.chatSendKey.label")}
+						value={chatSendKeyMode}
+						options={chatSendKeyOptions}
+						onChange={setChatSendKeyMode}
+					/>
+				</SettingsRow>
 				{isWindowsPlatform() ? <TerminalShellRows /> : null}
 				<SettingsRow label={t("settings.terminalCopyOnSelect")}>
 					<Switch

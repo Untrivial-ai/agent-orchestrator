@@ -17,9 +17,9 @@ import { useChatDraftTranslation } from "../../lib/chat-draft-messages";
  * Three completions live in the editor — `/` for AO commands and the agent's own
  * skills, `@` for worktree files, and pasted or dropped files. Completed skills
  * and paths are atomic inline chips but serialize to the plain text the agent
- * expects. The original keyboard contract remains: Enter sends, Shift+Enter makes
- * a newline, and ordinary typing stays local to the editor instead of rerendering
- * the surrounding chat surface.
+ * expects. Enter sends by default; a UI preference reserves Enter for newlines
+ * and sends with Cmd/Ctrl+Enter. Ordinary typing stays local to the editor instead
+ * of rerendering the surrounding chat surface.
  *
  * Every affordance is conditional on being able to deliver. The `/` menu only opens
  * when the provider actually reported skills, and the attach control only appears
@@ -53,6 +53,7 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { ChatAnnotationSummary } from "./ChatAnnotationSummary";
 import { cn } from "../../lib/utils";
+import { useUiStore } from "../../stores/ui-store";
 import { apiErrorCode, apiErrorMessage, getApiBaseUrl } from "../../lib/api-client";
 import { ComposerSuggestMenu } from "./ComposerSuggestMenu";
 import {
@@ -340,6 +341,8 @@ export const ChatComposer = memo(function ChatComposer({
 	const [highlighted, setHighlighted] = useState(0);
 	const highlightedRef = useRef(0);
 	const [isComposing, setIsComposing] = useState(false);
+	const chatSendKeyMode = useUiStore((state) => state.chatSendKeyMode);
+	const enterSends = chatSendKeyMode === "enter";
 	const [dragging, setDragging] = useState(false);
 	const [sendError, setSendError] = useState<string | null>(null);
 	const [steerOutcomeNotice, setSteerOutcomeNotice] = useState<string | null>(null);
@@ -604,12 +607,14 @@ export const ChatComposer = memo(function ChatComposer({
 	// looking identical to an immediate send.
 	const queuesDraft = Boolean(willQueue && !savingQueuedEdit && !queuedEditRecovery);
 	// Cmd/Ctrl+Enter or Cmd/Ctrl+click steers the current draft into the running
-	// turn; the send button only shows it while the modifier is held.
+	// turn; the send button only shows it while the modifier is held. When Enter
+	// inserts newlines, Cmd/Ctrl+Enter is the send key, so the modifier delivers
+	// through the ordinary send/queue path instead of steering.
 	// Steering has no excerpt payload, so attached excerpts would be cleared with
 	// the accepted draft without reaching the agent. Queue those drafts instead.
 	const canSteerDraft =
 		Boolean(canSteer && onSteer) && !savingQueuedEdit && contextReferences.length === 0;
-	const steersDraft = modifierHeld && canSteerDraft;
+	const steersDraft = enterSends && modifierHeld && canSteerDraft;
 	const showsSteer = steersDraft && !durableDelivery && !queuedEditRecovery;
 	const sendActionLabel = translateDraft(durableDelivery && !submitting
 		? durableDelivery.state === "accepted"
@@ -627,15 +632,11 @@ export const ChatComposer = memo(function ChatComposer({
 		!hasDraft &&
 		!savingQueuedEdit &&
 		Boolean(queuedDock);
-	const sendHint = menuOpen
-		? "Enter to insert"
-		: savingQueuedEdit
-			? "⏎ save edit"
-			: showsSteer
-				? "Steer into running turn"
-				: willQueue
-					? "⏎ queue"
-					: "Enter to send";
+	const sendKeyHint = enterSends ? "Enter" : "Cmd/Ctrl+Enter";
+	const newlineHint = enterSends ? "Shift+Enter for newline" : "Enter for newline";
+	const sendHint = showsSteer && !menuOpen
+		? "Steer into running turn"
+		: `${sendKeyHint} to ${menuOpen ? "insert" : savingQueuedEdit ? "save edit" : willQueue ? "queue" : "send"}; ${newlineHint}`;
 	const persistedText = persistedDraft?.composer.text;
 	const draftSeedId = draftSeed?.id ?? (draftScopeKey ? `session:${draftScopeKey}` : undefined);
 	const draftSeedText = draftSeed?.text ?? persistedText;
@@ -1466,19 +1467,19 @@ export const ChatComposer = memo(function ChatComposer({
 				return true;
 			}
 
-			if (canSteerNext && !textRef.current.trim() && !fileAttachments.hasPendingReads()) {
+			if (enterSends && canSteerNext && !textRef.current.trim() && !fileAttachments.hasPendingReads()) {
 				setSteerNextRequest((request) => request + 1);
 				return true;
 			}
-			const wantsSteer = (event.metaKey || event.ctrlKey) && canSteerDraft;
+			const wantsSteer = enterSends && (event.metaKey || event.ctrlKey) && canSteerDraft;
 			void submit(undefined, wantsSteer);
 			return true;
 		},
-		[canSteerDraft, canSteerNext, fileAttachments, onCompact, pick, suggestionsFor],
+		[canSteerDraft, canSteerNext, enterSends, fileAttachments, onCompact, pick, suggestionsFor],
 	);
 
 	function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-		if (event.nativeEvent.isComposing) return;
+		if (event.nativeEvent.isComposing || event.keyCode === 229) return;
 		// Enter is handled in Lexical before a newline is inserted; this handler is
 		// only for menu navigation and escape while a completion menu is open.
 		const liveSnapshot = editor.current?.getSnapshot();
@@ -1735,6 +1736,7 @@ export const ChatComposer = memo(function ChatComposer({
 					ref={editor}
 					images={composerImages}
 					disabled={Boolean(disabled || queuedEditRecovery || (!optimisticSend && (submitting || draftMutationPending)))}
+					enterSends={enterSends}
 					concealed={sendConcealed && !optimisticSend}
 					label="Message the agent"
 					placeholder={

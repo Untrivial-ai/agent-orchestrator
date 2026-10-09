@@ -206,7 +206,7 @@ beforeEach(async () => {
 		saving: false,
 		saveError: false,
 	});
-	useUiStore.setState({ developerMode: false, remoteHosts: false, diagnostics: false });
+	useUiStore.setState({ developerMode: false, remoteHosts: false, diagnostics: false, chatSendKeyMode: "enter" });
 	useTelemetryPolicyStore.setState({ view: { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, consentRenewalRequired: false, state: "applied", environmentVeto: false, durabilitySupported: true }, loaded: true, saving: false, saveError: false });
 	document.documentElement.lang = "en";
 });
@@ -313,6 +313,24 @@ describe("GlobalSettingsForm", () => {
 		expect(screen.getByText("主题")).toBeInTheDocument();
 		expect(document.documentElement.lang).toBe("zh-CN");
 		expect(useLocaleStore.getState().locale).toBe("zh-CN");
+	});
+
+	it("selects and persists both chat send key modes in General settings", async () => {
+		const user = userEvent.setup();
+		renderForm("general");
+		const preference = await screen.findByLabelText("Chat send key");
+		expect(preference).toHaveTextContent("Enter sends; Shift+Enter inserts newline");
+
+		await user.click(preference);
+		await user.click(await screen.findByRole("menuitem", { name: "Enter inserts newline; Cmd/Ctrl+Enter sends" }));
+		expect(useUiStore.getState().chatSendKeyMode).toBe("mod-enter");
+		expect(window.localStorage.getItem("ao.chatSendKeyMode")).toBe("mod-enter");
+		expect(preference).toHaveTextContent("Enter inserts newline; Cmd/Ctrl+Enter sends");
+
+		await user.click(preference);
+		await user.click(await screen.findByRole("menuitem", { name: "Enter sends; Shift+Enter inserts newline" }));
+		expect(useUiStore.getState().chatSendKeyMode).toBe("enter");
+		expect(window.localStorage.getItem("ao.chatSendKeyMode")).toBe("enter");
 	});
 
 	it("toggles sound notifications on and persists the change", async () => {
