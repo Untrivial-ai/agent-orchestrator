@@ -30,7 +30,13 @@ func powershellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
-func prepareCueShellReadiness(dataDir string, argv []string) (cueShellReadiness, error) {
+func prepareCueShellReadiness(dataDir string, argv []string, env map[string]string) (cueShellReadiness, error) {
+	getenv := func(key string) string {
+		if value, ok := env[key]; ok {
+			return value
+		}
+		return os.Getenv(key)
+	}
 	result := cueShellReadiness{argv: append([]string(nil), argv...), env: map[string]string{}, cleanup: func() {}}
 	if len(argv) == 0 {
 		return result, nil
@@ -72,7 +78,7 @@ func prepareCueShellReadiness(dataDir string, argv []string) (cueShellReadiness,
 		// Bash runs PROMPT_COMMAND immediately before rendering the first prompt.
 		// A profile that replaces it will cause a safe timeout.
 		hook := "if [ -z \"$AO_CUE_READY_SENT\" ]; then printf ready > " + shellSingleQuote(result.file) + "; AO_CUE_READY_SENT=1; fi"
-		if previous := os.Getenv("PROMPT_COMMAND"); previous != "" {
+		if previous := getenv("PROMPT_COMMAND"); previous != "" {
 			hook = previous + "; " + hook
 		}
 		result.env["PROMPT_COMMAND"] = hook
@@ -80,7 +86,7 @@ func prepareCueShellReadiness(dataDir string, argv []string) (cueShellReadiness,
 		// An interactive POSIX sh reads ENV before its first prompt.
 		profile := result.file + ".env"
 		content := ""
-		if previous := os.Getenv("ENV"); previous != "" {
+		if previous := getenv("ENV"); previous != "" {
 			content = ". " + shellSingleQuote(previous) + "\n"
 		}
 		content += "printf ready > " + shellSingleQuote(result.file) + "\n"
@@ -98,9 +104,9 @@ func prepareCueShellReadiness(dataDir string, argv []string) (cueShellReadiness,
 			result.cleanup()
 			return cueShellReadiness{}, err
 		}
-		original := os.Getenv("ZDOTDIR")
+		original := getenv("ZDOTDIR")
 		if original == "" {
-			original = os.Getenv("HOME")
+			original = getenv("HOME")
 		}
 		for _, file := range []string{".zshenv", ".zshrc"} {
 			content := "if [[ -f " + shellSingleQuote(filepath.Join(original, file)) + " ]]; then source " + shellSingleQuote(filepath.Join(original, file)) + "; fi\n"
@@ -110,10 +116,10 @@ func prepareCueShellReadiness(dataDir string, argv []string) (cueShellReadiness,
 			if file == ".zshrc" {
 				content += "function _ao_cue_ready { print -rn -- ready > " + shellSingleQuote(result.file) + "; precmd_functions=(${precmd_functions:#_ao_cue_ready}); }\n"
 				content += "precmd_functions+=(_ao_cue_ready)\n"
-				if os.Getenv("ZDOTDIR") == "" {
+				if getenv("ZDOTDIR") == "" {
 					content += "unset ZDOTDIR\n"
 				} else {
-					content += "export ZDOTDIR=" + shellSingleQuote(os.Getenv("ZDOTDIR")) + "\n"
+					content += "export ZDOTDIR=" + shellSingleQuote(getenv("ZDOTDIR")) + "\n"
 				}
 			}
 			if err := os.WriteFile(filepath.Join(wrapper, file), []byte(content), 0o600); err != nil {

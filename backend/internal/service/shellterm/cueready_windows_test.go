@@ -19,7 +19,7 @@ func TestCueReadinessFromInteractiveWindowsShell(t *testing.T) {
 			if fallback || len(argv) == 0 {
 				t.Skip("shell unavailable")
 			}
-			ready, err := prepareCueShellReadiness(t.TempDir(), argv)
+			ready, err := prepareCueShellReadiness(t.TempDir(), argv, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

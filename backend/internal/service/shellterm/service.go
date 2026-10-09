@@ -433,16 +433,17 @@ func (s *Service) RunCueCommand(ctx context.Context, in RunCueCommandInput) (She
 	if len(argv) == 0 {
 		return ShellTerminal{}, apierr.Internal("SHELL_TERMINAL_NO_SHELL", "Could not determine a shell to launch. Set SHELL (macOS/Linux) or ComSpec (Windows).")
 	}
-	readiness, err := prepareCueShellReadiness(s.dataDir, argv)
-	if err != nil {
-		return ShellTerminal{}, err
-	}
-	defer readiness.cleanup()
 	projectEnv, err := s.projects.ProjectEnv(ctx, projectID)
 	if err != nil {
 		return ShellTerminal{}, fmt.Errorf("run cue command: resolve project environment: %w", err)
 	}
-	env := agentlaunch.MergeEnv(s.pinnedEnv(projectEnv), readiness.env)
+	env := s.pinnedEnv(projectEnv)
+	readiness, err := prepareCueShellReadiness(s.dataDir, argv, env)
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+	defer readiness.cleanup()
+	env = agentlaunch.MergeEnv(env, readiness.env)
 	terminal, err := s.openTerminal(ctx, openTerminalConfig{argv: readiness.argv, env: env, projectEnv: projectEnv, projectID: projectID,
 		sessionID: in.SessionID, workingDir: workingDir, title: nextShellTerminalTitle(records)})
 	if err != nil {
