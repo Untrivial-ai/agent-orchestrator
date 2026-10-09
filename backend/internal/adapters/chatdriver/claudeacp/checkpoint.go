@@ -75,6 +75,7 @@ type checkpointRecord struct {
 	Sidechain             bool   `json:"isSidechain"`
 	Meta                  bool   `json:"isMeta"`
 	TurnCompanion         bool   `json:"turnCompanion"`
+	TranscriptOnly        bool   `json:"queueTranscriptOnly"`
 	PreventedContinuation bool   `json:"preventedContinuation"`
 	Attachment            struct {
 		Type      string          `json:"type"`
@@ -89,7 +90,7 @@ type checkpointRecord struct {
 
 type checkpointTurn struct {
 	promptID, userID, user, assistant string
-	complete                          bool
+	answered, complete                bool
 }
 
 // Native logs are append-only graphs, not a list of alternating text messages.
@@ -155,7 +156,9 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 	submissions := make(map[string]int)
 	for _, record := range chain {
 		if record.Type == "user" {
-			if record.Meta && record.TurnCompanion {
+			// A transcript-only note, such as a background task's stop notice, is
+			// never sent to the model and so never gets an answer.
+			if (record.Meta && record.TurnCompanion) || record.TranscriptOnly {
 				continue
 			}
 			if checkpointToolResults(record.Message.Content) {
@@ -198,6 +201,7 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 				return ports.NativeCheckpointBoundary{}, err
 			}
 			turn.assistant = text
+			turn.answered = true
 			turn.complete = record.Message.StopReason == "end_turn"
 		case "system":
 			if record.Subtype == "stop_hook_summary" && record.PreventedContinuation {
@@ -207,6 +211,16 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 	}
 	if len(turns) == 0 {
 		return ports.NativeCheckpointBoundary{}, checkpointUnsettled("no native user boundary")
+	}
+	// The chain is append-only, so a prompt followed by another can receive
+	// nothing more: a reply, an interrupt, or a process exit ended it. A prompt
+	// with no reply of its own was answered with the next one, as Claude Code does
+	// for queued input. Only the tail can still be pending.
+	for i := len(turns) - 2; i >= 0; i-- {
+		if !turns[i].answered {
+			turns[i].assistant = turns[i+1].assistant
+		}
+		turns[i].complete = true
 	}
 	byPrompt := make(map[string]int)
 	for i, turn := range turns {

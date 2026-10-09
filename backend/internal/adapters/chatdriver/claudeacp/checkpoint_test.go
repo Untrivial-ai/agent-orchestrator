@@ -220,3 +220,118 @@ func TestNativeCheckpointIgnoresUnrelatedStringAttachmentContent(t *testing.T) {
 		t.Fatalf("boundary=%+v error=%v", got, err)
 	}
 }
+
+// checkpointChain links records into one main chain in order.
+func checkpointChain(t *testing.T, records ...map[string]any) string {
+	t.Helper()
+	var lines []string
+	parent := ""
+	for i, record := range records {
+		record["sessionId"] = "native"
+		record["uuid"] = fmt.Sprintf("record-%d", i)
+		record["parentUuid"] = parent
+		parent = record["uuid"].(string)
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(data))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func checkpointUser(promptID, text string) map[string]any {
+	return map[string]any{"type": "user", "promptId": promptID, "message": map[string]any{"content": text}}
+}
+
+func checkpointSubmission(n int) map[string]any {
+	return map[string]any{"type": "attachment", "attachment": map[string]any{
+		"type": "hook_additional_context", "hookEvent": "UserPromptSubmit",
+		"content": []string{domain.NativeSubmissionContext(fmt.Sprintf("submission-%d", n))}}}
+}
+
+func checkpointAssistant(text, stopReason string) map[string]any {
+	return map[string]any{"type": "assistant", "message": map[string]any{
+		"content": []map[string]string{{"type": "text", "text": text}}, "stop_reason": stopReason}}
+}
+
+// Issue #6200: a turn that can never complete must not block the boundary once
+// the conversation has moved past it, while a pending tail still must.
+func TestNativeCheckpointSettlesTurnsTheChainMovedPast(t *testing.T) {
+	submit := func(text string) domain.NativeCheckpointObservation {
+		return domain.NativeCheckpointObservation{Submission: true, Text: text}
+	}
+	stop := func(id, text string) domain.NativeCheckpointObservation {
+		return domain.NativeCheckpointObservation{PromptID: id, Text: text}
+	}
+	tests := []struct {
+		name      string
+		records   []map[string]any
+		events    []domain.NativeCheckpointObservation
+		wantUser  string
+		wantError bool
+	}{
+		{
+			name: "turn cut off mid-tool by a crash, then a completed turn",
+			records: []map[string]any{
+				checkpointUser("prompt-0", "A"), checkpointSubmission(0), checkpointAssistant("running a tool", "tool_use"),
+				checkpointUser("prompt-1", "B"), checkpointSubmission(1), checkpointAssistant("answer B", "end_turn"),
+			},
+			events:   []domain.NativeCheckpointObservation{submit("A"), submit("B"), stop("prompt-1", "answer B")},
+			wantUser: "record-3",
+		},
+		{
+			name: "two queued prompts answered in one reply",
+			records: []map[string]any{
+				checkpointUser("prompt-0", "A"), checkpointSubmission(0),
+				checkpointUser("prompt-1", "B"), checkpointSubmission(1), checkpointAssistant("answer both", "end_turn"),
+			},
+			events:   []domain.NativeCheckpointObservation{submit("A"), submit("B"), stop("prompt-0", "answer both")},
+			wantUser: "record-2",
+		},
+		{
+			name: "transcript-only note after the last answer",
+			records: []map[string]any{
+				checkpointUser("prompt-0", "A"), checkpointSubmission(0), checkpointAssistant("answer A", "end_turn"),
+				{"type": "user", "promptId": "prompt-note", "queueTranscriptOnly": true,
+					"origin": map[string]any{"kind": "task-notification"}, "message": map[string]any{"content": "<task-notification>stopped</task-notification>"}},
+			},
+			events:   []domain.NativeCheckpointObservation{submit("A"), stop("prompt-0", "answer A")},
+			wantUser: "record-0",
+		},
+		{
+			name: "pending tail still blocks",
+			records: []map[string]any{
+				checkpointUser("prompt-0", "A"), checkpointSubmission(0), checkpointAssistant("answer A", "end_turn"),
+				checkpointUser("prompt-1", "B"), checkpointSubmission(1), checkpointAssistant("running a tool", "tool_use"),
+			},
+			events:    []domain.NativeCheckpointObservation{submit("A"), submit("B")},
+			wantError: true,
+		},
+		{
+			name: "superseded turn still needs its own answer to match",
+			records: []map[string]any{
+				checkpointUser("prompt-0", "A"), checkpointSubmission(0), checkpointAssistant("answer A", "tool_use"),
+				checkpointUser("prompt-1", "B"), checkpointSubmission(1), checkpointAssistant("answer B", "end_turn"),
+			},
+			events:    []domain.NativeCheckpointObservation{submit("A"), stop("prompt-0", "answer B")},
+			wantError: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := verifyCheckpointTranscript(context.Background(),
+				strings.NewReader(checkpointChain(t, test.records...)),
+				ports.NativeCheckpointRequest{ProviderConversationID: "native", Evidence: checkpointEvidence(test.events...)})
+			if test.wantError {
+				if !errors.Is(err, ports.ErrChatHistoryUnsettled) {
+					t.Fatalf("admitted unsettled evidence: %+v, %v", got, err)
+				}
+				return
+			}
+			if err != nil || got.UserMessageID != test.wantUser {
+				t.Fatalf("boundary=%+v error=%v, want user %s", got, err, test.wantUser)
+			}
+		})
+	}
+}
