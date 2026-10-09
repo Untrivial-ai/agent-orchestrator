@@ -907,8 +907,7 @@ func projectDisplayName(row domain.ProjectRecord) string {
 }
 
 func normalizePath(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if strings.TrimSpace(raw) == "" {
 		return "", apierr.Invalid("PATH_REQUIRED", "Repository path is required", nil)
 	}
 	if strings.HasPrefix(raw, "~") {
@@ -1003,7 +1002,7 @@ func isGitRepo(path string) bool {
 	if err != nil {
 		return false
 	}
-	top := normalizeGitReportedPath(path, strings.TrimSpace(string(out)))
+	top := normalizeGitReportedPath(path, strings.TrimSuffix(string(out), "\n"))
 	return samePath(top, comparablePath(path))
 }
 

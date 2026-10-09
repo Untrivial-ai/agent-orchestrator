@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1337,6 +1338,53 @@ func TestManager_AddValidationAndConflicts(t *testing.T) {
 
 	_, err = m.Add(ctx, project.AddInput{Path: repoB, ProjectID: ptr("shared")})
 	wantCode(t, err, "ID_ALREADY_REGISTERED")
+}
+
+func TestManager_AddPreservesRepositoryPathWhitespace(t *testing.T) {
+	for _, name := range []string{"trailing ", " leading", " both ", "   ", "line\n"} {
+		for _, withSibling := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%q/sibling=%v", name, withSibling), func(t *testing.T) {
+				if runtime.GOOS == "windows" && (strings.HasSuffix(name, " ") || strings.Contains(name, "\n")) {
+					t.Skip("Windows does not support these distinct directory names")
+				}
+				configureCommitter(t)
+				m := newManager(t)
+				base := t.TempDir()
+				repo := gitRepoWithCommitNoOrigin(t, filepath.Join(base, name))
+				if withSibling && strings.TrimSpace(name) != "" {
+					gitRepoWithCommitNoOrigin(t, filepath.Join(base, strings.TrimSpace(name)))
+				}
+				ctx := context.Background()
+				added, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("selected")})
+				if err != nil {
+					t.Fatalf("Add(%q): %v", repo, err)
+				}
+				if added.Path != repo {
+					t.Fatalf("registered path = %q, want %q", added.Path, repo)
+				}
+				rows, err := m.List(ctx)
+				if err != nil || len(rows) != 1 || rows[0].Path != repo || rows[0].FolderMissing {
+					t.Fatalf("stored projects = %+v, err = %v; want exact selected repository %q", rows, err, repo)
+				}
+			})
+		}
+	}
+}
+
+func TestManager_AddDoesNotFallBackToTrimmedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not distinguish a directory path with a trailing space")
+	}
+	configureCommitter(t)
+	m := newManager(t)
+	repo := gitRepoWithCommitNoOrigin(t, filepath.Join(t.TempDir(), "repository"))
+	ctx := context.Background()
+	_, err := m.Add(ctx, project.AddInput{Path: repo + " "})
+	wantCode(t, err, "NOT_A_GIT_REPO")
+	rows, err := m.List(ctx)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("stored projects = %+v, err = %v; want no imported sibling", rows, err)
+	}
 }
 
 func TestManager_AddRejectsEquivalentRepositoryPaths(t *testing.T) {
