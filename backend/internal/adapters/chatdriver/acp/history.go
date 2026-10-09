@@ -266,6 +266,11 @@ func (c *conversation) historyReplayActive() bool {
 }
 
 func (c *conversation) captureHistoryUserChunk(chunk *acpsdk.SessionUpdateUserMessageChunk) {
+	// Claude Code stores a background task's notice as a user record. It is not
+	// the user's input and live Chat never showed it, so replay must not either.
+	if isTaskNotification(historicalUserContent(chunk.Content)) {
+		return
+	}
 	messageID := ""
 	if chunk.MessageId != nil {
 		messageID = strings.TrimSpace(*chunk.MessageId)
@@ -502,6 +507,13 @@ func optionalMessageID(id *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*id)
+}
+
+// isTaskNotification reports whether text is a Claude Code <task-notification>
+// block, which its transcript records as a user message.
+func isTaskNotification(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "<task-notification>") && strings.HasSuffix(text, "</task-notification>")
 }
 
 func historicalUserContent(content acpsdk.ContentBlock) string {
