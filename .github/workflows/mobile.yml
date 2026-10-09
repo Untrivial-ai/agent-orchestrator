@@ -11,6 +11,8 @@ on:
     paths:
       - "packages/mobile/**"
       - ".github/workflows/mobile.yml"
+      # Bundled into the app: lib/chat/ansi.ts imports packages/shared/chat/ansi.ts.
+      - "packages/shared/**"
 
 permissions:
   contents: read
@@ -38,3 +40,9 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      # Typecheck and unit tests never run Metro, so a change that only breaks the
+      # bundle (a computed import(), a missing asset) merges green (#6326). This is
+      # the export `eas update` runs, without the source and asset maps. No secrets.
+      - name: Bundle (iOS + Android)
+        run: npx expo export --platform ios --platform android --output-dir "$RUNNER_TEMP/expo-export"
