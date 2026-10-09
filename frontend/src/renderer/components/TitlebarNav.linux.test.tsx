@@ -1,4 +1,4 @@
-import { render as rtlRender } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
@@ -51,5 +51,12 @@ describe("TitlebarNav on Linux", () => {
 		const nav = container.querySelector('[data-slot="titlebar-nav"]');
 		expect(nav).toHaveClass("left-titlebar-cluster-left-linux-panel");
 		expect(nav).not.toHaveClass("left-titlebar-cluster-left-linux");
+	});
+
+	it("shows the history controls beside the settled-open brand", async () => {
+		render(<><div data-slot="sidebar-container" /><TitlebarNav /></>);
+		await screen.findByText("Orchestrator.inc");
+		expect(screen.getByRole("button", { name: "Go back" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Go forward" })).toBeVisible();
 	});
 });

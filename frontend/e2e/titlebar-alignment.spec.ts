@@ -48,6 +48,9 @@ for (const mode of ["chat", "tui"] as const) {
 			if (await nav.getByRole("button", { name: "Expand sidebar", exact: true }).count()) {
 				await nav.getByRole("button", { name: "Expand sidebar", exact: true }).click();
 			}
+			await expect(nav.locator("[data-sidebar-brand]")).toBeVisible();
+			await expect(nav.getByRole("button", { name: "Go back", exact: true })).toBeVisible();
+			await expect(nav.getByRole("button", { name: "Go forward", exact: true })).toBeVisible();
 			await expect.poll(async () => {
 				const boxes = await geometry(page);
 				return Math.abs(boxes.nav.center - TRAFFIC_LIGHT_CENTER);
@@ -62,6 +65,8 @@ for (const mode of ["chat", "tui"] as const) {
 			const expandedTab = await page.getByRole("tab").first().boundingBox();
 			expect(Math.abs(expandedTab!.x - expanded.region.x)).toBeLessThanOrEqual(1);
 			await nav.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+			await expect(nav.getByRole("button", { name: "Go back", exact: true })).toBeVisible();
+			await expect(nav.getByRole("button", { name: "Go forward", exact: true })).toBeVisible();
 			await expect.poll(async () => (await geometry(page)).region.x).toBeLessThan(expanded.region.x);
 			const collapsed = await geometry(page);
 			expect(collapsed.nav.y).toBe(expanded.nav.y);

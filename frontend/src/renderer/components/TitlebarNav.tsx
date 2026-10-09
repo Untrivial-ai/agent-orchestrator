@@ -40,8 +40,8 @@ export function useCanGoForward(): boolean {
   return canGoForward;
 }
 
-// The brand replaces the arrows only once the sidebar has fully slid open, and
-// the arrows come back the moment it starts closing. The sidebar animates with
+// The brand appears only once the sidebar has fully slid open and disappears
+// the moment it starts closing. The sidebar animates with
 // a spring (no transitionend), so watch its container reach x = 0.
 const SETTLE_TIMEOUT_MS = 1500;
 
@@ -105,12 +105,8 @@ export function TitlebarNav({
   const topClass = isMac ? "top-px" : "top-0.75";
   const heightClass = "h-traffic-light-clearance";
 
-  // With the sidebar open the brand sits where the history arrows would be.
-  // Collapsed (or while the sidebar is still sliding open) there is no brand, so
-  // the arrows show instead. The two are never mounted together, so the arrows
-  // never leave an invisible no-drag hole in the window-drag region.
-  const arrowsVisible = !showBrand;
-
+  // History controls stay in the fixed cluster in both sidebar states. The
+  // brand follows them and stays part of the window-drag region.
   // The brand sits in this fixed row, not inside the sidebar, so it does not
   // shrink when a small window caps the sidebar narrower than the label. Cap it
   // to the sidebar's right edge so it truncates instead of overlapping the tabs.
@@ -154,40 +150,34 @@ export function TitlebarNav({
       >
         <PanelLeft className="size-icon-lg" aria-hidden="true" />
       </TitlebarButton>
-      <div className="grid items-center">
-        {showBrand ? (
-          // Not a button on purpose: it stays part of the window-drag region.
-          <span
-            className="col-start-1 row-start-1 inline-flex select-none items-center gap-1.5 whitespace-nowrap text-base font-semibold leading-tight tracking-tight-lg text-foreground"
-            data-sidebar-brand=""
-            ref={brandRef}
-            style={{ maxWidth: brandMaxWidth }}
-          >
-            <AOMascot className="h-5.5 w-5.5 shrink-0 -translate-y-px" />
-            <span className="min-w-0 truncate" data-brand-label="">Orchestrator.inc</span>
-          </span>
-        ) : null}
-        {arrowsVisible ? (
-          <div className="col-start-1 row-start-1 flex items-center gap-1">
-            <TitlebarButton
-              disabled={historyLocked || !canGoBack}
-              label={t("titlebar.goBack")}
-              onClick={() => router.history.back()}
-              title={t("titlebar.goBack")}
-            >
-              <ArrowLeft className="size-icon-lg" aria-hidden="true" />
-            </TitlebarButton>
-            <TitlebarButton
-              disabled={historyLocked || !canGoForward}
-              label={t("titlebar.goForward")}
-              onClick={() => router.history.forward()}
-              title={t("titlebar.goForward")}
-            >
-              <ArrowRight className="size-icon-lg" aria-hidden="true" />
-            </TitlebarButton>
-          </div>
-        ) : null}
-      </div>
+      <TitlebarButton
+        disabled={historyLocked || !canGoBack}
+        label={t("titlebar.goBack")}
+        onClick={() => router.history.back()}
+        title={t("titlebar.goBack")}
+      >
+        <ArrowLeft className="size-icon-lg" aria-hidden="true" />
+      </TitlebarButton>
+      <TitlebarButton
+        disabled={historyLocked || !canGoForward}
+        label={t("titlebar.goForward")}
+        onClick={() => router.history.forward()}
+        title={t("titlebar.goForward")}
+      >
+        <ArrowRight className="size-icon-lg" aria-hidden="true" />
+      </TitlebarButton>
+      {showBrand ? (
+        // Not a button on purpose: it stays part of the window-drag region.
+        <span
+          className="inline-flex select-none items-center gap-1.5 whitespace-nowrap text-base font-semibold leading-tight tracking-tight-lg text-foreground"
+          data-sidebar-brand=""
+          ref={brandRef}
+          style={{ maxWidth: brandMaxWidth }}
+        >
+          <AOMascot className="h-5.5 w-5.5 shrink-0 -translate-y-px" />
+          <span className="min-w-0 truncate" data-brand-label="">Orchestrator.inc</span>
+        </span>
+      ) : null}
     </div>
   );
 }

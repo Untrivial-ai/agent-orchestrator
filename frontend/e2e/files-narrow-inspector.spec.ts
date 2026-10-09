@@ -87,6 +87,8 @@ async function expectNarrowLayout(page: Page) {
 }
 
 test("@P0 files filter and review rows stay clear of each other in a narrow inspector", async ({ page }) => {
+	// Leave room for the macOS brand/history sidebar floor and a wide inspector.
+	await page.setViewportSize({ width: 1440, height: 720 });
 	await stubWorkspaceFiles(page);
 	await page.goto(`/#/projects/ao-demo/sessions/${sessionId}`);
 	const inspector = await openInspector(page);
