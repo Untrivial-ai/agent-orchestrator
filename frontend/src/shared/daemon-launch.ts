@@ -27,7 +27,9 @@ export function resolveDaemonLaunch(
 		return {
 			command: configuredCommand,
 			args: [],
-			cwd: appPath,
+			// A packaged appPath is the app.asar archive, which cannot be a spawn cwd
+			// (spawn throws ENOTDIR), so use the bundled daemon's working directory.
+			cwd: isPackaged ? joinPath(homeDir, ".ao") : appPath,
 			shell: true,
 			source: "configured",
 		};

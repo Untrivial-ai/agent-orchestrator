@@ -14,6 +14,25 @@ describe("resolveDaemonLaunch", () => {
 		});
 	});
 
+	it("runs AO_DAEMON_COMMAND from ~/.ao in packaged builds, never from the app.asar path", () => {
+		const launch = resolveDaemonLaunch(
+			{ AO_DAEMON_COMMAND: "/opt/ao daemon" },
+			true,
+			"/Applications/Agent Orchestrator.app/Contents/Resources",
+			"/Applications/Agent Orchestrator.app/Contents/Resources/app.asar",
+			"/Users/alice",
+			"darwin",
+		);
+		expect(launch).toEqual({
+			command: "/opt/ao daemon",
+			args: [],
+			cwd: "/Users/alice/.ao",
+			shell: true,
+			source: "configured",
+		});
+		expect(launch?.cwd).not.toContain(".asar");
+	});
+
 	it("uses the prebuilt daemon binary in non-Windows dev", () => {
 		expect(resolveDaemonLaunch({}, false, "/resources", "/repo/frontend", "/home/user", "darwin")).toEqual({
 			command: "/repo/frontend/daemon/ao",
