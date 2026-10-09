@@ -1285,12 +1285,13 @@ function normalizeCookieRows(
 function readFirefoxHistory(file: string): { history: BrowserHistoryEntry[]; warnings: BrowserImportWarning[] } {
 	return withReadOnlyDatabase(file, (database) => {
 		requireTable(database, "moz_places", "The selected Firefox profile does not contain supported history data.");
-		const eligible = countRows(database, "moz_places", "WHERE url LIKE 'http%'");
+		const historyFilter = "WHERE url LIKE 'http%' AND visit_count > 0 AND last_visit_date IS NOT NULL";
+		const eligible = countRows(database, "moz_places", historyFilter);
 		const truncated = Math.max(0, eligible - BROWSER_IMPORT_MAX_HISTORY_ENTRIES);
 		const history = (database.prepare(`
 			SELECT url, title, visit_count, last_visit_date
 			FROM moz_places
-			WHERE url LIKE 'http%'
+			${historyFilter}
 			ORDER BY last_visit_date DESC, rowid DESC
 			LIMIT ${BROWSER_IMPORT_MAX_HISTORY_ENTRIES}
 		`).all() as Record<string, unknown>[]).flatMap((row) => {

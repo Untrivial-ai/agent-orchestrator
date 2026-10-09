@@ -738,6 +738,76 @@ describe("BrowserProfileImportService", () => {
 		expect(result.entries[0]!.warnings).toContainEqual({ code: "cookie-attributes-defaulted", count: 1 });
 	});
 
+	it.each([0, 2, 5_000, 5_002])("imports only visited Firefox places and counts truncation with %i visited URLs", async (visitedCount) => {
+		const root = await fixtureRoot();
+		const profileRoot = path.join(root, ".mozilla", "firefox", "fixture.default-release");
+		await mkdir(profileRoot, { recursive: true });
+		const historyFile = path.join(profileRoot, "places.sqlite");
+		const database = new Database(historyFile);
+		try {
+			database.exec(`
+				CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER);
+				CREATE TABLE moz_bookmarks (id INTEGER PRIMARY KEY, fk INTEGER);
+				INSERT INTO moz_places VALUES (1, 'https://never-visited.example/', 'Never visited', 0, NULL);
+				INSERT INTO moz_places VALUES (2, 'https://cleared.example/', 'Cleared history', 4, 1767225600000000);
+				INSERT INTO moz_bookmarks VALUES (1, 1), (2, 2);
+				UPDATE moz_places SET visit_count = 0, last_visit_date = NULL WHERE id = 2;
+				INSERT INTO moz_places VALUES (3, 'about:config', 'Internal page', 1, 1767225600000000);
+			`);
+			const insert = database.prepare("INSERT INTO moz_places (url, title, visit_count, last_visit_date) VALUES (?, ?, ?, ?)");
+			database.exec("BEGIN");
+			for (let index = 0; index < visitedCount; index += 1) {
+				insert.run(`https://visited.example/${index}`, `Visited ${index}`, 3, 1767225600000000 + index * 1_000_000);
+			}
+			if (visitedCount > 0) database.prepare("INSERT INTO moz_bookmarks (fk) VALUES (?)").run(visitedCount + 3);
+			database.exec("COMMIT");
+		} finally {
+			database.close();
+		}
+		const original = await readFile(historyFile);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const historyStore = new BrowserHistoryStore({ stateDir });
+		const setCookie = vi.fn(async () => undefined);
+		const service = new BrowserProfileImportService({
+			stateDir,
+			profileStore,
+			historyStore,
+			platform: "linux",
+			homeDir: root,
+			env: {},
+			fromPartition: () => ({ cookies: { set: setCookie }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const source = (await service.discover()).sources.find((source) => source.family === "firefox")!;
+		const result = await service.import({
+			requestId: "abababab-abab-4bab-8bab-abababababab",
+			sourceId: source.id,
+			profileIds: [source.profiles[0]!.id],
+			includeCookies: false,
+			includeHistory: true,
+			destination: { mode: "merge", name: "Visited Firefox history" },
+		}, vi.fn());
+
+		expect(result.entries[0]).toMatchObject({
+			importedCookies: 0,
+			importedHistoryEntries: Math.min(visitedCount, 5_000),
+			warnings: visitedCount > 5_000 ? [{ code: "history-limit-truncated", count: visitedCount - 5_000 }] : [],
+		});
+		const profileId = profileStore.profiles[0]!.id;
+		for (const store of [historyStore, new BrowserHistoryStore({ stateDir })]) {
+			expect(await store.suggest(profileId, "never-visited.example")).toEqual([]);
+			expect(await store.suggest(profileId, "cleared.example")).toEqual([]);
+			if (visitedCount > 0) {
+				expect(await store.suggest(profileId, `https://visited.example/${visitedCount - 1}`)).toEqual([
+					expect.objectContaining({ url: `https://visited.example/${visitedCount - 1}`, title: `Visited ${visitedCount - 1}` }),
+				]);
+			}
+		}
+		expect(setCookie).not.toHaveBeenCalled();
+		expect(await readFile(historyFile)).toEqual(original);
+	});
+
 	it("imports Firefox history when a detected profile has an empty cookie database", async () => {
 		const root = await fixtureRoot();
 		const appData = path.join(root, "roaming");
