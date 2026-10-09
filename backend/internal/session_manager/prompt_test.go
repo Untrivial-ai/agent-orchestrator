@@ -134,7 +134,7 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 		"attach it to this worker first",
 		"AO resolves this session from `AO_SESSION_ID`",
 		"do not invent issue, PR, or MR requirements",
-		"Do not use the agent runtime's built-in subagent or task-delegation tools",
+		"you may delegate bounded portions of your assigned task",
 		"If no orchestrator is attached, continue serially and report the need for additional AO workers to the human",
 	} {
 		if !strings.Contains(got, want) {
@@ -146,6 +146,50 @@ func TestBuildSystemPrompt_WorkerHandlesTaskSourcesAndProviderPRRules(t *testing
 	}
 	if !strings.Contains(got, "## Git and PR/MR Rules") {
 		t.Fatalf("worker prompt missing repository rules section heading:\n%s", got)
+	}
+}
+
+func TestBuildSystemPrompt_WorkerMayDelegateToNativeSubagents(t *testing.T) {
+	got := buildSystemPromptText(systemPromptConfig{
+		Role:                  sessionPromptRoleWorker,
+		Project:               promptProject{ID: "mer", Name: "Mercury", Repo: "https://github.com/acme/mercury"},
+		OrchestratorSessionID: "mer-orchestrator",
+	})
+	for _, want := range []string{
+		"you may delegate bounded portions of your assigned task",
+		"do not fan out serial work",
+		"You remain responsible for integrating subagent results, testing, reporting, and this session's PR/MR",
+		"Subagents get no broader authority than this session",
+		"parallel subagents must be read-only or own disjoint files",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("worker prompt missing delegation rule %q:\n%s", want, got)
+		}
+	}
+}
+
+// Every generated worker prompt variant must be free of the old blanket
+// native-delegation prohibition, so no section contradicts the permission.
+func TestBuildSystemPrompt_NoWorkerVariantProhibitsNativeDelegation(t *testing.T) {
+	for _, cfg := range []systemPromptConfig{
+		{Role: sessionPromptRoleWorker, Project: promptProject{ID: "mer", Repo: "https://github.com/acme/mercury"}, OrchestratorSessionID: "mer-orchestrator"},
+		{Role: sessionPromptRoleWorker, Project: promptProject{ID: "mer", Repo: "https://github.com/acme/mercury", WorkersRequestReview: true}},
+		{Role: sessionPromptRoleWorker, Project: promptProject{ID: "mer"}},
+		{Role: sessionPromptRoleWorker, Project: promptProject{ID: "mer"}, OrchestratorSessionID: "mer-orchestrator"},
+		{Role: sessionPromptRoleWorker, Standalone: true},
+	} {
+		got := buildSystemPromptText(cfg)
+		for _, forbidden := range []string{
+			"Do not use the agent runtime's built-in subagent",
+			"instead of using the agent runtime's built-in subagent",
+			"instead of delegating inside the runtime",
+			"Complete the assigned task in this AO session only",
+			"AO workers only",
+		} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("worker prompt (%+v) retains delegation prohibition %q:\n%s", cfg, forbidden, got)
+			}
+		}
 	}
 }
 

@@ -291,9 +291,9 @@ func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {
 - Do not invent issue, PR, or MR requirements when no remote or SCM provider is available.
 - Clearly report what changed, what was verified, and any remaining risks.`
 	}
-	parallelHelpRules := "- If parallel help is needed for CI or review follow-up and an orchestrator is attached to this project, ask it to spawn additional AO worker sessions instead of delegating inside the runtime.\n- If no orchestrator is attached, continue serially and report the need for additional AO workers to the human."
+	parallelHelpRules := "- If CI or review follow-up needs more parallel capacity than bounded subagent delegation provides and an orchestrator is attached to this project, ask it to spawn additional AO worker sessions.\n- If no orchestrator is attached, continue serially and report the need for additional AO workers to the human."
 	if hasOrchestrator {
-		parallelHelpRules = "- If parallel help is needed for CI or review follow-up, ask the orchestrator to spawn additional AO worker sessions instead of using the agent runtime's built-in subagent or task-delegation tools."
+		parallelHelpRules = "- If CI or review follow-up needs more parallel capacity than bounded subagent delegation provides, ask the orchestrator to spawn additional AO worker sessions."
 	}
 	return fmt.Sprintf(`## AO Worker Role
 
@@ -336,7 +336,9 @@ Use `+"`ao report`"+` to persist meaningful progress for the active project orch
 
 - When you address PR/MR review comments, address each relevant thread, push the fix, and mark every thread you fixed as resolved when the platform supports it.
 - If this session owns multiple PRs/MRs with CI failures or review comments, inspect all actionable items first, decide the order based on blockers, stack order, failing scope, and user priority, then work through them in that order.
-- Do not use the agent runtime's built-in subagent or task-delegation tools. Complete the assigned task in this AO session only.
+- When your harness supports native subagents or task-delegation tools, you may delegate bounded portions of your assigned task to them. Delegate only work that actually splits; do not fan out serial work or create activity for its own sake.
+- You remain responsible for integrating subagent results, testing, reporting, and this session's PR/MR. Subagents get no broader authority than this session: the same task scope, ownership, execution guards, and approval boundaries apply.
+- Prevent overlapping edits: parallel subagents must be read-only or own disjoint files, and no two agents may edit the same file concurrently.
 %s
 - For complex tasks, write a short implementation plan before editing. Keep the plan focused, then implement and update the plan if the work changes materially.
 
