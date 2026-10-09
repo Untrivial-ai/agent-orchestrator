@@ -66,14 +66,23 @@ func (*Service) List(ctx context.Context, path string) (Listing, error) {
 
 	out := Listing{Path: path, Parent: filepath.Dir(path), Entries: []Entry{}}
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if strings.HasPrefix(entry.Name(), ".") {
 			continue
+		}
+		child := filepath.Join(path, entry.Name())
+		if !entry.IsDir() {
+			if entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			target, statErr := os.Stat(child)
+			if statErr != nil || !target.IsDir() {
+				continue
+			}
 		}
 		if len(out.Entries) == maxEntries {
 			out.Truncated = true
 			break
 		}
-		child := filepath.Join(path, entry.Name())
 		// .git may be a directory (normal clone) or a file (worktree): both are repos.
 		_, gitErr := os.Stat(filepath.Join(child, ".git"))
 		out.Entries = append(out.Entries, Entry{Name: entry.Name(), Path: child, GitRepo: gitErr == nil})
