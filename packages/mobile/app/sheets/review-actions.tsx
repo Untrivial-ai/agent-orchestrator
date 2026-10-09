@@ -31,6 +31,7 @@ import { formatExternalReviewMessage, formatInlineReviewCommentMessage } from ".
 import { ItemActionsMenu } from "../../lib/item-actions-menu";
 import type { ItemAction } from "../../lib/item-actions-menu.types";
 import { ReviewerPicker } from "../../lib/reviewer-picker";
+import { reviewerModelView } from "../../lib/reviewer-picker.types";
 import { defaultReviewerHarness, reviewerChoices, reviewerSelectionChanged, reviewerSwitchSelection, reviewerSwitchWarning } from "../../lib/reviewerControls";
 import { pullRequestSummaryForURL } from "../../lib/reviewView";
 import { HostScope, useApp } from "../../lib/store";
@@ -274,9 +275,7 @@ function ReviewActionsContent() {
 				selectedReviewer={reviewerOverride}
 				effectiveReviewer={effectiveReviewer}
 				onSelectReviewer={chooseReviewer}
-				models={effectiveReviewer ? (models?.models ?? []).map((model) => ({ id: model.id, label: model.label || model.id })) : []}
-				modelTitle={models?.selectionMode === "mode" ? "Mode" : "Model"}
-				selectedModel={(models?.selectionMode === "mode" ? reviewerConfig.mode : reviewerConfig.model) ?? ""}
+				model={reviewerModelView(effectiveReviewer ? models : undefined, (models?.selectionMode === "mode" ? reviewerConfig.mode : reviewerConfig.model) ?? "")}
 				onSelectModel={chooseModel}
 				busy={Boolean(busy)}
 			/> : <Text style={styles.empty}>No reviewer agents are available. Install or sign in to an agent on desktop.</Text>}

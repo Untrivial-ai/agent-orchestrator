@@ -9,7 +9,7 @@ import { useTheme, useThemeState } from "./ThemeProvider";
 import { iconSize } from "./tokens";
 
 /** Native pull-down menus for the reviewer and its model, matching the spawn sheet's harness/model menus. */
-export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer, onSelectReviewer, models, modelTitle, selectedModel, onSelectModel, busy }: ReviewerPickerProps) {
+export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer, onSelectReviewer, model, onSelectModel, busy }: ReviewerPickerProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const logoUris = useHarnessLogoUris(reviewers);
@@ -17,7 +17,6 @@ export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer,
 	const reviewerText = selectedReviewer
 		? reviewerLabel(reviewers, selectedReviewer)
 		: effectiveReviewer ? `Project default · ${reviewerLabel(reviewers, effectiveReviewer)}` : "Project default";
-	const modelText = selectedModel ? reviewerLabel(models, selectedModel) : "Provider default";
 	const rowHeight = 44;
 
 	return (
@@ -53,30 +52,32 @@ export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer,
 						))}
 					</Menu>
 				</HStack>
-				{models.length ? (
+				{model.choices.length ? (
 					<HStack spacing={8} modifiers={[frame({ height: rowHeight }), padding({ horizontal: 2 })]}>
-						<Text modifiers={[font({ size: 15, weight: "semibold" }), foregroundStyle(t.textPrimary)]}>{modelTitle}</Text>
+						<Text modifiers={[font({ size: 15, weight: "semibold" }), foregroundStyle(t.textPrimary)]}>{model.title}</Text>
 						<Spacer />
 						<Menu
 							label={
 								<HStack spacing={5} modifiers={[frame({ height: rowHeight }), contentShape(shapes.rectangle())]}>
-									<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{modelText}</Text>
+									<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{model.text}</Text>
 									<Image systemName="chevron.up.chevron.down" size={iconSize.xs} />
 								</HStack>
 							}
 							modifiers={[buttonStyle("plain"), tint(t.textSecondary), accessibilityIdentifier("review-model")]}
 						>
-							<Button
-								label="Provider default"
-								systemImage={selectedModel ? undefined : "checkmark"}
-								onPress={() => { if (busy) return; haptics.select(); onSelectModel(""); }}
-							/>
-							{models.map((model) => (
+							{model.followAgent ? (
 								<Button
-									key={model.id}
-									label={model.label}
-									systemImage={model.id === selectedModel ? "checkmark" : undefined}
-									onPress={() => { if (busy) return; haptics.select(); onSelectModel(model.id); }}
+									label={model.followAgent.label}
+									systemImage={model.followAgent.selected ? "checkmark" : undefined}
+									onPress={() => { if (busy) return; haptics.select(); onSelectModel(""); }}
+								/>
+							) : null}
+							{model.choices.map((choice) => (
+								<Button
+									key={choice.id}
+									label={choice.label}
+									systemImage={choice.selected ? "checkmark" : undefined}
+									onPress={() => { if (busy) return; haptics.select(); onSelectModel(choice.value); }}
 								/>
 							))}
 						</Menu>

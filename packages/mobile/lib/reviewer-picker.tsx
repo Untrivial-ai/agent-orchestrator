@@ -10,7 +10,7 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 type Picker = "reviewer" | "model" | null;
 
 /** Android/web reviewer and model selectors, expanded inline like dropdowns. */
-export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer, onSelectReviewer, models, modelTitle, selectedModel, onSelectModel, busy }: ReviewerPickerProps) {
+export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer, onSelectReviewer, model, onSelectModel, busy }: ReviewerPickerProps) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const [expanded, setExpanded] = useState<Picker>(null);
@@ -18,7 +18,6 @@ export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer,
 	const reviewerText = selectedReviewer
 		? reviewerLabel(reviewers, selectedReviewer)
 		: effectiveReviewer ? `Project default · ${reviewerLabel(reviewers, effectiveReviewer)}` : "Project default";
-	const modelText = selectedModel ? reviewerLabel(models, selectedModel) : "Provider default";
 
 	function toggle(which: Exclude<Picker, null>) {
 		haptics.tap();
@@ -31,10 +30,10 @@ export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer,
 		onSelectReviewer(id);
 	}
 
-	function chooseModel(id: string) {
+	function chooseModel(value: string) {
 		haptics.select();
 		setExpanded(null);
-		onSelectModel(id);
+		onSelectModel(value);
 	}
 
 	return <View>
@@ -50,17 +49,17 @@ export function ReviewerPicker({ reviewers, selectedReviewer, effectiveReviewer,
 			<Option title="Project default" subtitle={effectiveReviewer ? reviewerLabel(reviewers, effectiveReviewer) : undefined} icon="users" selected={!selectedReviewer} disabled={busy} onPress={() => chooseReviewer("")} />
 			{reviewers.map((agent) => <Option key={agent.id} title={agent.label} harness={agent.id} selected={selectedReviewer === agent.id} disabled={busy} onPress={() => chooseReviewer(agent.id)} />)}
 		</View> : null}
-		{models.length ? <>
-			<Pressable accessibilityRole="button" accessibilityLabel={`${modelTitle}: ${modelText}`} accessibilityState={{ expanded: expanded === "model", disabled: busy }} disabled={busy} onPress={() => toggle("model")} style={({ pressed }) => [styles.selector, styles.modelSelector, pressed && styles.pressed, busy && styles.disabled]}>
-				<Text style={styles.label}>{modelTitle}</Text>
+		{model.choices.length ? <>
+			<Pressable accessibilityRole="button" accessibilityLabel={`${model.title}: ${model.text}`} accessibilityState={{ expanded: expanded === "model", disabled: busy }} disabled={busy} onPress={() => toggle("model")} style={({ pressed }) => [styles.selector, styles.modelSelector, pressed && styles.pressed, busy && styles.disabled]}>
+				<Text style={styles.label}>{model.title}</Text>
 				<View style={styles.valueGroup}>
-					<Text numberOfLines={1} ellipsizeMode="tail" style={styles.value}>{modelText}</Text>
+					<Text numberOfLines={1} ellipsizeMode="tail" style={styles.value}>{model.text}</Text>
 					<Feather name={expanded === "model" ? "chevron-up" : "chevron-down"} size={16} color={t.textTertiary} />
 				</View>
 			</Pressable>
 			{expanded === "model" ? <View style={styles.options}>
-				<Option title="Provider default" icon={null} selected={!selectedModel} disabled={busy} onPress={() => chooseModel("")} />
-				{models.map((model) => <Option key={model.id} title={model.label} icon={null} selected={selectedModel === model.id} disabled={busy} onPress={() => chooseModel(model.id)} />)}
+				{model.followAgent ? <Option title={model.followAgent.label} icon={null} selected={model.followAgent.selected} disabled={busy} onPress={() => chooseModel("")} /> : null}
+				{model.choices.map((choice) => <Option key={choice.id} title={choice.label} icon={null} selected={choice.selected} disabled={busy} onPress={() => chooseModel(choice.value)} />)}
 			</View> : null}
 		</> : null}
 	</View>;
