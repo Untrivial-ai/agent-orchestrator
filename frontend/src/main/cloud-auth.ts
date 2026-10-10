@@ -156,6 +156,16 @@ function storePath(dataDir: string): string {
   return path.join(dataDir, AUTH_STORE_FILE);
 }
 
+export function resolveCloudDataDir(
+  env: Record<string, string | undefined>,
+  homeDir: string,
+  desktopDataDir: string,
+  isDev: boolean,
+): string {
+  if (env.AO_DATA_DIR?.trim()) return desktopDataDir;
+  return isDev ? path.join(homeDir, ".ao", "dev") : path.join(homeDir, ".ao");
+}
+
 function protectedStorageAvailable(): boolean {
   if (!safeStorage.isEncryptionAvailable()) return false;
   if (process.platform !== "linux") return true;

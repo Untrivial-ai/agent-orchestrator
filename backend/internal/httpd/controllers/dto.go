@@ -3302,3 +3302,155 @@ type MuteDeviceRequest struct {
 type InstallIDParam struct {
 	InstallID string `path:"installId" description:"The device's stable install id."`
 }
+
+// TestingCapabilityHeader is launch-only ownership for tool calls. Management
+// routes use loopback trust. Tool calls additionally require
+// X-AO-Test-Capability, an in-memory token issued only to the bound worker.
+type TestingCapabilityHeader struct {
+	Capability string `header:"X-AO-Test-Capability" description:"Launch-only worker capability. Never persist it, put it in a URL or log it."`
+}
+
+// TestingRunIDParam selects the managed test run.
+type TestingRunIDParam struct {
+	RunID string `path:"runId"`
+}
+
+// TestingAttemptIDParam selects the managed test attempt.
+type TestingAttemptIDParam struct {
+	AttemptID string `path:"attemptId"`
+}
+
+// CreateTestingRunRequest snapshots a PR URL pair or a manual single run.
+type CreateTestingRunRequest struct {
+	_             struct{} `additionalProperties:"false"`
+	PRURL         string   `json:"prUrl,omitempty" description:"GitHub PR URL; resolves and snapshots exact base/head revisions instead of manual issue and commit fields."`
+	LinkedRunID   string   `json:"linkedRunId,omitempty"`
+	ProjectID     string   `json:"projectId" minLength:"1"`
+	IssueURL      string   `json:"issueUrl"`
+	IssueSnapshot string   `json:"issueSnapshot,omitempty" minLength:"1" maxLength:"262144"`
+	CommitSHA     string   `json:"commitSha,omitempty" minLength:"1"`
+	RecipeID      string   `json:"recipeId,omitempty" minLength:"1" description:"Defaults to local-ao for PR URL intake."`
+	Requester     string   `json:"requester" minLength:"1"`
+}
+
+// TestingRunResponse identifies a single run or the base/head PR pair.
+type TestingRunResponse struct {
+	RunID     string    `json:"runId"`
+	HeadRunID string    `json:"headRunId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// StartTestingAttemptRequest selects the investigator and attempt timeout.
+type StartTestingAttemptRequest struct {
+	_              struct{} `additionalProperties:"false"`
+	Harness        string   `json:"harness,omitempty"`
+	Model          string   `json:"model,omitempty" maxLength:"256"`
+	Effort         string   `json:"effort,omitempty" maxLength:"32"`
+	WorkerPrompt   string   `json:"workerPrompt" minLength:"1" maxLength:"65536"`
+	TimeoutSeconds int      `json:"timeoutSeconds,omitempty" minimum:"1" maximum:"7200" description:"Defaults to 1800 seconds."`
+}
+
+// TestingAttemptStartResponse identifies the run, attempt and visible worker.
+type TestingAttemptStartResponse struct {
+	RunID           string `json:"runId"`
+	AttemptID       string `json:"attemptId"`
+	WorkerSessionID string `json:"workerSessionId"`
+}
+
+// TestingAttemptResponse reports cancellation independently of target cleanup.
+type TestingAttemptResponse struct {
+	AttemptID    string `json:"attemptId"`
+	Phase        string `json:"phase" enum:"starting,active,finished"`
+	Outcome      string `json:"outcome" enum:"reproduced,not_reproduced,needs_information,environment_blocked,partial,cancelled"`
+	CleanupState string `json:"cleanupState" enum:"pending,running,complete,failed"`
+	RecordingGap string `json:"recordingGap"`
+}
+
+// TestingEvidenceResponse lists evidence retained outside the target.
+type TestingEvidenceResponse struct {
+	Evidence []domain.TestEvidenceReceipt `json:"evidence"`
+}
+
+// TestingToolRequest is the strict HTTP envelope decoded before tool validation.
+type TestingToolRequest struct {
+	_         struct{}        `additionalProperties:"false"`
+	SessionID string          `json:"sessionId" minLength:"1"`
+	RequestID string          `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     json.RawMessage `json:"input"`
+}
+
+// TestingScreenshotCall documents the screenshot input envelope.
+type TestingScreenshotCall struct {
+	_         struct{}                     `additionalProperties:"false"`
+	SessionID string                       `json:"sessionId" minLength:"1"`
+	RequestID string                       `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestScreenshotRequest `json:"input"`
+}
+
+// TestingObserveCall documents the same-capture pixel and AX observation.
+type TestingObserveCall struct {
+	_         struct{}                  `additionalProperties:"false"`
+	SessionID string                    `json:"sessionId" minLength:"1"`
+	RequestID string                    `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestObserveRequest `json:"input"`
+}
+
+// TestingClickCall documents the click input envelope.
+type TestingClickCall struct {
+	_         struct{}                `additionalProperties:"false"`
+	SessionID string                  `json:"sessionId" minLength:"1"`
+	RequestID string                  `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestClickRequest `json:"input"`
+}
+
+// TestingTypeCall documents the type input envelope.
+type TestingTypeCall struct {
+	_         struct{}               `additionalProperties:"false"`
+	SessionID string                 `json:"sessionId" minLength:"1"`
+	RequestID string                 `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestTypeRequest `json:"input"`
+}
+
+// TestingKeyCall documents the key input envelope.
+type TestingKeyCall struct {
+	_         struct{}              `additionalProperties:"false"`
+	SessionID string                `json:"sessionId" minLength:"1"`
+	RequestID string                `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestKeyRequest `json:"input"`
+}
+
+// TestingLogsCall documents the bounded target-log input envelope.
+type TestingLogsCall struct {
+	_         struct{}                   `additionalProperties:"false"`
+	SessionID string                     `json:"sessionId" minLength:"1"`
+	RequestID string                     `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestReadLogsRequest `json:"input"`
+}
+
+// TestingQueryCall documents the read-only target-daemon query envelope.
+type TestingQueryCall struct {
+	_         struct{}                      `additionalProperties:"false"`
+	SessionID string                        `json:"sessionId" minLength:"1"`
+	RequestID string                        `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestDaemonQueryRequest `json:"input"`
+}
+
+// TestingReportCall documents the saved investigator-report input envelope.
+type TestingReportCall struct {
+	_         struct{}                       `additionalProperties:"false"`
+	SessionID string                         `json:"sessionId" minLength:"1"`
+	RequestID string                         `json:"requestId" minLength:"1" maxLength:"128"`
+	Input     domain.TestSubmitReportRequest `json:"input"`
+}
+
+// TestingToolResponse contains one tool result and its evidence receipts.
+type TestingToolResponse struct {
+	Screenshot        *domain.TestScreenshot         `json:"screenshot,omitempty"`
+	Action            *domain.TestActionResult       `json:"action,omitempty"`
+	ObservationStatus string                         `json:"observationStatus,omitempty" enum:"captured,settled,unsettled,failed"`
+	ObservationError  string                         `json:"observationError,omitempty"`
+	Logs              *domain.TestLogResult          `json:"logs,omitempty"`
+	Query             *domain.TestDaemonQueryResult  `json:"query,omitempty"`
+	Report            *domain.TestSubmitReportResult `json:"report,omitempty"`
+	Evidence          []domain.TestEvidenceReceipt   `json:"evidence"`
+}

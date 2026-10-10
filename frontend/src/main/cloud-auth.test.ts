@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,10 +66,124 @@ import {
   handleCloudDeepLink,
   installCloudIPC,
   readAuthStore,
+  resolveCloudDataDir,
   showCloudSignInFailure,
   signOutCloud,
   writeAuthStore,
 } from "./cloud-auth";
+import { resolveDesktopDataDir } from "./telemetry-policy-file";
+
+describe("cloud storage isolation", () => {
+  let homeDir: string;
+  let sharedDir: string;
+  const sentinels = ["cloud-auth.bin", "cloud-session.json"];
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mocks.encryptionAvailable = true;
+    mocks.selectedStorageBackend = "gnome_libsecret";
+    homeDir = await mkdtemp(path.join(os.tmpdir(), "ao-cloud-isolation-"));
+    sharedDir = path.join(homeDir, ".ao", "dev");
+    await mkdir(sharedDir, { recursive: true });
+    for (const name of sentinels) {
+      await writeFile(path.join(sharedDir, name), `protected-${name}`);
+    }
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  const instanceDir = (instance: string) => {
+    const env = { AO_DATA_DIR: path.join(homeDir, ".ao", "dev", instance, "data") };
+    const desktopDir = resolveDesktopDataDir(env, homeDir, "/checkout", false);
+    return resolveCloudDataDir(env, homeDir, desktopDir, true);
+  };
+
+  const getSession = (dataDir: string) => {
+    installCloudIPC(() => dataDir, mocks.notifyRenderers);
+    const handler = mocks.ipcHandle.mock.calls.find(
+      ([channel]) => channel === "cloud:getSession",
+    )?.[1] as () => Promise<unknown>;
+    return handler();
+  };
+
+  const expectSharedUnchanged = async () => {
+    for (const name of sentinels) {
+      await expect(readFile(path.join(sharedDir, name), "utf8")).resolves.toBe(`protected-${name}`);
+    }
+  };
+
+  it.each([true, false])("preserves default cloud storage with isDev=%s", (isDev) => {
+    for (const value of [undefined, "", "   "]) {
+      const env = { AO_DATA_DIR: value };
+      const desktopDir = resolveDesktopDataDir(env, homeDir, "/checkout", !isDev);
+      expect(resolveCloudDataDir(env, homeDir, desktopDir, isDev)).toBe(
+        isDev ? sharedDir : path.join(homeDir, ".ao"),
+      );
+    }
+  });
+
+  it.each([true, false])("uses the resolved override with isDev=%s", (isDev) => {
+    for (const value of [path.join(homeDir, "isolated"), " relative-data "]) {
+      const env = { AO_DATA_DIR: value };
+      const desktopDir = resolveDesktopDataDir(env, homeDir, "/launch-cwd", !isDev);
+      expect(resolveCloudDataDir(env, homeDir, desktopDir, isDev)).toBe(
+        path.resolve("/launch-cwd", value.trim()),
+      );
+    }
+  });
+
+  it.each(["agentic-supervisor", "agentic-target"])("keeps empty %s startup out of shared auth", async (instance) => {
+    await expect(getSession(instanceDir(instance))).resolves.toBeNull();
+    expect(mocks.decryptString).not.toHaveBeenCalled();
+    await expectSharedUnchanged();
+  });
+
+  it.each([true, false])("confines startup removal with encryption available=%s", async (available) => {
+    const dataDir = instanceDir("agentic-target");
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(path.join(dataDir, "cloud-auth.bin"), "invalid-instance-store");
+    mocks.encryptionAvailable = available;
+    await expect(getSession(dataDir)).resolves.toBeNull();
+    await expect(readFile(path.join(dataDir, "cloud-auth.bin"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expectSharedUnchanged();
+  });
+
+  it("confines refresh writes and sign-out removal to the instance", async () => {
+    const dataDir = instanceDir("agentic-supervisor");
+    await writeAuthStore(dataDir, {
+      session: {
+        authProvider: "workos",
+        accessToken: EXPIRED_ACCESS_TOKEN,
+        refreshToken: "instance-refresh",
+        user: { id: "instance-user", email: "instance@example.test", displayName: "Instance" },
+        storedAt: "2026-10-06T00:00:00Z",
+      },
+      pkce: null,
+    });
+    mocks.authenticateWithRefreshToken.mockResolvedValueOnce({
+      accessToken: ACCESS_TOKEN,
+      refreshToken: "instance-refreshed",
+      user: { id: "instance-user", email: "instance@example.test", name: "Instance" },
+    });
+    const refreshed = new Promise<void>((resolve) => {
+      mocks.notifyRenderers.mockImplementationOnce(() => resolve());
+    });
+    await getSession(dataDir);
+    await refreshed;
+    expect(mocks.authenticateWithRefreshToken).toHaveBeenCalledOnce();
+    await expect(readAuthStore(dataDir)).resolves.toMatchObject({ session: { refreshToken: "instance-refreshed" } });
+    await expectSharedUnchanged();
+    await writeFile(path.join(dataDir, "cloud-session.json"), "instance-legacy");
+    await signOutCloud(dataDir);
+    for (const name of sentinels) {
+      await expect(readFile(path.join(dataDir, name))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await expectSharedUnchanged();
+  });
+});
 
 describe("native WorkOS authentication", () => {
   let dataDir: string;

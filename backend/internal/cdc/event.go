@@ -20,6 +20,8 @@ type EventType string
 
 // Event types, one per row-change the DB triggers emit into change_log.
 const (
+	// EventTestingUpdated invalidates durable testing run, attempt and binding facts.
+	EventTestingUpdated         EventType = "testing_updated"
 	EventSessionCreated         EventType = "session_created"
 	EventSessionUpdated         EventType = "session_updated"
 	EventPRCreated              EventType = "pr_created"

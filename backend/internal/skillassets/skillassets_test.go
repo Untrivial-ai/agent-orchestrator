@@ -10,7 +10,14 @@ import (
 )
 
 func TestEmbeddedSkillFrontmatterIsValidYAML(t *testing.T) {
-	body, err := files.ReadFile("using-ao/SKILL.md")
+	for _, name := range []string{SkillName, TestingSkillName} {
+		t.Run(name, func(t *testing.T) { testEmbeddedSkillFrontmatter(t, name) })
+	}
+}
+
+func testEmbeddedSkillFrontmatter(t *testing.T, name string) {
+	t.Helper()
+	body, err := files.ReadFile(name + "/SKILL.md")
 	if err != nil {
 		t.Fatalf("read embedded SKILL.md: %v", err)
 	}
@@ -28,13 +35,13 @@ func TestEmbeddedSkillFrontmatterIsValidYAML(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(parts[1]), &frontmatter); err != nil {
 		t.Fatalf("parse embedded SKILL.md frontmatter: %v", err)
 	}
-	if frontmatter.Name != SkillName {
-		t.Fatalf("frontmatter name = %q, want %q", frontmatter.Name, SkillName)
+	if frontmatter.Name != name {
+		t.Fatalf("frontmatter name = %q, want %q", frontmatter.Name, name)
 	}
 	if strings.TrimSpace(frontmatter.Description) == "" {
 		t.Fatal("frontmatter description is empty")
 	}
-	if strings.TrimSpace(frontmatter.Trigger) == "" {
+	if name == SkillName && strings.TrimSpace(frontmatter.Trigger) == "" {
 		t.Fatal("frontmatter trigger is empty")
 	}
 }
@@ -166,6 +173,32 @@ func TestInstall_WritesSkillAndIsIdempotent(t *testing.T) {
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale file survived reinstall (err=%v)", err)
+	}
+	testingFile := filepath.Join(TestingDir(dataDir), "SKILL.md")
+	want, err := files.ReadFile(TestingSkillName + "/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testingFile, []byte("stale testing skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Install(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(testingFile); err != nil || string(got) != string(want) {
+		t.Fatalf("installed testing skill differs from embedded copy: %v", err)
+	}
+	// Head preparation must work from installed skills even when the target
+	// revision predates testing support and base private state has been removed.
+	for _, script := range []string{"prepare.py", "prepare.cjs", "bootstrap.cjs"} {
+		want, err := files.ReadFile(TestingSkillName + "/scripts/" + script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(TestingDir(dataDir), "scripts", script))
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("installed preparation asset %s differs: %v", script, err)
+		}
 	}
 }
 

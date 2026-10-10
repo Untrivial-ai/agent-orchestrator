@@ -730,6 +730,12 @@ type SessionInterfaceTransitionMessage struct {
 	AuthoredByUser  bool
 }
 
+type SessionTestTool struct {
+	SessionID string
+	AttemptID string
+	ProfileID string
+}
+
 type SessionWorktree struct {
 	SessionID    domain.SessionID
 	RepoName     string
@@ -764,6 +770,43 @@ type TelemetryEvent struct {
 	SessionID   sql.NullString
 	RequestID   string
 	PayloadJson string
+}
+
+type TestAttempt struct {
+	ID              string
+	RunID           string
+	Number          int64
+	TargetIdentity  sql.NullString
+	LeaseGeneration int64
+	Phase           string
+	Deadline        time.Time
+	Outcome         sql.NullString
+	CleanupState    string
+	RecordingGap    string
+	CancelledAt     sql.NullTime
+	CreatedAt       time.Time
+	FinishedAt      sql.NullTime
+}
+
+type TestRun struct {
+	ID               string
+	LinkedRunID      sql.NullString
+	ProjectID        string
+	IssueURL         string
+	IssueSnapshot    string
+	CommitSha        string
+	RecipeSnapshot   string
+	Requester        string
+	WorkerSessionID  sql.NullString
+	ReportEvidenceID sql.NullString
+	CreatedAt        time.Time
+}
+
+type TestWorkerLeg struct {
+	SessionID      string
+	BaseRunID      string
+	HeadRunID      string
+	TimeoutSeconds int64
 }
 
 type UsageBinding struct {

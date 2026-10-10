@@ -35,6 +35,7 @@ var routineInternalCLICommands = []string{
 	"ao unreal-provider",
 	"ao codex-login",
 	"ao claude-login",
+	"ao testing mcp",
 }
 
 // CLIActorType infers the actor for legacy loopback CLI telemetry requests that
@@ -76,6 +77,7 @@ var legacyActorlessSystemCLICommands = map[string]struct{}{
 	"ao pty-host":                {},
 	"ao start":                   {},
 	"ao unreal-provider":         {},
+	"ao testing mcp":             {},
 }
 
 var legacyActorlessUserCLICommands = map[string]struct{}{
@@ -135,6 +137,12 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao cue":                    {},
 	"ao cue create":             {},
 	"ao cue list":               {},
+	"ao testing":                {},
+	"ao testing start":          {},
+	"ao testing leg":            {},
+	"ao testing leg start":      {},
+	"ao testing stop":           {},
+	"ao testing evidence":       {},
 	"ao dev":                    {},
 	"ao dev import-projects":    {},
 	"ao doctor":                 {},

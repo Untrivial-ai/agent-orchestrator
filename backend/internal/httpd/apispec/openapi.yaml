@@ -9492,6 +9492,1582 @@ paths:
       summary: Cancel an unclaimed speculative task worktree
       tags:
       - projects
+  /api/v1/testing/attempts/{attemptId}/cancel:
+    post:
+      operationId: cancelTestingAttempt
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingAttemptResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Cancel an attempt and revoke its tools
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/evidence:
+    get:
+      operationId: listTestingEvidence
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingEvidenceResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: List evidence retained after cancellation or target shutdown
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/click:
+    post:
+      operationId: testingClick
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingClickCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound click tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/key:
+    post:
+      operationId: testingKey
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingKeyCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound key tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/observe:
+    post:
+      operationId: testingObserve
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingObserveCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound observe tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/read_target_logs:
+    post:
+      operationId: testingReadTargetLogs
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingLogsCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound read_target_logs tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/screenshot:
+    post:
+      operationId: testingScreenshot
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingScreenshotCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound screenshot tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/submit_report:
+    post:
+      operationId: testingSubmitReport
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingReportCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound submit_report tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/target_daemon_query:
+    post:
+      operationId: testingTargetDaemonQuery
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingQueryCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound target_daemon_query tool
+      tags:
+      - testing
+  /api/v1/testing/attempts/{attemptId}/tools/type:
+    post:
+      operationId: testingType
+      parameters:
+      - in: path
+        name: attemptId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingTypeCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Call the target-bound type tool
+      tags:
+      - testing
+  /api/v1/testing/comparisons:
+    post:
+      operationId: startTestingComparison
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartTestingComparisonRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingAttemptStartResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Attach one worker to pinned base and head runs before launching either
+        target
+      tags:
+      - testing
+  /api/v1/testing/runs:
+    post:
+      operationId: createTestingRun
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTestingRunRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingRunResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Create an investigation using a configured recipe
+      tags:
+      - testing
+  /api/v1/testing/runs/{runId}/attempts:
+    post:
+      operationId: startTestingAttempt
+      parameters:
+      - in: path
+        name: runId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartTestingAttemptRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingAttemptStartResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Start a target and investigator worker
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/legs/{leg}/start:
+    post:
+      operationId: startTestingLeg
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: leg
+        required: true
+        schema:
+          enum:
+          - base
+          - head
+          type: string
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingLegStartResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Clean up the previous target and start a pinned revision in the same
+        worker
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/click:
+    post:
+      operationId: testingSessionClick
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingClickCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call click
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/key:
+    post:
+      operationId: testingSessionKey
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingKeyCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call key
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/observe:
+    post:
+      operationId: testingSessionObserve
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingObserveCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call observe
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/read_target_logs:
+    post:
+      operationId: testingSessionReadTargetLogs
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingLogsCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call read_target_logs
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/screenshot:
+    post:
+      operationId: testingSessionScreenshot
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingScreenshotCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call screenshot
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/submit_report:
+    post:
+      operationId: testingSessionSubmitReport
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingReportCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call submit_report
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/target_daemon_query:
+    post:
+      operationId: testingSessionTargetDaemonQuery
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingQueryCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call target_daemon_query
+      tags:
+      - testing
+  /api/v1/testing/sessions/{sessionId}/tools/type:
+    post:
+      operationId: testingSessionType
+      parameters:
+      - in: path
+        name: sessionId
+        required: true
+        schema:
+          type: string
+      - description: Launch-only worker capability. Never persist it, put it in a
+          URL or log it.
+        in: header
+        name: X-AO-Test-Capability
+        schema:
+          description: Launch-only worker capability. Never persist it, put it in
+            a URL or log it.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TestingTypeCall'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestingToolResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unsupported Media Type
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Resolve the current owned target and call type
+      tags:
+      - testing
   /api/v1/usage/memory/pressure:
     get:
       operationId: getMemoryPressure
@@ -12215,6 +13791,39 @@ components:
           type: string
       required:
       - id
+      type: object
+    CreateTestingRunRequest:
+      additionalProperties: false
+      properties:
+        commitSha:
+          minLength: 1
+          type: string
+        issueSnapshot:
+          maxLength: 262144
+          minLength: 1
+          type: string
+        issueUrl:
+          type: string
+        linkedRunId:
+          type: string
+        prUrl:
+          description: GitHub PR URL; resolves and snapshots exact base/head revisions
+            instead of manual issue and commit fields.
+          type: string
+        projectId:
+          minLength: 1
+          type: string
+        recipeId:
+          description: Defaults to local-ao for PR URL intake.
+          minLength: 1
+          type: string
+        requester:
+          minLength: 1
+          type: string
+      required:
+      - projectId
+      - issueUrl
+      - requester
       type: object
     CueDefinitionRequest:
       properties:
@@ -15802,6 +17411,60 @@ components:
       - sessionId
       - transition
       type: object
+    StartTestingAttemptRequest:
+      additionalProperties: false
+      properties:
+        effort:
+          maxLength: 32
+          type: string
+        harness:
+          type: string
+        model:
+          maxLength: 256
+          type: string
+        timeoutSeconds:
+          description: Defaults to 1800 seconds.
+          maximum: 7200
+          minimum: 1
+          type: integer
+        workerPrompt:
+          maxLength: 65536
+          minLength: 1
+          type: string
+      required:
+      - workerPrompt
+      type: object
+    StartTestingComparisonRequest:
+      additionalProperties: false
+      properties:
+        effort:
+          maxLength: 32
+          type: string
+        harness:
+          type: string
+        headRunId:
+          minLength: 1
+          type: string
+        model:
+          maxLength: 256
+          type: string
+        runId:
+          minLength: 1
+          type: string
+        timeoutSeconds:
+          description: Defaults to 1800 seconds.
+          maximum: 7200
+          minimum: 1
+          type: integer
+        workerPrompt:
+          maxLength: 65536
+          minLength: 1
+          type: string
+      required:
+      - workerPrompt
+      - runId
+      - headRunId
+      type: object
     SteerConversationRequest:
       properties:
         attachments:
@@ -16025,6 +17688,625 @@ components:
       required:
       - ready
       - requirements
+      type: object
+    TestActionResult:
+      properties:
+        delivered:
+          type: boolean
+        detail:
+          type: string
+        inputPath:
+          description: Actual provider-reported path, or unknown when it is not reported.
+          type: string
+        requestedInputPath:
+          enum:
+          - ax
+          - pointer
+          - keyboard
+          - ax+keyboard
+          - pointer+keyboard
+          type: string
+      required:
+      - delivered
+      type: object
+    TestClickRequest:
+      additionalProperties: false
+      oneOf:
+      - not:
+          anyOf:
+          - required:
+            - x
+          - required:
+            - "y"
+        required:
+        - elementId
+      - not:
+          required:
+          - elementId
+        required:
+        - x
+        - "y"
+      properties:
+        button:
+          default: left
+          enum:
+          - left
+          - right
+          - middle
+          type: string
+        elementId:
+          description: Use an element from this observation, or supply both x and
+            y instead.
+          maxLength: 128
+          minLength: 1
+          type: string
+        screenshotId:
+          minLength: 1
+          type: string
+        x:
+          minimum: 0
+          type: integer
+        "y":
+          minimum: 0
+          type: integer
+      required:
+      - screenshotId
+      type: object
+    TestDaemonQueryRequest:
+      additionalProperties: false
+      properties:
+        resource:
+          enum:
+          - projects
+          - sessions
+          - reviews
+          - conversation
+          type: string
+        sessionId:
+          maxLength: 128
+          type: string
+      required:
+      - resource
+      type: object
+    TestDaemonQueryResult:
+      properties:
+        data: {}
+        resource:
+          enum:
+          - projects
+          - sessions
+          - reviews
+          - conversation
+          type: string
+      required:
+      - resource
+      - data
+      type: object
+    TestDesktopFrame:
+      properties:
+        bounds:
+          $ref: '#/components/schemas/TestWindowBounds'
+        capturedAt:
+          format: date-time
+          type: string
+        height:
+          type: integer
+        scale:
+          format: double
+          type: number
+        screenshotId:
+          minLength: 1
+          type: string
+        width:
+          type: integer
+      required:
+      - screenshotId
+      - bounds
+      - width
+      - height
+      - scale
+      - capturedAt
+      type: object
+    TestElement:
+      properties:
+        elementId:
+          type: string
+        enabled:
+          type:
+          - "null"
+          - boolean
+        focused:
+          type:
+          - "null"
+          - boolean
+        frame:
+          $ref: '#/components/schemas/TestWindowBounds'
+        label:
+          maxLength: 256
+          type: string
+        role:
+          maxLength: 64
+          type: string
+        value:
+          maxLength: 256
+          type: string
+      required:
+      - elementId
+      - role
+      - frame
+      type: object
+    TestEvidenceReceipt:
+      properties:
+        attemptId:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        kind:
+          type: string
+        mimeType:
+          type: string
+        relativePath:
+          type: string
+        sha256:
+          type: string
+        sizeBytes:
+          format: int64
+          type: integer
+      required:
+      - id
+      - attemptId
+      - kind
+      - relativePath
+      - mimeType
+      - sizeBytes
+      - sha256
+      - createdAt
+      type: object
+    TestKeyRequest:
+      additionalProperties: false
+      properties:
+        keys:
+          items:
+            type: string
+          maxItems: 4
+          minItems: 1
+          type: array
+        screenshotId:
+          minLength: 1
+          type: string
+      required:
+      - screenshotId
+      - keys
+      type: object
+    TestLogResult:
+      properties:
+        nextCursor:
+          type: string
+        text:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - text
+      - truncated
+      type: object
+    TestObserveRequest:
+      additionalProperties: false
+      type: object
+    TestReadLogsRequest:
+      additionalProperties: false
+      properties:
+        cursor:
+          maxLength: 256
+          type: string
+        maxBytes:
+          default: 65536
+          maximum: 262144
+          minimum: 1
+          type: integer
+      type: object
+    TestScreenshot:
+      properties:
+        data:
+          format: base64
+          type: string
+        elements:
+          items:
+            $ref: '#/components/schemas/TestElement'
+          maxItems: 300
+          type: array
+        frame:
+          $ref: '#/components/schemas/TestDesktopFrame'
+        inputReady:
+          description: False means the retained image is for inspection only; observe
+            again before input.
+          type: boolean
+        mimeType:
+          type: string
+        truncated:
+          type: boolean
+      required:
+      - frame
+      - mimeType
+      - data
+      - elements
+      - truncated
+      - inputReady
+      type: object
+    TestScreenshotRequest:
+      additionalProperties: false
+      type: object
+    TestSubmitReportRequest:
+      additionalProperties: false
+      properties:
+        markdown:
+          maxLength: 65536
+          type: string
+        outcome:
+          enum:
+          - reproduced
+          - not_reproduced
+          - needs_information
+          - environment_blocked
+          - partial
+          - cancelled
+          type: string
+      required:
+      - outcome
+      - markdown
+      type: object
+    TestSubmitReportResult:
+      properties:
+        evidenceId:
+          type: string
+        outcome:
+          type: string
+      required:
+      - outcome
+      - evidenceId
+      type: object
+    TestTypeRequest:
+      additionalProperties: false
+      oneOf:
+      - not:
+          anyOf:
+          - required:
+            - x
+          - required:
+            - "y"
+        required:
+        - elementId
+      - not:
+          required:
+          - elementId
+        required:
+        - x
+        - "y"
+      properties:
+        elementId:
+          description: Use an element from this observation, or supply both x and
+            y instead.
+          maxLength: 128
+          minLength: 1
+          type: string
+        screenshotId:
+          minLength: 1
+          type: string
+        text:
+          maxLength: 16384
+          type: string
+        x:
+          minimum: 0
+          type: integer
+        "y":
+          minimum: 0
+          type: integer
+      required:
+      - screenshotId
+      - text
+      type: object
+    TestWindowBounds:
+      properties:
+        height:
+          format: double
+          type: number
+        width:
+          format: double
+          type: number
+        x:
+          format: double
+          type: number
+        "y":
+          format: double
+          type: number
+      required:
+      - x
+      - "y"
+      - width
+      - height
+      type: object
+    TestingAttemptResponse:
+      properties:
+        attemptId:
+          type: string
+        cleanupState:
+          enum:
+          - pending
+          - running
+          - complete
+          - failed
+          type: string
+        outcome:
+          enum:
+          - reproduced
+          - not_reproduced
+          - needs_information
+          - environment_blocked
+          - partial
+          - cancelled
+          type: string
+        phase:
+          enum:
+          - starting
+          - active
+          - finished
+          type: string
+        recordingGap:
+          type: string
+      required:
+      - attemptId
+      - phase
+      - outcome
+      - cleanupState
+      - recordingGap
+      type: object
+    TestingAttemptStartResponse:
+      properties:
+        attemptId:
+          type: string
+        runId:
+          type: string
+        workerSessionId:
+          type: string
+      required:
+      - runId
+      - attemptId
+      - workerSessionId
+      type: object
+    TestingClickCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestClickRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingEvidenceResponse:
+      properties:
+        evidence:
+          items:
+            $ref: '#/components/schemas/TestEvidenceReceipt'
+          type: array
+      required:
+      - evidence
+      type: object
+    TestingKeyCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestKeyRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingLegStartResponse:
+      properties:
+        attemptId:
+          type: string
+        commitSha:
+          type: string
+        evidenceDir:
+          type: string
+        leg:
+          type: string
+        runId:
+          type: string
+        targetContext:
+          $ref: '#/components/schemas/TestingWorkerContext'
+        workerSessionId:
+          type: string
+      required:
+      - runId
+      - attemptId
+      - workerSessionId
+      - leg
+      - commitSha
+      - evidenceDir
+      - targetContext
+      type: object
+    TestingLogsCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestReadLogsRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingObserveCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestObserveRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingQueryCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestDaemonQueryRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingReportCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestSubmitReportRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingRunResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        headRunId:
+          type: string
+        runId:
+          type: string
+      required:
+      - runId
+      - createdAt
+      type: object
+    TestingScreenshotCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestScreenshotRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingToolResponse:
+      properties:
+        action:
+          $ref: '#/components/schemas/TestActionResult'
+        evidence:
+          items:
+            $ref: '#/components/schemas/TestEvidenceReceipt'
+          type: array
+        logs:
+          $ref: '#/components/schemas/TestLogResult'
+        observationError:
+          type: string
+        observationStatus:
+          enum:
+          - captured
+          - settled
+          - unsettled
+          - failed
+          type: string
+        query:
+          $ref: '#/components/schemas/TestDaemonQueryResult'
+        report:
+          $ref: '#/components/schemas/TestSubmitReportResult'
+        screenshot:
+          $ref: '#/components/schemas/TestScreenshot'
+      required:
+      - evidence
+      type: object
+    TestingTypeCall:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TestTypeRequest'
+        requestId:
+          maxLength: 128
+          minLength: 1
+          type: string
+        sessionId:
+          minLength: 1
+          type: string
+      required:
+      - sessionId
+      - requestId
+      - input
+      type: object
+    TestingWorkerContext:
+      properties:
+        checkoutPath:
+          type: string
+        cliPath:
+          type: string
+        dataDir:
+          type: string
+        fixtureDir:
+          type: string
+        launchContext:
+          type: string
+        runFilePath:
+          type: string
+      required:
+      - checkoutPath
+      - cliPath
+      - runFilePath
+      - dataDir
+      - fixtureDir
       type: object
     TrackerIntakeConfig:
       properties:

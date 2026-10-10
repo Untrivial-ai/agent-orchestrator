@@ -20,6 +20,7 @@ func TestIsRoutineInternalCLICommandNormalizesLegacyShapes(t *testing.T) {
 		"ao project ls",
 		"ao pty-host session-1",
 		"ao unreal-provider /tmp/config.json",
+		"ao testing mcp",
 	} {
 		if !IsRoutineInternalCLICommand(commandPath) {
 			t.Errorf("IsRoutineInternalCLICommand(%q) = false, want true", commandPath)
@@ -40,6 +41,12 @@ func TestCLIActorTypeKeepsKnownLegacyUserCommands(t *testing.T) {
 		"ao handoff",
 		"ao smoke list",
 		"ao smoke set",
+		"ao testing",
+		"ao testing start",
+		"ao testing leg",
+		"ao testing leg start",
+		"ao testing stop",
+		"ao testing evidence",
 	} {
 		if got := CLIActorType("", commandPath); got != "user" {
 			t.Errorf("CLIActorType(%q) = %q, want user", commandPath, got)
@@ -66,6 +73,7 @@ func TestCLIActorTypeSystemCommandsOverrideExplicitActor(t *testing.T) {
 		{actorType: "user", commandPath: "ao daemon"},
 		{actorType: "agent", commandPath: "ao start"},
 		{actorType: "user", commandPath: "AO  AGENT-PROCESS  SUPERVISE"},
+		{actorType: "agent", commandPath: "ao testing mcp"},
 	} {
 		if got := CLIActorType(tc.actorType, tc.commandPath); got != "system" {
 			t.Errorf("CLIActorType(%q, %q) = %q, want system", tc.actorType, tc.commandPath, got)

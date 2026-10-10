@@ -1,12 +1,17 @@
 ---
 name: using-ao
-description: "Catalog of the AO (Agent Orchestrator) `ao` CLI: spawning workers, managing sessions and projects, creating reusable Cues, sending messages, controlling the shared browser, previewing pages, and daemon control. Use when using the ao CLI, creating Cues, spawning workers, or managing AO sessions in an AO workspace."
-trigger: "Using the ao CLI in an AO workspace: creating Cues, spawning workers, managing sessions/projects, sending messages, controlling or previewing pages."
+description: "Catalog of the AO (Agent Orchestrator) `ao` CLI: testing PRs in the real app, spawning workers, managing sessions and projects, creating reusable Cues, sending messages, controlling the shared browser, previewing pages, and daemon control. Use when asked to test or verify a PR in the real app, using the ao CLI, creating Cues, spawning workers, or managing AO sessions in an AO workspace."
+trigger: "Testing or verifying a PR in the real app; using the ao CLI in an AO workspace: creating Cues, spawning workers, managing sessions/projects, sending messages, controlling or previewing pages."
 ---
 
 # AO CLI Catalog
 
 `ao` is a thin CLI over the local AO daemon. Every command is `ao <command> --help` for the authoritative flag list.
+
+When asked to test or verify a PR in the real app, run
+`ao testing start --pr <url>`. The comparison worker it starts does the testing
+and reports back. Do not improvise app launches. Read
+[commands/testing.md](commands/testing.md) for the handoff.
 
 | Command | What it does | When to use | Details |
 |---|---|---|---|
@@ -14,6 +19,7 @@ trigger: "Using the ao CLI in an AO workspace: creating Cues, spawning workers, 
 | `session` | Manage agent sessions (list, kill, rename, restore, etc.) | Inspecting or controlling running/terminated sessions | [commands/session.md](commands/session.md) |
 | `agent` | Inspect installed harnesses and launch readiness | Choosing or diagnosing an agent harness | `ao agent ls --refresh` |
 | `pr` | Merge a PR or resolve its review threads | Completing a reviewed change | `ao pr merge` / `ao pr resolve-comments` |
+| `testing` | Start a base/head comparison worker and inspect or stop its attempts | Testing or verifying a PR in the real app | [commands/testing.md](commands/testing.md) |
 | `project` | Register, inspect, configure, or remove projects | Setting up or managing repos AO knows about | [commands/project.md](commands/project.md) |
 | `automation` | Manage durable recurring session automations | Creating, editing, disabling, deleting, and inspecting scheduled runs | [commands/automation.md](commands/automation.md) |
 | `cue` | Create or list reusable project Cues | Saving a repetitive command or agent task at the user's request | [commands/cue.md](commands/cue.md) |
