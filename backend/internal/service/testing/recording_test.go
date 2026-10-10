@@ -24,6 +24,7 @@ type movieDesktop struct {
 	escapePath        string
 	startGap, stopGap string
 	closeErr          error
+	mimeType          string
 }
 
 func (d *movieDesktop) Close(ctx context.Context) error {
@@ -41,7 +42,14 @@ func (d *movieDesktop) StartRecording(_ context.Context, _ domain.TestTargetIden
 	if err != nil {
 		return ports.TestingRecordingResult{}, err
 	}
-	d.result = ports.TestingRecordingResult{Path: filepath.Join(dir, "window.mov"), MIMEType: "video/quicktime", Width: 2, Height: 2, StartedAt: d.clock.Now(), RecorderPID: 800, StagingCleanup: "pending: recording in progress"}
+	mimeType, extension := "video/quicktime", ".mov"
+	if d.mimeType != "" {
+		mimeType = d.mimeType
+	}
+	if mimeType == "video/mp4" {
+		extension = ".mp4"
+	}
+	d.result = ports.TestingRecordingResult{Path: filepath.Join(dir, "window"+extension), MIMEType: mimeType, Width: 2, Height: 2, StartedAt: d.clock.Now(), RecorderPID: 800, StagingCleanup: "pending: recording in progress"}
 	d.result.Gap = d.startGap
 	if d.startErr != nil {
 		d.result.Gap = "owned recorder startup observation failed"
@@ -87,15 +95,18 @@ func movieFixture(t *testing.T, configure func(*movieDesktop)) (*fixture, *movie
 }
 
 func TestRecordingFinishCancelAndDeadlineSaveEvidenceBeforeTargetStop(t *testing.T) {
-	for _, finish := range []string{"finish", "cancel", "deadline", "partial_start"} {
+	for _, finish := range []string{"finish", "finish_mp4", "cancel", "deadline", "partial_start"} {
 		t.Run(finish, func(t *testing.T) {
 			f, desktop := movieFixture(t, func(d *movieDesktop) {
+				if finish == "finish_mp4" {
+					d.mimeType = "video/mp4"
+				}
 				if finish == "partial_start" {
 					d.startErr = errors.New("startup birth observation failed")
 				}
 			})
 			switch finish {
-			case "finish":
+			case "finish", "finish_mp4":
 				if _, err := f.call("report", "submit_report", domain.TestSubmitReportRequest{Outcome: domain.TestOutcomePartial, Markdown: "Observed target."}); err != nil {
 					t.Fatal(err)
 				}
@@ -127,7 +138,7 @@ func TestRecordingFinishCancelAndDeadlineSaveEvidenceBeforeTargetStop(t *testing
 				switch receipt.Kind {
 				case "recording":
 					data, err := os.ReadFile(filepath.Join(dir, receipt.RelativePath))
-					if err != nil || string(data) != "fake-finalized-movie" || receipt.MIMEType != "video/quicktime" || !strings.HasSuffix(receipt.RelativePath, ".mov") {
+					if err != nil || string(data) != "fake-finalized-movie" || receipt.MIMEType != desktop.result.MIMEType || !strings.HasSuffix(receipt.RelativePath, filepath.Ext(desktop.result.Path)) {
 						t.Fatal("recording did not survive target/source stop", err)
 					}
 					foundVideo = true

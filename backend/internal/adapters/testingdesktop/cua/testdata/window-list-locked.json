@@ -1,0 +1,28 @@
+[
+  {
+    "kCGWindowNumber": 8373,
+    "kCGWindowOwnerPID": 412,
+    "kCGWindowOwnerName": "loginwindow",
+    "kCGWindowLayer": 2004,
+    "kCGWindowBounds": {
+      "X": 0,
+      "Height": 900,
+      "Y": 0,
+      "Width": 1440
+    },
+    "kCGWindowAlpha": 1
+  },
+  {
+    "kCGWindowNumber": 8372,
+    "kCGWindowOwnerPID": 412,
+    "kCGWindowOwnerName": "loginwindow",
+    "kCGWindowLayer": 2001,
+    "kCGWindowBounds": {
+      "X": -15000,
+      "Height": 30000,
+      "Y": -15000,
+      "Width": 30000
+    },
+    "kCGWindowAlpha": 1
+  }
+]

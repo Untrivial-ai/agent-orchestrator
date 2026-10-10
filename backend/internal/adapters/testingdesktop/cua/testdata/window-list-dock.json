@@ -1,0 +1,59 @@
+{
+  "windows": [
+    {
+      "kCGWindowNumber": 7,
+      "kCGWindowOwnerPID": 612,
+      "kCGWindowOwnerName": "Dock",
+      "kCGWindowLayer": 20,
+      "kCGWindowAlpha": 1,
+      "kCGWindowBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1440,
+        "height": 900
+      }
+    },
+    {
+      "kCGWindowNumber": 8467,
+      "kCGWindowOwnerPID": 31838,
+      "kCGWindowOwnerName": "Electron",
+      "kCGWindowLayer": 0,
+      "kCGWindowAlpha": 1,
+      "kCGWindowBounds": {
+        "x": 70,
+        "y": 34,
+        "width": 66,
+        "height": 20
+      }
+    },
+    {
+      "kCGWindowNumber": 8461,
+      "kCGWindowOwnerPID": 31838,
+      "kCGWindowOwnerName": "Electron",
+      "kCGWindowLayer": 0,
+      "kCGWindowAlpha": 1,
+      "kCGWindowBounds": {
+        "x": 60,
+        "y": 30,
+        "width": 1320,
+        "height": 780
+      }
+    }
+  ],
+  "displays": [
+    {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "width": 1440,
+        "height": 900
+      },
+      "visibleFrame": {
+        "x": 0,
+        "y": 90,
+        "width": 1440,
+        "height": 780
+      }
+    }
+  ]
+}

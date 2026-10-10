@@ -43,18 +43,14 @@ type recordingProcess struct {
 }
 
 type windowRecording struct {
-	result        RecordingResult
-	process       *recordingProcess
-	birth         time.Time
-	stopped       bool
-	stagingBefore map[string]os.FileInfo
-	stagingSeen   map[string]os.FileInfo
+	result  RecordingResult
+	process *recordingProcess
+	birth   time.Time
+	stopped bool
 }
 
-// StartRecording launches Apple's exact-window recorder with no audio, region
-// or desktop fallback. The responsible supervisor app needs its own existing
-// Screen Recording grant. Off-current-Space windows record black on macOS 26,
-// so this method refuses a hidden window instead of activating it.
+// StartRecording launches the built-in exact-window recorder to attempt storage.
+// Start proves process ownership; Stop validates the finalized video itself.
 func (a *Adapter) StartRecording(ctx context.Context, target domain.TestTargetIdentity, evidenceDir string) (RecordingResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -68,7 +64,7 @@ func (a *Adapter) StartRecording(ctx context.Context, target domain.TestTargetId
 	if err := a.startSession(ctx, b); err != nil {
 		return recordingGap(RecordingResult{}, err)
 	}
-	w, err := a.liveWindow(ctx, b)
+	w, err := a.prepareWindow(ctx, b)
 	if err != nil {
 		return recordingGap(RecordingResult{}, err)
 	}
@@ -95,47 +91,30 @@ func (a *Adapter) StartRecording(ctx context.Context, target domain.TestTargetId
 	if shot.Original != nil {
 		original = shot.Original.Frame
 	}
-	result := RecordingResult{Path: stem + ".mov", MIMEType: "video/quicktime", Width: original.Width,
-		Height: original.Height, StartedAt: a.now().UTC(), StagingCleanup: "pending: recording in progress"}
-	f, err := os.OpenFile(result.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
+	result := RecordingResult{Path: filepath.Join(stem, "window.mp4"), MIMEType: "video/mp4", Width: original.Width,
+		Height: original.Height, StartedAt: a.now().UTC(), StagingCleanup: "provider-managed staging; AO does not inspect external storage"}
+	if err := os.Mkdir(stem, 0o700); err != nil {
 		return recordingGap(result, err)
 	}
-	if err := f.Close(); err != nil {
-		return recordingGap(result, err)
-	}
-	// screencapture moves a finalized staging file into place and refuses an
-	// existing destination. Remove only our exclusive UUID reservation.
-	if err := os.Remove(result.Path); err != nil {
-		return recordingGap(result, err)
-	}
-	// -l names only the fenced window. -o removes its shadow so video matches
-	// the original screenshot dimensions. Never use Cua's display recorder.
-	args := []string{"-v", "-o", "-x", "-l" + target.WindowID, result.Path}
+	args := []string{"-v", "-o", "-x", "-l" + target.WindowID, filepath.Join(stem, "window.mov")}
 	if err := ctx.Err(); err != nil {
 		return recordingGap(result, err)
 	}
-	stagingBefore, err := stagingSnapshot(a.stagingDir)
-	if err != nil {
-		return recordingGap(result, fmt.Errorf("snapshot native staging metadata: %w", err))
-	}
-	p, err := a.startRecorder(args, append(cleanEnvironment(), a.driverEnvironment()...), stem+".stdout.log", stem+".stderr.log")
+	p, err := a.startRecorder(ctx, args, append(cleanEnvironment(), a.driverEnvironment()...), filepath.Join(stem, "stdout.log"), filepath.Join(stem, "stderr.log"))
 	if err != nil {
 		return recordingGap(result, err)
 	}
 	result.RecorderPID = p.pid
-	r := &windowRecording{result: result, process: p, stagingBefore: stagingBefore, stagingSeen: make(map[string]os.FileInfo)}
+	r := &windowRecording{result: result, process: p}
 	b.recording = r // retain ownership even if startup validation fails
 	r.birth, err = a.started(context.WithoutCancel(ctx), p.pid)
 	if err != nil {
 		return recordingGap(result, fmt.Errorf("observe owned recorder identity: %w", err))
 	}
-	select {
-	case <-p.done:
-		return recordingGap(result, errors.Join(refuse("recording_start_failed", "recorder exited during startup"), p.err))
-	default:
-		return result, nil
+	if err := ctx.Err(); err != nil {
+		return recordingGap(result, fmt.Errorf("owned recorder launch canceled for PID %d: %w", p.pid, err))
 	}
+	return result, nil
 }
 
 // StopRecording validates the stored launch identity but does not require the
@@ -165,24 +144,9 @@ func (a *Adapter) stopRecording(ctx context.Context, b *binding) (result Recordi
 		}
 	}()
 	if r.stopped {
-		if r.result.StagingPath != "" {
-			if err := verifyStagingAbsent(r.result.StagingPath); err != nil {
-				return recordingGap(r.result, err)
-			}
-		}
 		return r.result, nil
 	}
 	p := r.process
-	r.result.StagingCleanup = "pending: recorder has not finalized; staging ownership unproved"
-	if observed, err := stagingSnapshot(a.stagingDir); err == nil {
-		for path, info := range observed {
-			if _, existed := r.stagingBefore[path]; !existed {
-				r.stagingSeen[path] = info
-			}
-		}
-	} else {
-		r.result.StagingCleanup = "unresolved: staging metadata observation failed: " + err.Error()
-	}
 	if _, err := a.signalRecorder(ctx, r, os.Interrupt); err != nil {
 		return recordingGap(r.result, err)
 	}
@@ -202,31 +166,54 @@ func (a *Adapter) stopRecording(ctx context.Context, b *binding) (result Recordi
 		}
 	}
 	r.result.StoppedAt = a.now().UTC()
-	if err := a.finishStaging(ctx, r); err != nil {
-		return recordingGap(r.result, err)
+	source := filepath.Join(filepath.Dir(r.result.Path), "window.mov")
+	if _, err := a.validateMovie(ctx, source, r.result.Width, r.result.Height); err != nil {
+		return recordingGap(r.result, errors.Join(err, p.err))
 	}
-	info, err := os.Lstat(r.result.Path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
-		return recordingGap(r.result, errors.Join(refuse("recording_empty", "recorder exited without a finalized movie"), p.err))
-	}
-	if err := os.Chmod(r.result.Path, 0o600); err != nil {
-		return recordingGap(r.result, err)
-	}
-	metadata, err := a.run(ctx, "/usr/bin/avmediainfo", r.result.Path)
+	converted, err := a.run(ctx, "/usr/bin/avconvert", "--preset", "PresetPassthrough", "--source", source, "--output", r.result.Path, "--replace")
 	if err != nil {
-		return recordingGap(r.result, fmt.Errorf("analyze finalized movie: %w", err))
+		detail := providerDiagnosticText(string(converted.Stderr)+string(converted.Stdout), nil, providerDiagnosticLimit)
+		return recordingGap(r.result, &Error{Code: "recording_remux_failed", Detail: fmt.Sprintf("avconvert PresetPassthrough: %v: %s", err, detail), cause: errors.Join(ErrRefused, err, ctx.Err())})
 	}
-	duration, width, height, err := parseMovieInfo(string(metadata.Stdout))
-	if err != nil || width != r.result.Width || height != r.result.Height {
-		if err == nil {
-			err = refuse("recording_dimensions", "video dimensions no longer match the captured window")
-		}
-		return recordingGap(r.result, err)
+	duration, err := a.validateMovie(ctx, r.result.Path, r.result.Width, r.result.Height)
+	if err != nil {
+		return recordingGap(r.result, &Error{Code: "recording_remux_failed", Detail: fmt.Sprintf("validate remuxed MP4: %v", err), cause: errors.Join(ErrRefused, err)})
+	}
+	if err := os.Remove(source); err != nil {
+		return recordingGap(r.result, &Error{Code: "recording_remux_failed", Detail: fmt.Sprintf("remove owned MOV source: %v", err), cause: errors.Join(ErrRefused, err)})
 	}
 	r.result.Duration, r.stopped = duration, true
-	// Window closure can end the stream with a nonzero status. A validated,
-	// finalized movie is still usable evidence; validation above is mandatory.
+	if p.err != nil {
+		r.result.Gap = fmt.Sprintf("owned recorder failed before clean finalization: %v", p.err)
+		return r.result, nil // deferred gap handling preserves the same result on retry
+	}
 	return r.result, nil
+}
+
+func (a *Adapter) validateMovie(ctx context.Context, path string, expectedWidth, expectedHeight int) (time.Duration, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		detail := fmt.Sprintf("recorder exited without a finalized movie: %v", err)
+		if err == nil {
+			detail = fmt.Sprintf("recorder output is not a positive regular movie: mode=%s size=%d", info.Mode(), info.Size())
+		}
+		return 0, errors.Join(refuse("recording_empty", detail), err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return 0, err
+	}
+	metadata, err := a.run(ctx, "/usr/bin/avmediainfo", path, "--chunks", "--mediatype", "video")
+	if err != nil {
+		return 0, &Error{Code: "recording_invalid", Detail: fmt.Sprintf("analyze finalized movie: %v: %s", err, strings.TrimSpace(string(metadata.Stderr))), cause: errors.Join(ErrRefused, err)}
+	}
+	duration, width, height, err := parseMovieInfo(string(metadata.Stdout))
+	if err != nil || width != expectedWidth || height != expectedHeight {
+		if err == nil {
+			err = refuse("recording_invalid", fmt.Sprintf("video dimensions %dx%d do not match the captured window %dx%d", width, height, expectedWidth, expectedHeight))
+		}
+		return 0, err
+	}
+	return duration, nil
 }
 
 func (a *Adapter) signalRecorder(ctx context.Context, r *windowRecording, signal os.Signal) (bool, error) {
@@ -286,12 +273,16 @@ func recordingDirectory(dir string) (string, error) {
 
 var movieDuration = regexp.MustCompile(`(?m)^Duration: (\d+(?:\.\d+)?) seconds`)
 var movieDimensions = regexp.MustCompile(`Dimensions: (\d+) x (\d+)`)
+var movieSamples = regexp.MustCompile(`(?m)^\s+\d+\s+[1-9]\d*\s+\[`)
 
 func parseMovieInfo(text string) (time.Duration, int, int, error) {
 	d, dimensions := movieDuration.FindStringSubmatch(text), movieDimensions.FindStringSubmatch(text)
 	if len(d) != 2 || len(dimensions) != 3 || !strings.Contains(text, "Track count: 1\n") ||
 		!strings.Contains(text, "System support for decoding this track: Yes") || !strings.Contains(text, "Movie analyzed with 0 error.") {
 		return 0, 0, 0, refuse("recording_invalid", "AVFoundation did not validate one decodable video track")
+	}
+	if !movieSamples.MatchString(text) {
+		return 0, 0, 0, refuse("recording_empty", "video track has no indexed frames")
 	}
 	seconds, err := time.ParseDuration(d[1] + "s")
 	if err != nil || seconds <= 0 {
@@ -305,7 +296,10 @@ func parseMovieInfo(text string) (time.Duration, int, int, error) {
 	return seconds, w, h, nil
 }
 
-func startScreencapture(args, env []string, stdoutPath, stderrPath string) (*recordingProcess, error) {
+func startScreencapture(ctx context.Context, args, env []string, stdoutPath, stderrPath string) (*recordingProcess, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	stdout, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -315,9 +309,10 @@ func startScreencapture(args, env []string, stdoutPath, stderrPath string) (*rec
 		return nil, errors.Join(err, stdout.Close())
 	}
 	cmd := processutil.Command("/usr/sbin/screencapture", args...)
-	cmd.Env, cmd.Stdout, cmd.Stderr = env, stdout, stderr
-	// Closed stdin ends open-ended screencapture during startup. Hold this
-	// pipe open until SIGINT finalizes the movie; never write keystrokes.
+	cmd.Env = env
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// Hold stdin open until SIGINT; EOF does not finalize a movie reliably.
 	stdin, err := cmd.StdinPipe()
 	if err == nil {
 		err = cmd.Start()
@@ -330,8 +325,13 @@ func startScreencapture(args, env []string, stdoutPath, stderrPath string) (*rec
 	}
 	p := &recordingProcess{pid: cmd.Process.Pid, done: make(chan struct{}), signal: cmd.Process.Signal}
 	go func() {
-		// Wait closes the stdin pipe itself after the child has exited.
 		p.err = errors.Join(cmd.Wait(), stdout.Close(), stderr.Close())
+		if p.err != nil {
+			data, readErr := os.ReadFile(stderrPath)
+			if readErr == nil && len(data) != 0 {
+				p.err = errors.Join(p.err, fmt.Errorf("screencapture: %s", strings.TrimSpace(string(data[:min(len(data), 4096)]))))
+			}
+		}
 		close(p.done)
 	}()
 	return p, nil

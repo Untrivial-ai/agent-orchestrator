@@ -203,7 +203,7 @@ func (s *Store) Write(ctx context.Context, id domain.TestAttemptID, a ports.Test
 	}
 	name := a.Kind + "-" + artifactID + extension
 	limit := int64(maxArtifactBytes)
-	if a.Kind == "recording" && a.MIMEType == "video/quicktime" {
+	if a.Kind == "recording" && (a.MIMEType == "video/quicktime" || a.MIMEType == "video/mp4") {
 		limit = maxRecordingBytes
 	}
 	size, digest, err := writeArtifact(ctx, root, name, data, limit)

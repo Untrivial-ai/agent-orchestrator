@@ -52,7 +52,7 @@ func TestObservationElementLimit(t *testing.T) {
 }
 
 func TestClickCaptureIDMatchesPinnedProviderContract(t *testing.T) {
-	for _, mode := range []DeliveryMode{Background, Foreground} {
+	for _, mode := range []DeliveryMode{Foreground} {
 		for _, tc := range []struct {
 			name    string
 			element bool

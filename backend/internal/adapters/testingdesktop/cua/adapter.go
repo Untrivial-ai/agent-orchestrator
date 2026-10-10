@@ -55,7 +55,8 @@ func refuse(code, detail string) error {
 // Foreground can interrupt the current app and must be journaled before input.
 type DeliveryMode string
 
-// Supported delivery policies. Empty config selects background.
+// Foreground is the supported input policy. Background is retained as a
+// recognized legacy value so callers can reject it explicitly.
 const (
 	Background DeliveryMode = "background"
 	Foreground DeliveryMode = "foreground"
@@ -75,11 +76,13 @@ type Config struct {
 }
 
 type binding struct {
-	target    domain.TestTargetIdentity
-	session   string
-	receipt   *captureReceipt
-	lastTyped *typedFocus
-	recording *windowRecording
+	ready, sessionIssued bool
+	releaseErr           error
+	target               domain.TestTargetIdentity
+	session              string
+	receipt              *captureReceipt
+	lastTyped            *typedFocus
+	recording            *windowRecording
 }
 
 type typedFocus struct {
@@ -137,15 +140,17 @@ type Adapter struct {
 	runner        Runner
 	started       func(context.Context, int) (time.Time, error)
 	root          string
+	controlRoot   string
 	bindings      map[string]*binding
+	released      map[string]*binding
 	driver        driverIdentity
 	pendingDriver driverIdentity
+	launchIssued  bool
 	closed        bool
 	now           func() time.Time
-	startRecorder func(args, env []string, stdout, stderr string) (*recordingProcess, error)
+	startRecorder func(ctx context.Context, args, env []string, stdout, stderr string) (*recordingProcess, error)
 	interruptWait time.Duration
 	terminateWait time.Duration
-	stagingDir    string
 }
 
 var _ ports.TestingDesktopControl = (*Adapter)(nil)
@@ -162,10 +167,10 @@ func New(cfg Config) (*Adapter, error) {
 		return nil, refuse("invalid_config", "AppPath must name the signed CuaDriver.app bundle")
 	}
 	if cfg.DeliveryMode == "" {
-		cfg.DeliveryMode = Background
+		cfg.DeliveryMode = Foreground
 	}
-	if cfg.DeliveryMode != Background && cfg.DeliveryMode != Foreground {
-		return nil, refuse("invalid_config", "delivery mode must be background or explicit foreground")
+	if cfg.DeliveryMode != Foreground {
+		return nil, refuse("invalid_config", "only foreground desktop input is supported")
 	}
 	if cfg.CaptureTTL == 0 {
 		cfg.CaptureTTL = 30 * time.Second
@@ -186,18 +191,22 @@ func New(cfg Config) (*Adapter, error) {
 			return process.StartTime(pid)
 		}
 	}
-	root := filepath.Join(cfg.DataDir, "testing", "cua")
-	if len(filepath.Join(root, "driver.sock")) > 103 {
-		return nil, refuse("invalid_config", "resolved Unix socket path exceeds the macOS limit")
+	id := uuid.NewString()
+	root := filepath.Join(cfg.DataDir, "testing", "cua", id)
+	controlRoot := root
+	if len(filepath.Join(controlRoot, "driver.sock")) > 103 {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		controlRoot = filepath.Join(home, ".ao", "dev", "cua", id)
+		if len(filepath.Join(controlRoot, "driver.sock")) > 103 {
+			return nil, refuse("invalid_config", "private Unix socket path exceeds the macOS limit")
+		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	return &Adapter{cfg: cfg, runner: runner, started: started, root: root,
-		bindings: make(map[string]*binding), now: time.Now, startRecorder: startScreencapture,
-		interruptWait: 15 * time.Second, terminateWait: 3 * time.Second,
-		stagingDir: filepath.Join(home, "Library", "Group Containers", "group.com.apple.screencapture", "ScreenRecordings")}, nil
+	return &Adapter{cfg: cfg, runner: runner, started: started, root: root, controlRoot: controlRoot,
+		bindings: make(map[string]*binding), released: make(map[string]*binding), now: time.Now, startRecorder: startScreencapture,
+		interruptWait: 15 * time.Second, terminateWait: 3 * time.Second}, nil
 }
 
 // DeliveryMode lets the service journal the configured policy before dispatch.
@@ -215,14 +224,14 @@ func (a *Adapter) BindWindow(ctx context.Context, target domain.TestTargetIdenti
 	if target.ID == "" || target.LaunchID == "" || target.Generation <= 0 || target.ElectronPID <= 0 || target.ElectronStartedAt.IsZero() {
 		return target, refuse("invalid_target", "target launch identity and Electron birth time are required")
 	}
-	if err := a.checkProcess(ctx, target); err != nil {
-		return target, err
-	}
 	if existing := a.bindings[target.ID]; existing != nil {
 		candidate := target
 		candidate.WindowID = existing.target.WindowID
 		if !sameTarget(candidate, existing.target) || (target.WindowID != "" && target.WindowID != candidate.WindowID) {
 			return target, refuse("target_changed", "a target ID cannot be rebound to a different launch or window")
+		}
+		if !existing.ready {
+			return target, refuse("binding_pending", "partial binding must be released before another bind")
 		}
 		if err := a.startSession(ctx, existing); err != nil {
 			return target, err
@@ -232,10 +241,20 @@ func (a *Adapter) BindWindow(ctx context.Context, target domain.TestTargetIdenti
 		}
 		return existing.target, nil
 	}
+	if prior := a.released[target.ID]; prior != nil && sameTarget(prior.target, target) {
+		return target, refuse("target_released", "released launch identity cannot be bound again")
+	}
+	b := &binding{target: target, session: "ao-" + uuid.NewString()}
+	a.bindings[target.ID] = b // cleanup ownership only; observation requires ready
+	if err := a.checkProcess(ctx, target); err != nil {
+		return target, err
+	}
+	if err := a.checkScreenUnlocked(ctx); err != nil {
+		return target, err
+	}
 	if err := a.ensureDriver(ctx); err != nil {
 		return target, err
 	}
-	b := &binding{target: target, session: "ao-" + uuid.NewString()}
 	if err := a.startSession(ctx, b); err != nil {
 		return target, err
 	}
@@ -256,7 +275,8 @@ func (a *Adapter) BindWindow(ctx context.Context, target domain.TestTargetIdenti
 		return target, err
 	}
 	b.target.WindowID = strconv.Itoa(candidates[0].ID)
-	a.bindings[target.ID] = b
+	b.ready = true
+	delete(a.released, target.ID)
 	return b.target, nil
 }
 
@@ -279,7 +299,7 @@ func (a *Adapter) screenshot(ctx context.Context, target domain.TestTargetIdenti
 	if err := a.startSession(ctx, b); err != nil {
 		return shot, err
 	}
-	if _, err = a.liveWindow(ctx, b); err != nil {
+	if _, err = a.prepareWindow(ctx, b); err != nil {
 		return shot, err
 	}
 	f, err := os.CreateTemp(filepath.Join(a.root, "captures"), "frame-*.png")
@@ -550,6 +570,9 @@ func typedFieldToken(elements []capturedElement, point pixel) string {
 type pixel struct{ x, y int }
 
 func (a *Adapter) admit(ctx context.Context, target domain.TestTargetIdentity, frame domain.TestDesktopFrame, screenshotID string, p *pixel, elementID string) (*binding, *captureReceipt, error) {
+	if a.cfg.DeliveryMode != Foreground {
+		return nil, nil, refuse("foreground_required", "background input did not register in the owned Electron window")
+	}
 	b, err := a.bound(ctx, target)
 	if err != nil {
 		return nil, nil, err
@@ -580,6 +603,25 @@ func (a *Adapter) admit(ctx context.Context, target domain.TestTargetIdentity, f
 	}
 	if w.Bounds != frame.Bounds {
 		return nil, nil, refuse("window_changed", "window moved or resized; take a new screenshot")
+	}
+	w, err = a.prepareWindow(ctx, b)
+	if err != nil {
+		return nil, nil, err
+	}
+	if w.Bounds != frame.Bounds {
+		return nil, nil, refuse("window_changed", "window moved during foreground preparation; take a new screenshot")
+	}
+	if p != nil || elementID != "" {
+		var point pixel
+		if p != nil {
+			point = r.originalPoint(*p)
+		} else {
+			f := r.addressable[elementID].Frame
+			point = pixel{int(f.X + f.Width/2), int(f.Y + f.Height/2)}
+		}
+		if err := a.checkClickPoint(ctx, b, r, point); err != nil {
+			return nil, nil, err
+		}
 	}
 	if age := a.now().Sub(frame.CapturedAt); age < 0 || age >= a.cfg.CaptureTTL {
 		return nil, nil, refuse("screenshot_stale", "capture expired during validation; take a new screenshot")
@@ -620,7 +662,7 @@ func (a *Adapter) dispatch(ctx context.Context, name string, args map[string]any
 
 func (a *Adapter) bound(ctx context.Context, target domain.TestTargetIdentity) (*binding, error) {
 	b := a.bindings[target.ID]
-	if a.closed || b == nil || !sameTarget(b.target, target) {
+	if a.closed || b == nil || !b.ready || !sameTarget(b.target, target) {
 		return nil, refuse("target_not_bound", "target does not match a live adapter binding")
 	}
 	if err := a.checkProcess(ctx, target); err != nil {
@@ -661,6 +703,7 @@ type window struct {
 	Bounds         domain.TestWindowBounds `json:"bounds"`
 	OnScreen       bool                    `json:"is_on_screen"`
 	OnCurrentSpace *bool                   `json:"on_current_space"`
+	CurrentSpaceID uint64                  `json:"current_space_id"`
 }
 
 func (a *Adapter) windows(ctx context.Context, b *binding) ([]window, error) {

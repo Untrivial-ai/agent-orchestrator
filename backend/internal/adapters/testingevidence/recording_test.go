@@ -20,32 +20,37 @@ func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
 func TestRecordingAtObservedSizeStreamsAndPublishesMatchingReceipt(t *testing.T) {
 	const observedSize = 39787533
-	dir := t.TempDir()
-	store := New(dir, lookup{})
-	artifact := ports.TestingEvidenceArtifact{Kind: "recording", MIMEType: "video/quicktime"}
-	receipt, err := store.Write(context.Background(), "attempt", artifact, io.LimitReader(zeroReader{}, observedSize))
-	if err != nil || receipt.SizeBytes != observedSize {
-		t.Fatal(receipt, err)
+	for _, mimeType := range []string{"video/quicktime", "video/mp4"} {
+		t.Run(mimeType, func(t *testing.T) {
+			dir := t.TempDir()
+			store := New(dir, lookup{})
+			artifact := ports.TestingEvidenceArtifact{Kind: "recording", MIMEType: mimeType}
+			receipt, err := store.Write(context.Background(), "attempt", artifact, io.LimitReader(zeroReader{}, observedSize))
+			if err != nil || receipt.SizeBytes != observedSize {
+				t.Fatal(receipt, err)
+			}
+			file, err := os.Open(filepath.Join(dir, "testing", "run", "attempt", receipt.RelativePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			hash := sha256.New()
+			n, err := io.Copy(hash, file)
+			if err != nil || n != observedSize || hex.EncodeToString(hash.Sum(nil)) != receipt.SHA256 {
+				t.Fatal("incomplete recording or wrong digest", n, err)
+			}
+			info, err := file.Stat()
+			if err != nil || info.Mode().Perm() != 0600 {
+				t.Fatal("recording permissions", err)
+			}
+			listed, err := New(dir, lookup{}).List(context.Background(), "attempt")
+			if err != nil || len(listed) != 1 || listed[0] != receipt {
+				t.Fatal("receipt not durable", listed, err)
+			}
+		})
 	}
-	file, err := os.Open(filepath.Join(dir, "testing", "run", "attempt", receipt.RelativePath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	hash := sha256.New()
-	n, err := io.Copy(hash, file)
-	if err != nil || n != observedSize || hex.EncodeToString(hash.Sum(nil)) != receipt.SHA256 {
-		t.Fatal("incomplete recording or wrong digest", n, err)
-	}
-	info, err := file.Stat()
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatal("recording permissions", err)
-	}
-	listed, err := New(dir, lookup{}).List(context.Background(), "attempt")
-	if err != nil || len(listed) != 1 || listed[0] != receipt {
-		t.Fatal("receipt not durable", listed, err)
-	}
-	for _, ordinary := range []ports.TestingEvidenceArtifact{{Kind: "logs", MIMEType: "text/plain"}, {Kind: "recording", MIMEType: "application/json"}, {Kind: "other", MIMEType: "video/quicktime"}} {
+	store := New(t.TempDir(), lookup{})
+	for _, ordinary := range []ports.TestingEvidenceArtifact{{Kind: "logs", MIMEType: "text/plain"}, {Kind: "recording", MIMEType: "application/json"}, {Kind: "other", MIMEType: "video/quicktime"}, {Kind: "other", MIMEType: "video/mp4"}} {
 		_, err := store.Write(context.Background(), "attempt", ordinary, io.LimitReader(zeroReader{}, observedSize))
 		if err == nil || !strings.Contains(err.Error(), "evidence exceeds 32 MiB") {
 			t.Fatal("ordinary artifact cap changed", ordinary, err)

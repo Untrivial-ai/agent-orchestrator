@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 type driverIdentity struct {
@@ -21,8 +22,8 @@ type driverIdentity struct {
 func (a *Adapter) binary() string {
 	return filepath.Join(a.cfg.AppPath, "Contents", "MacOS", "cua-driver")
 }
-func (a *Adapter) socket() string  { return filepath.Join(a.root, "driver.sock") }
-func (a *Adapter) pidFile() string { return filepath.Join(a.root, "driver.pid") }
+func (a *Adapter) socket() string  { return filepath.Join(a.controlRoot, "driver.sock") }
+func (a *Adapter) pidFile() string { return filepath.Join(a.controlRoot, "driver.pid") }
 
 func (a *Adapter) driverEnvironment() []string {
 	return []string{
@@ -48,7 +49,19 @@ func (a *Adapter) ensureDriver(ctx context.Context) error {
 	if a.pendingDriver.pid != 0 {
 		return a.admitDriver(ctx)
 	}
-	for _, dir := range []string{a.root, filepath.Join(a.root, "home"), filepath.Join(a.root, "tmp"), filepath.Join(a.root, "captures")} {
+	if !a.launchIssued {
+		if err := a.launchDriver(ctx); err != nil {
+			return err
+		}
+	}
+	if err := a.observeDriver(ctx); err != nil {
+		return err
+	}
+	return a.admitDriver(ctx)
+}
+
+func (a *Adapter) launchDriver(ctx context.Context) error {
+	for _, dir := range []string{a.root, a.controlRoot, filepath.Join(a.root, "home"), filepath.Join(a.root, "tmp"), filepath.Join(a.root, "captures")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
@@ -98,9 +111,16 @@ func (a *Adapter) ensureDriver(ctx context.Context) error {
 	}
 	args = append(args, "--stdout", filepath.Join(a.root, "daemon.stdout.log"), "--stderr", filepath.Join(a.root, "daemon.stderr.log"),
 		"--args", "serve", "--socket", a.socket(), "--pid-file", a.pidFile(), "--no-overlay")
+	a.launchIssued = true // even a canceled open can have launched Cua
 	if _, err := a.run(ctx, "/usr/bin/open", args...); err != nil {
 		return fmt.Errorf("launch Cua app: %w", err)
 	}
+	return nil
+}
+
+// observeDriver completes ownership observation after the single launch request.
+// Cancellation cannot discard a kernel birth receipt once its PID file exists.
+func (a *Adapter) observeDriver(ctx context.Context) error {
 	ready, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -112,14 +132,17 @@ func (a *Adapter) ensureDriver(ctx context.Context) error {
 			if parseErr != nil || pid <= 0 {
 				return refuse("driver_pid", "invalid driver PID file")
 			}
-			started, err := a.started(ctx, pid)
+			started, err := a.started(context.WithoutCancel(ctx), pid)
 			if err != nil {
 				return err
 			}
 			// Keep cleanup ownership without admitting an unchecked driver.
 			a.pendingDriver = driverIdentity{pid: pid, started: started}
+			if err := ready.Err(); err != nil {
+				return err
+			}
 			if info, err := os.Lstat(a.socket()); err == nil && info.Mode()&os.ModeSocket != 0 {
-				return a.admitDriver(ready)
+				return nil
 			}
 		}
 		select {
@@ -177,6 +200,7 @@ func (a *Adapter) startSession(ctx context.Context, b *binding) error {
 		Active  bool `json:"active"`
 		Revived bool `json:"revived"`
 	}
+	b.sessionIssued = true
 	err := a.call(ctx, "start_session", map[string]any{"session": b.session}, &result)
 	if err != nil || !result.Active || result.Revived {
 		b.receipt, b.lastTyped = nil, nil
@@ -190,13 +214,19 @@ func (a *Adapter) startSession(ctx context.Context, b *binding) error {
 	return nil
 }
 
-// Release revokes one attempt's provider session and screenshot receipt. The
-// target environment remains responsible for stopping its Electron process.
+// Release revokes one attempt and verifies driver shutdown after the last
+// binding, without closing the reusable adapter. The target owns Electron.
 func (a *Adapter) Release(ctx context.Context, target domain.TestTargetIdentity) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	b := a.bindings[target.ID]
-	if b == nil || !sameTarget(b.target, target) {
+	if b == nil {
+		if prior := a.released[target.ID]; prior != nil && sameTarget(prior.target, target) {
+			return prior.releaseErr
+		}
+		return refuse("target_not_bound", "release target does not match binding")
+	}
+	if !sameTarget(b.target, target) {
 		return refuse("target_not_bound", "release target does not match binding")
 	}
 	b.receipt = nil
@@ -212,12 +242,22 @@ func (a *Adapter) Release(ctx context.Context, target domain.TestTargetIdentity)
 			}
 		}
 	}
-	if err := a.checkDriver(ctx); err != nil {
-		return errors.Join(cleanup, err)
+	if b.sessionIssued {
+		if err := a.checkDriver(ctx); err == nil {
+			if err := a.call(ctx, "end_session", map[string]any{"session": b.session}, nil); err != nil {
+				return errors.Join(cleanup, err)
+			}
+		} else if len(a.bindings) != 1 {
+			return errors.Join(cleanup, err)
+		}
 	}
-	if err := a.call(ctx, "end_session", map[string]any{"session": b.session}, nil); err != nil {
-		return errors.Join(cleanup, err)
+	if len(a.bindings) == 1 {
+		if err := a.stopDriver(ctx); err != nil {
+			return errors.Join(cleanup, err) // retain the binding for cleanup retry
+		}
 	}
+	b.releaseErr = cleanup
+	a.released[target.ID] = b
 	delete(a.bindings, target.ID)
 	return cleanup
 }
@@ -245,23 +285,50 @@ func (a *Adapter) Close(ctx context.Context) error {
 	if pending {
 		return cleanup // retain ownership for a later cleanup retry
 	}
+	if err := a.checkDriver(ctx); err == nil {
+		for _, b := range a.bindings {
+			if b.sessionIssued {
+				cleanup = errors.Join(cleanup, a.call(ctx, "end_session", map[string]any{"session": b.session}, nil))
+			}
+		}
+	}
+	cleanup = errors.Join(cleanup, a.stopDriver(ctx))
+	if !a.launchIssued && a.driver.pid == 0 && a.pendingDriver.pid == 0 {
+		a.bindings = make(map[string]*binding)
+	}
+	return cleanup
+}
+
+// stopDriver is called under a.mu. A failed stop keeps its launch receipt.
+func (a *Adapter) stopDriver(ctx context.Context) error {
+	if a.launchIssued && a.driver.pid == 0 && a.pendingDriver.pid == 0 {
+		if err := a.observeDriver(ctx); err != nil {
+			return fmt.Errorf("owned Cua launch cleanup cannot be proved: %w", err)
+		}
+	}
 	driver := a.driver
 	if driver.pid == 0 {
 		driver = a.pendingDriver
 	}
 	if driver.pid == 0 {
-		return cleanup
+		return nil
 	}
 	if err := a.checkDriver(ctx); err != nil {
-		return errors.Join(cleanup, err)
+		started, probeErr := a.started(ctx, driver.pid)
+		if errors.Is(probeErr, process.ErrNotRunning) || (probeErr == nil && !started.Equal(driver.started)) {
+			_, pidErr := os.Lstat(a.pidFile())
+			_, socketErr := os.Lstat(a.socket())
+			if errors.Is(pidErr, os.ErrNotExist) && errors.Is(socketErr, os.ErrNotExist) {
+				a.driver, a.pendingDriver = driverIdentity{}, driverIdentity{}
+				a.launchIssued = false
+				return nil
+			}
+		}
+		return err
 	}
-	for _, b := range a.bindings {
-		cleanup = errors.Join(cleanup, a.call(ctx, "end_session", map[string]any{"session": b.session}, nil))
-	}
-	a.bindings = make(map[string]*binding)
 	_, err := a.run(ctx, a.binary(), "--socket", a.socket(), "--pid-file", a.pidFile(), "stop", "--expected-pid", strconv.Itoa(driver.pid))
 	if err != nil {
-		return errors.Join(cleanup, err)
+		return err
 	}
 	deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -269,19 +336,20 @@ func (a *Adapter) Close(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		started, probeErr := a.started(ctx, driver.pid)
-		if probeErr != nil || !started.Equal(driver.started) {
+		if errors.Is(probeErr, process.ErrNotRunning) || (probeErr == nil && !started.Equal(driver.started)) {
 			// A failed probe is not enough: the daemon must also remove its own
 			// PID file and socket before cleanup is reported complete.
 			_, pidErr := os.Lstat(a.pidFile())
 			_, socketErr := os.Lstat(a.socket())
 			if errors.Is(pidErr, os.ErrNotExist) && errors.Is(socketErr, os.ErrNotExist) {
 				a.driver, a.pendingDriver = driverIdentity{}, driverIdentity{}
-				return cleanup
+				a.launchIssued = false
+				return nil
 			}
 		}
 		select {
 		case <-deadline.Done():
-			return errors.Join(cleanup, fmt.Errorf("owned Cua daemon cleanup incomplete: %w", deadline.Err()))
+			return fmt.Errorf("owned Cua daemon cleanup incomplete: %w", deadline.Err())
 		case <-ticker.C:
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 type providerSession struct {
@@ -28,6 +30,8 @@ type sessionProvider struct {
 	sessions                 map[string]*providerSession
 	starts, revivals, inputs int
 	stopped                  bool
+	launches, stops          int
+	socket                   net.Listener
 }
 
 func strictSessionProvider(t *testing.T, f *fixture) *sessionProvider {
@@ -36,12 +40,44 @@ func strictSessionProvider(t *testing.T, f *fixture) *sessionProvider {
 	p.sessions[f.adapter.bindings[f.target.ID].session] = &providerSession{last: p.now}
 	f.adapter.now = func() time.Time { return p.now }
 	provider := f.runner.hook
+	focusedPID, focusedWindow := f.target.ElectronPID, 456
 	f.runner.hook = func(executable string, args []string) (Output, error) {
+		switch executable {
+		case "/usr/bin/osascript":
+			alpha := 1.0
+			return jsonOutput(windowSnapshot{Windows: []screenWindow{{ID: focusedWindow, PID: focusedPID, Owner: "Electron", Alpha: &alpha, Bounds: &f.bounds}}}), nil
+		case "/usr/bin/codesign":
+			return Output{Stderr: []byte("Identifier=com.trycua.driver\nTeamIdentifier=YCK386LBJ7\n")}, nil
+		case "/bin/launchctl":
+			return Output{}, nil
+		case "/usr/bin/open":
+			p.launches++
+			p.stopped = false
+			if err := os.WriteFile(f.adapter.pidFile(), []byte("99"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			p.socket, err = net.Listen("unix", f.adapter.socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return Output{}, nil
+		}
+		if len(args) == 1 && args[0] == "--version" {
+			return Output{Stdout: []byte("cua-driver 0.34.0\n")}, nil
+		}
 		if len(args) == 7 && args[4] == "stop" {
 			if args[5] != "--expected-pid" || args[6] != "99" {
 				t.Fatal("stop lost owned Driver identity", args)
 			}
 			p.stopped = true
+			p.stops++
+			if p.socket != nil {
+				if err := p.socket.Close(); err != nil {
+					t.Fatal(err)
+				}
+				p.socket = nil
+			}
 			return Output{}, os.Remove(f.adapter.pidFile())
 		}
 		if len(args) != 5 || args[2] != "call" {
@@ -52,6 +88,9 @@ func strictSessionProvider(t *testing.T, f *fixture) *sessionProvider {
 			t.Fatal(err)
 		}
 		label, _ := input["session"].(string)
+		if args[3] == "check_permissions" {
+			return jsonOutput(map[string]bool{"accessibility": true, "screen_recording": true}), nil
+		}
 		if label == "" {
 			t.Fatal("missing owned session label", args)
 		}
@@ -96,12 +135,15 @@ func strictSessionProvider(t *testing.T, f *fixture) *sessionProvider {
 		if pID == 124 {
 			windowID = 777
 		}
+		if args[3] == "bring_to_front" {
+			focusedPID, focusedWindow = int(pID), windowID
+		}
 		if args[3] == "list_windows" {
 			if input["window_id"] != nil {
 				t.Fatal("list_windows received window_id", input)
 			}
 			s.last = p.now
-			return jsonOutput(map[string]any{"windows": []window{{PID: int(pID), ID: windowID, Layer: 0, Bounds: f.bounds, OnScreen: true}}}), nil
+			return jsonOutput(map[string]any{"windows": []window{{PID: int(pID), ID: windowID, Layer: 0, Bounds: f.bounds, OnScreen: true, OnCurrentSpace: boolPointer(true), CurrentSpaceID: 1}}}), nil
 		}
 		if args[3] == "get_window_state" {
 			out, err := provider(executable, args)
@@ -133,7 +175,7 @@ func strictSessionProvider(t *testing.T, f *fixture) *sessionProvider {
 	}
 	f.adapter.started = func(_ context.Context, pid int) (time.Time, error) {
 		if pid == 99 && p.stopped {
-			return time.Time{}, errors.New("owned Driver stopped")
+			return time.Time{}, process.ErrNotRunning
 		}
 		return f.born, nil
 	}
@@ -214,8 +256,8 @@ func TestSessionReleaseAndNextTargetKeepSeparateEpisodes(t *testing.T) {
 	p := strictSessionProvider(t, f)
 	old := f.screenshot(t)
 	label := f.adapter.bindings[f.target.ID].session
-	if err := f.adapter.Release(context.Background(), f.target); err != nil || !p.sessions[label].ended {
-		t.Fatal("Release did not end its owned label", err)
+	if err := f.adapter.Release(context.Background(), f.target); err != nil || !p.sessions[label].ended || !p.stopped || f.adapter.driver.pid != 0 || f.adapter.closed {
+		t.Fatal("Release did not end its owned label and driver without closing the adapter", err)
 	}
 	starts := p.starts
 	if _, err := f.adapter.Screenshot(context.Background(), f.target); !errors.Is(err, ErrRefused) || p.starts != starts {
@@ -229,7 +271,7 @@ func TestSessionReleaseAndNextTargetKeepSeparateEpisodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := f.adapter.bindings[next.ID]
-	if b.session == label || b.receipt != nil || b.lastTyped != nil || next.WindowID != "777" || !p.sessions[label].ended {
+	if b.session == label || b.receipt != nil || b.lastTyped != nil || next.WindowID != "777" || !p.sessions[label].ended || p.launches != 1 || p.stops != 1 {
 		t.Fatal("next target adopted the prior episode", b, next)
 	}
 	shot, err := f.adapter.Screenshot(context.Background(), next)
@@ -298,5 +340,146 @@ func TestSessionRecordingCanStartAfterIdle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(start.Path)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReleaseRetainsBindingUntilDriverShutdownIsProved(t *testing.T) {
+	f := newFixture(t)
+	p := strictSessionProvider(t, f)
+	provider := f.runner.hook
+	failure := errors.New("owned driver stop failed")
+	f.runner.hook = func(executable string, args []string) (Output, error) {
+		if len(args) == 7 && args[4] == "stop" {
+			return Output{}, failure
+		}
+		return provider(executable, args)
+	}
+	if err := f.adapter.Release(context.Background(), f.target); !errors.Is(err, failure) || f.adapter.driver.pid != 99 || f.adapter.bindings[f.target.ID] == nil {
+		t.Fatal("failed driver stop lost cleanup ownership", err)
+	}
+	f.adapter.runner.(*fakeRunner).hook = provider
+	if err := f.adapter.Release(context.Background(), f.target); err != nil || !p.stopped || f.adapter.driver.pid != 0 || f.adapter.bindings[f.target.ID] != nil || f.adapter.closed {
+		t.Fatal("cleanup retry did not release owned resources", err)
+	}
+}
+
+func TestReleaseKeepsDriverForOtherOwnedBinding(t *testing.T) {
+	f := newFixture(t)
+	p := strictSessionProvider(t, f)
+	next := f.target
+	next.ID, next.LaunchID, next.ElectronPID, next.WindowID = "other", "other-launch", 124, ""
+	next, err := f.adapter.BindWindow(context.Background(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.adapter.Release(context.Background(), f.target); err != nil || p.stopped || f.adapter.driver.pid != 99 || f.adapter.bindings[next.ID] == nil {
+		t.Fatal("Release stopped a driver still used by another owned target", err)
+	}
+	if err := f.adapter.Release(context.Background(), next); err != nil || !p.stopped || f.adapter.driver.pid != 0 {
+		t.Fatal("last Release did not stop the owned driver", err)
+	}
+}
+
+func TestPartialBindReleaseIsExactAndIdempotent(t *testing.T) {
+	for _, phase := range []string{"process", "permissions", "start_session", "list_windows"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFixture(t)
+			p := strictSessionProvider(t, f)
+			if err := f.adapter.Release(context.Background(), f.target); err != nil {
+				t.Fatal(err)
+			}
+			target := f.target
+			target.ID, target.LaunchID, target.ElectronPID, target.WindowID = "partial", "partial-launch", 124, ""
+			provider := f.runner.hook
+			failure := errors.New("partial bind failed")
+			f.runner.hook = func(executable string, args []string) (Output, error) {
+				if len(args) == 5 && args[2] == "call" && (args[3] == phase || phase == "permissions" && args[3] == "check_permissions") {
+					if phase == "start_session" {
+						// An accepted session may lose its response to cancellation.
+						if _, err := provider(executable, args); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return Output{}, failure
+				}
+				return provider(executable, args)
+			}
+			started := f.adapter.started
+			if phase == "process" {
+				f.adapter.started = func(ctx context.Context, pid int) (time.Time, error) {
+					if pid == target.ElectronPID {
+						return time.Time{}, process.ErrNotRunning
+					}
+					return started(ctx, pid)
+				}
+			}
+			returned, err := f.adapter.BindWindow(context.Background(), target)
+			b := f.adapter.bindings[target.ID]
+			if err == nil || !sameTarget(returned, target) || b == nil || b.ready || !sameTarget(b.target, target) {
+				t.Fatal("partial bind lost its exact cleanup identity", returned, b, err)
+			}
+			before := len(f.runner.calls)
+			if _, err := f.adapter.Screenshot(context.Background(), target); !errors.Is(err, ErrRefused) {
+				t.Fatal("partial binding allowed observation", err)
+			}
+			if _, err := f.adapter.BindWindow(context.Background(), target); !errors.Is(err, ErrRefused) || len(f.runner.calls) != before {
+				t.Fatal("partial binding dispatched before release", err)
+			}
+			changed := target
+			changed.WindowID = "777"
+			if err := f.adapter.Release(context.Background(), changed); !errors.Is(err, ErrRefused) || len(f.runner.calls) != before {
+				t.Fatal("release accepted an unproven window identity", err)
+			}
+			f.runner.hook = provider
+			f.adapter.started = started
+			if err := f.adapter.Release(context.Background(), target); err != nil || f.adapter.bindings[target.ID] != nil || f.adapter.driver.pid != 0 || f.adapter.pendingDriver.pid != 0 || f.adapter.launchIssued {
+				t.Fatal("partial release left cleanup ownership", err)
+			}
+			before = len(f.runner.calls)
+			if err := f.adapter.Release(context.Background(), target); err != nil || len(f.runner.calls) != before {
+				t.Fatal("successful release was not idempotent", err)
+			}
+			if err := f.adapter.Release(context.Background(), changed); !errors.Is(err, ErrRefused) || len(f.runner.calls) != before {
+				t.Fatal("idempotent release lost exact identity", err)
+			}
+			if p.inputs != 0 || f.adapter.closed {
+				t.Fatal("partial cleanup dispatched input or closed the reusable adapter")
+			}
+		})
+	}
+}
+
+func TestPartialReleaseRetainsOwnershipOnStopFailure(t *testing.T) {
+	f := newFixture(t)
+	p := strictSessionProvider(t, f)
+	target := f.target
+	target.ID, target.LaunchID, target.ElectronPID, target.WindowID = "partial", "partial-launch", 124, ""
+	provider := f.runner.hook
+	failure := errors.New("window enumeration cancelled")
+	f.runner.hook = func(executable string, args []string) (Output, error) {
+		if len(args) == 5 && args[3] == "list_windows" {
+			return Output{}, failure
+		}
+		return provider(executable, args)
+	}
+	if _, err := f.adapter.BindWindow(context.Background(), target); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	f.runner.hook = provider
+	if err := f.adapter.Release(context.Background(), f.target); err != nil || p.stopped {
+		t.Fatal("release stopped a driver owned by a partial binding", err)
+	}
+	f.runner.hook = func(executable string, args []string) (Output, error) {
+		if len(args) == 7 && args[4] == "stop" {
+			return Output{}, failure
+		}
+		return provider(executable, args)
+	}
+	if err := f.adapter.Release(context.Background(), target); !errors.Is(err, failure) || f.adapter.bindings[target.ID] == nil || f.adapter.driver.pid != 99 {
+		t.Fatal("failed partial release discarded ownership", err)
+	}
+	f.runner.hook = provider
+	if err := f.adapter.Release(context.Background(), target); err != nil || !p.stopped || f.adapter.bindings[target.ID] != nil {
+		t.Fatal("partial cleanup retry failed", err)
 	}
 }

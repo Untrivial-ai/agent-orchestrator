@@ -140,7 +140,7 @@ func (s *Service) stopRecording(ctx context.Context, st *attemptState, target do
 }
 
 func (s *Service) saveRecording(ctx context.Context, st *attemptState, result ports.TestingRecordingResult) error {
-	if result.MIMEType != "video/quicktime" || result.Duration <= 0 || result.Width < 1 || result.Height < 1 || result.StartedAt.IsZero() || result.StoppedAt.Before(result.StartedAt) || !filepath.IsAbs(result.Path) {
+	if (result.MIMEType != "video/quicktime" && result.MIMEType != "video/mp4") || result.Duration <= 0 || result.Width < 1 || result.Height < 1 || result.StartedAt.IsZero() || result.StoppedAt.Before(result.StartedAt) || !filepath.IsAbs(result.Path) {
 		return fmt.Errorf("recording provider returned invalid finalized movie metadata")
 	}
 	dir, err := filepath.EvalSymlinks(s.recordingDirectory(st))

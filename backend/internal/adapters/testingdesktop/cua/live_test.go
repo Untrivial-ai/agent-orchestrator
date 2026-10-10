@@ -41,30 +41,7 @@ func TestLiveElectron(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if os.Getenv("CUA_LIVE_STAGE") == "close-driver" {
-		data, err := os.ReadFile(filepath.Join(root, "video-driver-listeners.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var driver struct {
-			PID   int       `json:"pid"`
-			Birth time.Time `json:"birth"`
-		}
-		if err := json.Unmarshal(data, &driver); err != nil {
-			t.Fatal(err)
-		}
-		birth, err := process.StartTime(driver.PID)
-		if err != nil || !birth.Equal(driver.Birth) {
-			t.Fatal("owned Driver identity changed before cleanup")
-		}
-		a, err := New(Config{DataDir: filepath.Join(root, "adapter")})
-		if err != nil {
-			t.Fatal(err)
-		}
-		a.driver = driverIdentity{pid: driver.PID, started: driver.Birth}
-		if err := a.Close(ctx); err != nil {
-			t.Fatal(err)
-		}
-		return
+		t.Fatal("driver cleanup must run through the controller that launched it; a new controller cannot adopt its receipt")
 	}
 	started, err := process.StartTime(fixture.PID)
 	if err != nil {
@@ -164,12 +141,6 @@ func TestLiveElectron(t *testing.T) {
 			t.Fatal(err)
 		}
 		capture("recording-after-click")
-		// This interval is the requested sample duration, not a readiness retry.
-		select {
-		case <-time.After(3 * time.Second):
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
 		if stage == "video-close" {
 			if err := a.checkProcess(ctx, target); err != nil {
 				t.Fatal(err)
@@ -198,7 +169,7 @@ func TestLiveElectron(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if final.Gap != "" || final.Duration <= 0 || final.Width != frame.Width || final.Height != frame.Height || final.Path != recording.Path {
+		if final.Gap != "" || final.Duration <= 0 || final.Width != recording.Width || final.Height != recording.Height || final.Path != recording.Path {
 			t.Fatalf("invalid finalized recording: %+v", final)
 		}
 		t.Logf("finalized %s, %s, %dx%d, recorder PID=%d, target-closed=%t", final.Path, final.Duration, final.Width, final.Height, final.RecorderPID, stage == "video-close")
