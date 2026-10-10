@@ -1341,6 +1341,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
 	}
 	launchCfg := ports.LaunchConfig{
+		Env:              env,
 		DataDir:          m.dataDir,
 		SessionID:        string(id),
 		WorkspacePath:    ws.Path,
@@ -3290,7 +3291,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	var mode RestoreMode
 	if forceFresh {
 		argv, delivery, mode, err = freshLaunchArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
-			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true)
+			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true, env)
 	} else {
 		argv, delivery, mode, err = restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
 			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, env)
@@ -3304,6 +3305,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ErrNotResumable)
 	}
 	launchCfg := ports.LaunchConfig{
+		Env:              env,
 		DataDir:          m.dataDir,
 		SessionID:        string(rec.ID),
 		WorkspacePath:    ws.Path,
@@ -4602,8 +4604,30 @@ func (m *Manager) InterruptTUI(ctx context.Context, id domain.SessionID) error {
 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat || !m.harnessSemanticAcceptance(rec.Harness) {
 		return ErrSemanticAcceptanceUnsupported
 	}
+	if rec.Metadata.RuntimeHandleID == "" {
+		return ErrSemanticAcceptanceUnsupported
+	}
+	return m.interruptTerminal(ctx, rec)
+}
+
+// interruptTerminal preserves each harness's native cancel key across direct
+// cancellation and controller handoffs. It never appends a submission key.
+func (m *Manager) interruptTerminal(ctx context.Context, rec domain.SessionRecord) error {
+	if m.agents != nil {
+		if agent, found := m.agents.Agent(rec.Harness); found {
+			if native, supported := agent.(ports.AgentInterruptInputProvider); supported {
+				sender, supported := m.runtime.(interface {
+					SendInput(context.Context, ports.RuntimeHandle, string) error
+				})
+				if !supported {
+					return ErrSemanticAcceptanceUnsupported
+				}
+				return sender.SendInput(ctx, ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID}, native.InterruptInput())
+			}
+		}
+	}
 	interrupter, ok := m.runtime.(runtimeInterrupter)
-	if !ok || rec.Metadata.RuntimeHandleID == "" {
+	if !ok {
 		return ErrSemanticAcceptanceUnsupported
 	}
 	return interrupter.Interrupt(ctx, ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID})
@@ -6035,7 +6059,7 @@ func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id do
 		return fmt.Errorf("install hooks: %w", err)
 	}
 	if pl, ok := agent.(preLauncher); ok {
-		if err := pl.PreLaunch(ctx, ports.LaunchConfig{DataDir: m.dataDir, SessionID: string(id), WorkspacePath: workspacePath}); err != nil {
+		if err := pl.PreLaunch(ctx, ports.LaunchConfig{Env: env, DataDir: m.dataDir, SessionID: string(id), WorkspacePath: workspacePath}); err != nil {
 			m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
 			return fmt.Errorf("pre-launch: %w", err)
 		}
@@ -6167,6 +6191,9 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 	callerDeadline, hasCallerDeadline := ctx.Deadline()
 	if hints.InitialDelay > 0 {
 		if hasCallerDeadline && time.Until(callerDeadline)-promptDeliveryDeadlineReserve <= hints.InitialDelay {
+			if hints.RequireReady {
+				return fmt.Errorf("prompt readiness: %w", context.DeadlineExceeded)
+			}
 			m.logger.Warn("prompt readiness skipped to preserve caller deadline for fallback delivery",
 				"sessionID", cfg.SessionID,
 				"kind", string(cfg.Kind),
@@ -6179,6 +6206,9 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 		}
 	}
 	if len(hints.Patterns) == 0 || hints.Timeout <= 0 {
+		if hints.RequireReady {
+			return fmt.Errorf("prompt readiness: required readiness markers and timeout are missing")
+		}
 		return nil
 	}
 	poll := hints.PollInterval
@@ -6192,6 +6222,9 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 
 	waitTimeout, hasReadinessBudget := promptReadinessWaitTimeout(hints.Timeout, callerDeadline, hasCallerDeadline)
 	if !hasReadinessBudget {
+		if hints.RequireReady {
+			return fmt.Errorf("prompt readiness: %w", context.DeadlineExceeded)
+		}
 		m.logger.Warn("prompt readiness skipped to preserve caller deadline for fallback delivery",
 			"sessionID", cfg.SessionID,
 			"kind", string(cfg.Kind),
@@ -6207,13 +6240,26 @@ func (m *Manager) waitForPromptReadiness(ctx context.Context, agent ports.Agent,
 
 	for {
 		output, err := m.runtime.GetOutput(ctx, handle, lines)
+		if err == nil && promptOutputContains(output, hints.BlockedPatterns) {
+			return fmt.Errorf("prompt readiness: provider startup requires user action")
+		}
 		if err == nil && promptOutputContains(output, hints.Patterns) {
-			return nil
+			ready := true
+			if detector, ok := agent.(ports.TerminalActivityDetector); ok && hints.RequireReady {
+				state, known := detector.DetectTerminalActivity(output)
+				ready = known && state == domain.ActivityIdle
+			}
+			if ready {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
+			if hints.RequireReady {
+				return fmt.Errorf("prompt readiness: required composer was not observed: %w", context.DeadlineExceeded)
+			}
 			// Prompt readiness is best-effort: a missing terminal marker must not
 			// block spawn forever or be treated as confirmed readiness. Fall back
 			// to delivering the prompt and make the degraded path observable.
@@ -6274,7 +6320,7 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 		WorkspacePath: workspacePath,
 		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: meta.AgentSessionID},
 	}
-	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
+	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Env: env, Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
 	if err != nil {
 		return nil, "", "", fmt.Errorf("restore command: %w", err)
 	}
@@ -6292,7 +6338,7 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	// a saved prompt, rather than stranding the work behind ErrNotResumable. A
 	// worker that never got that far (no id, no prompt) still stays unresumable.
 	return freshLaunchArgv(ctx, agent, id, workspacePath, meta, systemPrompt,
-		systemPromptFile, agentConfig, kind, dataDir, conversationLost)
+		systemPromptFile, agentConfig, kind, dataDir, conversationLost, env)
 }
 
 // nativeConversationMissing reports whether the agent can see a persisted
@@ -6327,7 +6373,7 @@ func nativeConversationMissing(ctx context.Context, agent ports.Agent, ref ports
 // freshLaunchArgv builds the non-resume half of restoreArgv. Interface
 // transitions also use it when an adapter proves its reserved id has no
 // persisted history, both for preflight and for the actual target launch.
-func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool, env map[string]string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
 	// A saved prompt is replayed fresh. An orchestrator is promptless by design
 	// and relaunches with the system prompt only. A promptless WORKER has no task
 	// and no session id to restore from: do not blank-relaunch it.
@@ -6338,6 +6384,7 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 	// meta.Prompt in argv; after-start agents receive it via the messenger once
 	// the runtime is live.
 	launchCfg := ports.LaunchConfig{
+		Env:              env,
 		DataDir:          dataDir,
 		SessionID:        string(id),
 		WorkspacePath:    workspacePath,

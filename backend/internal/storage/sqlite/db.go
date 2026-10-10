@@ -2107,8 +2107,9 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsMiMo := !strings.Contains(schema, "'mimo-code'")
 	needsDeepSeek := !strings.Contains(schema, "'deepseek-harness'")
 	needsOpenHands := !strings.Contains(schema, "'openhands'")
+	needsZCode := !strings.Contains(schema, "'zcode'")
 	needsCommandCode := !strings.Contains(schema, "'command-code'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini && !needsUnreal && !needsCodewhale && !needsMiMo && !needsDeepSeek && !needsOpenHands && !needsCommandCode {
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini && !needsUnreal && !needsCodewhale && !needsMiMo && !needsDeepSeek && !needsOpenHands && !needsCommandCode && !needsZCode {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -2221,6 +2222,12 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 		// database that skipped an earlier harness migration reaches this repair
 		// without Command Code, so anchor there instead of enumerating shapes.
 		repairs = append(repairs, replacement{"'fake'))", "'command-code', 'fake'))"})
+	}
+	if needsZCode {
+		// Same shape as the DeepSeek repair: migration 0198 rewrites the known
+		// variants by exact string, and any database that missed it still ends
+		// with the 'fake' fixture harness to anchor on.
+		repairs = append(repairs, replacement{"'fake'))", "'zcode', 'fake'))"})
 	}
 	for _, r := range repairs {
 		if _, err := db.Exec(

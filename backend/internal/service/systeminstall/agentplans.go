@@ -44,6 +44,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetDeepSeek:    "https://github.com/deepseek-ai/deepseek-harness",
 	TargetOpenHands:   "https://docs.openhands.dev/openhands/usage/cli/installation",
 	TargetCommandCode: "https://commandcode.ai/docs/quickstart",
+	TargetZCode:       "https://github.com/zai-org/ZCode",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -255,6 +256,15 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		}
 	case TargetCommandCode:
 		plans = []Plan{s.planNPM(target, "command-code")}
+	case TargetZCode:
+		// The official desktop release bundles only the protocol runtime, not
+		// the interactive TUI. The TUI currently requires a source checkout;
+		// there is no official published npm package or standalone CLI asset.
+		plans = []Plan{manualPlan(
+			target,
+			"Build the interactive CLI from the official source at https://github.com/zai-org/ZCode/tree/v3.14.3/apps/zcode-cli and expose it as `zcode` on PATH. The desktop release does not include the TUI, and similarly named npm packages are not official ZCode distributions.",
+			agentDocumentationURLs[target],
+		)}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

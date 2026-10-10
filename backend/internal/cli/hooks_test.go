@@ -2262,3 +2262,100 @@ func TestHooksSessionDeliveryPreservesCoordinationOrigin(t *testing.T) {
 		t.Fatalf("hook facts=%+v", req)
 	}
 }
+
+// ZCode' hook payload (zcode.sdk.hooks.types.HookEvent) carries the
+// conversation id as session_id, and its executor reads additionalContext from
+// the top level of stdout; hookSpecificOutput is ignored.
+func TestHooks_ZCodeUserPromptSubmitInjectsInstructions(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	promptDir := filepath.Join(cfg.dataDir, "prompts", "ao-7")
+	if err := os.MkdirAll(promptDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "system.md"), []byte("follow AO standing instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"hook_event_name":"UserPromptSubmit","prompt":"fix the bug","session_id":"sess_zcode-1","working_dir":"/ws","metadata":{}}`
+	out, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "zcode", "user-prompt-submit")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("hook output is not one JSON object: %q: %v", out, err)
+	}
+	if response["additionalContext"] != "follow AO standing instructions" {
+		t.Fatalf("additionalContext = %#v, want top-level instructions; output %q", response["additionalContext"], out)
+	}
+	if _, nested := response["hookSpecificOutput"]; nested {
+		t.Fatalf("ZCode ignores hookSpecificOutput: %q", out)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	want := setActivityAPIRequest{Event: "user-prompt-submit", AgentSessionID: "sess_zcode-1"}
+	assertActivityRequest(t, req, want)
+}
+
+func TestHooks_ZCodeSessionStartAndStopEmitNoOutput(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		state string
+	}{
+		{"session-start", ""},
+		// Any stdout on Stop is parsed as a decision; ZCode must be left
+		// free to stop.
+		{"stop", ""},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			out, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(`{"session_id":"sess_zcode-1"}`),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "zcode", tc.event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.TrimSpace(out) != "" {
+				t.Fatalf("unexpected hook output %q", out)
+			}
+			var req setActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+			}
+			assertActivityRequest(t, req, setActivityAPIRequest{State: tc.state, Event: tc.event, AgentSessionID: "sess_zcode-1"})
+		})
+	}
+}
+
+func TestHooksZCodeDoesNotAcknowledgeBeforeNativeHookVeto(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-zcode")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+	prompt := domain.WrapReportDelivery("report-batch:zcode", "worker finished")
+	payload := `{"session_id":"sess_zcode-1","prompt":` + mustJSONString(t, prompt) + `}`
+	_, _, err := executeCLI(t, Deps{In: strings.NewReader(payload), ProcessAlive: func(int) bool { return true }}, "hooks", "zcode", "user-prompt-submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.CoordinationID != "" || req.ConversationCheckpointOrigin != "" || req.LatestUserPrompt != "" {
+		t.Fatalf("native acknowledgement = %+v", req)
+	}
+}

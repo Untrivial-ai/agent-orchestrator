@@ -852,7 +852,7 @@ func shouldEmitSessionStartContext(agent, event string) bool {
 	if agent == "gemini" {
 		return event == "user-prompt-submit"
 	}
-	if agent == string(domain.HarnessOpenHands) {
+	if agent == string(domain.HarnessOpenHands) || agent == string(domain.HarnessZCode) {
 		// OpenHands ignores SessionStart hook output and has no system-prompt
 		// flag; UserPromptSubmit context is appended to each user message.
 		return event == "user-prompt-submit"
@@ -884,7 +884,7 @@ func (c *commandContext) emitSessionStartContext(agent, event, sessionID string)
 		return
 	}
 	var out any
-	if agent == string(domain.HarnessOpenHands) {
+	if agent == string(domain.HarnessOpenHands) || agent == string(domain.HarnessZCode) {
 		out = openHandsContextHookOutput{AdditionalContext: prompt}
 	} else {
 		var start sessionStartHookOutput

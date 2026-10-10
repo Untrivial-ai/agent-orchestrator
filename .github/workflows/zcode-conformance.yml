@@ -1,0 +1,57 @@
+name: ZCode source-built TUI
+
+on:
+  pull_request:
+    paths:
+      - 'backend/internal/adapters/agent/zcode/**'
+      - '.github/workflows/zcode-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zcode-conformance-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  source-built-tui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v4
+        with:
+          repository: zai-org/ZCode
+          ref: 29628c9acdb81b703bbd4080c207a0e7ce5e276e
+          path: upstream-zcode
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.33.2'
+          run_install: false
+      - name: Build pinned upstream CLI and interactive TUI
+        working-directory: upstream-zcode
+        env:
+          HUSKY: '0'
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'false'
+        run: |
+          pnpm --filter '@zcode/cli...' install --frozen-lockfile
+          pnpm --filter '@zcode/cli...' build
+          echo "AO_ZCODE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      - name: Verify source-built CLI lifecycle against localhost provider
+        working-directory: backend
+        env:
+          AO_ZCODE_ENTRY: ${{ github.workspace }}/upstream-zcode/apps/zcode-cli/packages/cli/dist/zcode.cjs
+        run: go test -race -count=1 -timeout=5m -run '^TestSourceBuiltZCode' -v ./internal/adapters/agent/zcode

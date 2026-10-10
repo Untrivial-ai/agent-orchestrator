@@ -838,10 +838,11 @@ func (m *Manager) preflightInterfaceTarget(
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
-			rec.Metadata, systemPrompt, "", config, rec.Kind, m.dataDir, true)
+			rec.Metadata, systemPrompt, "", config, rec.Kind, m.dataDir, true, env)
 	} else {
 		var resumable bool
 		cmd, resumable, err = agent.GetRestoreCommand(ctx, ports.RestoreConfig{
+			Env: env,
 			Session: ports.SessionRef{
 				ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
 				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: transition.NativeConversationID},
@@ -883,17 +884,13 @@ func (m *Manager) prepareSourceHandoff(
 		if rec.Activity.State == domain.ActivityExited {
 			return nil
 		}
-		interrupter, ok := m.runtime.(runtimeInterrupter)
-		if !ok {
-			return fmt.Errorf("runtime cannot interrupt a live terminal controller")
-		}
 		// Explicit Stop now is authoritative even when the durable activity row
 		// says idle: approval screens can be user-blocked while that row is idle.
 		// Sending the interrupt is what makes “Cancel request and switch” true.
-		if err := interrupter.Interrupt(ctx, handle); err != nil {
+		if err := m.interruptTerminal(ctx, rec); err != nil {
 			return err
 		}
-		// Let the provider observe Ctrl-C and begin flushing its native history
+		// Let the provider observe cancellation and begin flushing its native history
 		// before an already-idle activity row can end the loop immediately.
 		initialSettle := time.NewTimer(m.interfaceTransition.pollInterval)
 		select {
@@ -903,7 +900,7 @@ func (m *Manager) prepareSourceHandoff(
 		case <-initialSettle.C:
 		}
 		// Give the provider a short, bounded window to flush its native transcript
-		// after Ctrl-C. The subsequent Destroy is still authoritative, so a stale
+		// after cancellation. The subsequent Destroy is still authoritative, so a stale
 		// activity hook cannot turn "stop now" into an unbounded drain.
 		deadline := time.NewTimer(interfaceInterruptSettle)
 		defer deadline.Stop()

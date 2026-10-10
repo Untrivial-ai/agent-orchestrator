@@ -44,6 +44,16 @@ func TestSpawnHelpListsFXHarness(t *testing.T) {
 	}
 }
 
+func TestSpawnHelpListsZCodeHarness(t *testing.T) {
+	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, ", zcode (") {
+		t.Fatalf("spawn help does not list zcode:\n%s", out)
+	}
+}
+
 func TestSpawnHelpListsOpenCodeV2Harness(t *testing.T) {
 	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
 	if err != nil {

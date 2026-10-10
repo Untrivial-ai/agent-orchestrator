@@ -56,6 +56,7 @@ var plans = []Plan{
 	// setup lands on the page that does the work rather than on a docs link.
 	plan("deepseek-harness", ActionSetup, "Set up DeepSeek", []string{"dsh", "--profile", "web"}, "Opens DeepSeek's Models page to store an API key and pick a model route; leave it running until the key is saved", "https://github.com/deepseek-ai/deepseek-harness"),
 	plan("openhands", ActionSetup, "Set up OpenHands", []string{"openhands"}, "Native first-run LLM settings; AO forwards terminal input without persisting or logging the raw input, while OpenHands stores settings in ~/.openhands", "https://docs.openhands.dev/openhands/usage/cli/quick-start"),
+	plan("zcode", ActionLogin, "Log in to ZCode", []string{"zcode", "login"}, "Native Z.ai or BigModel sign-in; credentials remain in ZCode", "https://github.com/zai-org/ZCode"),
 	plan("command-code", ActionLogin, "Log in to Command Code", []string{"command-code", "login"}, "Native browser flow; an API key can be pasted in the terminal", "https://commandcode.ai/docs/quickstart"),
 }
 

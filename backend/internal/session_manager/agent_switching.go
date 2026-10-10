@@ -1403,6 +1403,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 		return preparedTargetActivation{}, err
 	}
 	launch := ports.LaunchConfig{
+		Env:     env,
 		DataDir: m.dataDir, SessionID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath,
 		Kind: rec.Kind, SystemPrompt: systemPrompt, SystemPromptFile: systemFile,
 		Config: config, Permissions: config.Permissions,
@@ -1418,6 +1419,7 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	mode := domain.AgentSwitchTargetStartFresh
 	if resumable {
 		cmd, ok, restoreErr := agent.GetRestoreCommand(ctx, ports.RestoreConfig{
+			Env:     env,
 			Session: ports.SessionRef{ID: string(rec.ID), WorkspacePath: rec.Metadata.WorkspacePath, Metadata: map[string]string{ports.MetadataKeyAgentSessionID: candidate.NativeSessionID}},
 			Kind:    rec.Kind, DataDir: m.dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemFile,
 			Config: config, Permissions: config.Permissions,
@@ -1570,6 +1572,7 @@ func (m *Manager) prepareTargetLaunchPrompt(ctx context.Context, rec domain.Sess
 	)
 	if target.startMode == domain.AgentSwitchTargetStartResumed {
 		raw, _, buildErr = target.agent.GetRestoreCommand(ctx, ports.RestoreConfig{
+			Env: launch.Env,
 			Session: ports.SessionRef{
 				ID:            string(rec.ID),
 				WorkspacePath: rec.Metadata.WorkspacePath,
@@ -1888,13 +1891,9 @@ func (m *Manager) interruptTimedOutSourceHandoff(ctx context.Context, rec domain
 	if handle.ID == "" {
 		return ErrIncompleteHandle
 	}
-	interrupter, ok := m.runtime.(runtimeInterrupter)
-	if !ok {
-		return fmt.Errorf("runtime cannot interrupt an expired source handoff")
-	}
 	interruptCtx, cancel := context.WithTimeout(ctx, switchHandoffInterruptWait)
 	defer cancel()
-	if err := interrupter.Interrupt(interruptCtx, handle); err != nil {
+	if err := m.interruptTerminal(interruptCtx, rec); err != nil {
 		return err
 	}
 

@@ -11299,3 +11299,59 @@ func TestOrchestratorWorkspaceBranchCollision(t *testing.T) {
 		})
 	}
 }
+
+func TestSpawn_RequiredComposerTimeoutNeverDeliversPrompt(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{outputs: []string{"Sign in to continue"}}
+	msg := &fakeMessenger{}
+	m := New(Deps{Runtime: rt, Agents: singleAgent{agent: readinessAgent{
+		afterStartAgent: afterStartAgent{recordingAgent: &recordingAgent{}},
+		hints:           ports.PromptReadinessHints{RequireReady: true, Patterns: []string{`Try "debug this error"`}, PollInterval: time.Millisecond, Timeout: time.Millisecond},
+	}}, Workspace: &fakeWorkspace{}, Store: st, Messenger: msg, Lifecycle: &fakeLCM{store: st}, LookPath: func(string) (string, error) { return "/bin/true", nil }})
+	_, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "--help is task data"})
+	if err == nil {
+		t.Fatal("missing required composer did not fail spawn")
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("typed task into startup dialog: %#v", msg.msgs)
+	}
+}
+
+func TestSpawn_VisibleComposerCannotOverrideStartupBlocker(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{outputs: []string{"No available models. Configure a provider or sign in with /login.\nType a prompt"}}
+	msg := &fakeMessenger{}
+	m := New(Deps{Runtime: rt, Agents: singleAgent{agent: readinessAgent{
+		afterStartAgent: afterStartAgent{recordingAgent: &recordingAgent{}},
+		hints:           ports.PromptReadinessHints{RequireReady: true, Patterns: []string{"Type a prompt"}, BlockedPatterns: []string{"No available models."}, PollInterval: time.Millisecond, Timeout: time.Millisecond},
+	}}, Workspace: &fakeWorkspace{}, Store: st, Messenger: msg, Lifecycle: &fakeLCM{store: st}, LookPath: func(string) (string, error) { return "/bin/true", nil }})
+	_, _, _, err := m.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Prompt: "--help is task data"})
+	if err == nil {
+		t.Fatal("missing required composer did not fail spawn")
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("typed task into startup dialog: %#v", msg.msgs)
+	}
+}
+
+// A strict adapter can distinguish the real idle composer from transcript text.
+type strictComposerAgent struct{ readinessAgent }
+
+func (a strictComposerAgent) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if output == "CURRENT COMPOSER: Type a prompt" {
+		return domain.ActivityIdle, true
+	}
+	return "", false
+}
+func TestRequiredComposerRejectsTranscriptReadinessText(t *testing.T) {
+	agent := strictComposerAgent{readinessAgent{afterStartAgent: afterStartAgent{recordingAgent: &recordingAgent{}}, hints: ports.PromptReadinessHints{RequireReady: true, Patterns: []string{"Type a prompt"}, PollInterval: time.Millisecond, Timeout: time.Millisecond}}}
+	for _, output := range []string{"The earlier transcript says Type a prompt", "CURRENT COMPOSER: Type a prompt"} {
+		m := New(Deps{Runtime: &fakeRuntime{outputs: []string{output}}})
+		err := m.waitForPromptReadiness(context.Background(), agent, ports.LaunchConfig{}, ports.RuntimeHandle{})
+		if (err == nil) != (output == "CURRENT COMPOSER: Type a prompt") {
+			t.Fatalf("output %q readiness error=%v", output, err)
+		}
+	}
+}
