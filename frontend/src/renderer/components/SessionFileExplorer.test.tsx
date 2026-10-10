@@ -45,30 +45,39 @@ vi.mock("../lib/host-clients", () => ({
 
 vi.mock("./FileTree", () => ({
 	FileTree: ({
+		activateOnClick = false,
 		changedOnly,
 		changedOnlyData,
 		forceChangedOnly = false,
 		filterText,
 		onSelectPath,
+		selectedPath,
 	}: {
+		activateOnClick?: boolean;
 		changedOnly: boolean;
 		changedOnlyData: TreeNode[];
 		forceChangedOnly?: boolean;
 		filterText: string;
 		onSelectPath: (node: { path: string; type: "file" }) => void;
+		selectedPath: string | null;
 	}) => {
 		const [expanded, setExpanded] = useState(false);
 		const filePaths = (nodes: TreeNode[]): string[] => nodes.flatMap((node) => node.children ? filePaths(node.children) : [node.path]);
-		const selectablePath = filePaths(changedOnlyData)[0] ?? "src/App.tsx";
+		const files = filePaths(changedOnlyData);
+		const selectablePaths = files.length > 0 ? files : ["src/App.tsx"];
 		return <div>
 			<span data-testid="tree-changed-only">{String(changedOnly || forceChangedOnly)}</span>
-			<span data-testid="tree-files">{filePaths(changedOnlyData).join(" ")}</span>
+			<span data-testid="tree-activate-on-click">{String(activateOnClick)}</span>
+			<span data-testid="tree-files">{files.join(" ")}</span>
 			<span data-testid="tree-filter">{filterText}</span>
+			<span data-testid="tree-selected">{selectedPath ?? ""}</span>
 			<button onClick={() => setExpanded((current) => !current)} type="button">expand src</button>
 			{expanded ? <span>src directory expanded</span> : null}
-			<button onClick={() => onSelectPath({ path: selectablePath, type: "file" })} type="button">
-				select {selectablePath}
-			</button>
+			{selectablePaths.map((path) => (
+				<button key={path} onClick={() => onSelectPath({ path, type: "file" })} type="button">
+					select {path}
+				</button>
+			))}
 		</div>;
 	},
 }));
@@ -449,11 +458,21 @@ describe("SessionFileExplorer", () => {
 
 		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("PR #42 · feature/files");
 		expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
-		// The Changes view is workspace-only, so a PR source hides the switch.
-		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
+		// A PR gets the same Changes/Files switch as the workspace, opening on its
+		// changed-files tree rather than an empty preview beside it.
+		expect(screen.getByRole("tablist", { name: "File view" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
-		// The preview beside the tree gets the same unified/split switch as Changes,
-		// and follows it at any width.
+		expect(screen.getByTestId("tree-activate-on-click")).toHaveTextContent("true");
+		expect(screen.getByTestId("pr-files-tree")).not.toHaveClass("invisible");
+		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Show file tree" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Hide file tree" })).not.toBeInTheDocument();
+		// Changes previews the PR's first changed file with the unified/split switch;
+		// the tree stays mounted, hidden, underneath.
+		await userEvent.click(screen.getByRole("tab", { name: "Changes" }));
+		expect(screen.getByTestId("pr-files-tree")).toHaveClass("invisible");
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
 		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-split", "false");
 		await userEvent.click(screen.getByRole("button", { name: "Split diff view" }));
 		expect(screen.getByRole("button", { name: "Unified diff view" })).toHaveAttribute("aria-pressed", "true");
@@ -531,13 +550,7 @@ describe("SessionFileExplorer", () => {
 
 		await waitFor(() => expect(screen.getByTestId("tree-files")).toHaveTextContent("docs/notes.md"));
 		expect(screen.getByTestId("tree-files")).toHaveTextContent("README.md");
-		// Opened from the keyboard: in jsdom every box sits at 0,0, so the split's
-		// resize handle claims (preventDefaults) any pointerdown, including the
-		// one on the picker.
-		const openPicker = async () => {
-			screen.getByRole("button", { name: "File source" }).focus();
-			await userEvent.keyboard("{Enter}");
-		};
+		const openPicker = () => userEvent.click(screen.getByRole("button", { name: "File source" }));
 		await openPicker();
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Commits" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: /docs: update readme/ }));
@@ -545,13 +558,16 @@ describe("SessionFileExplorer", () => {
 		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("aaaaaaa");
 		expect(screen.getByTestId("tree-files")).toHaveTextContent("README.md");
 		expect(screen.getByTestId("tree-files")).not.toHaveTextContent("docs/notes.md");
+		await userEvent.click(screen.getByRole("button", { name: "select README.md" }));
+		expect(screen.getByRole("tab", { name: "Changes" })).toHaveAttribute("aria-selected", "true");
 		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-commit-sha", "aaaaaaa1111111");
 
 		// Changes goes back to the whole pull request.
 		await openPicker();
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Changes" }));
-		expect(screen.getByTestId("tree-files")).toHaveTextContent("docs/notes.md");
 		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-commit-sha", "");
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+		expect(screen.getByTestId("tree-files")).toHaveTextContent("docs/notes.md");
 	});
 
 	it("passes a renamed file's previous path to the PR detail request", async () => {
@@ -564,10 +580,107 @@ describe("SessionFileExplorer", () => {
 			}
 			return { data: { sessionId, files: [{ path: "src/App.tsx", previousPath: "src/OldApp.tsx", status: "renamed", additions: 0, deletions: 0, size: 10, binary: false }], truncated: false } };
 		});
-		renderWithQuery(<SessionFileExplorer isMaximized sessionId={sessionId} />);
+		const { container } = renderWithQuery(<SessionFileExplorer isMaximized sessionId={sessionId} />);
 
 		await userEvent.click(await screen.findByRole("button", { name: "select src/App.tsx" }));
 		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-previous-path", "src/OldApp.tsx");
+		// Maximized, a PR keeps the same Changes/Files switch as the docked rail;
+		// only Workspace keeps the preview + tree split.
+		expect(screen.getByRole("tab", { name: "Changes" })).toHaveAttribute("aria-selected", "true");
+		expect(container.querySelector('[data-slot="resizable-panel-group"]')).toBeNull();
+	});
+
+	it("keeps a PR's tree as it was across picks and previews the picked file in place", async () => {
+		const sessionId = "sess-pr-picks";
+		const url = "https://example.test/pr/42";
+		const onOpenFile = vi.fn();
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 42, url, label: "PR #42 · files" });
+		const changed = (path: string) => ({ path, status: "modified", additions: 1, deletions: 0, size: 10, binary: false });
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId, prs: [{ headSha: "head-1", number: 42, url, sourceBranch: "files", title: "Files" }] } };
+			}
+			// API order differs from the tree's directories-first order.
+			return { data: { sessionId, files: [changed("README.md"), changed("src/App.tsx"), changed("docs/notes.md")], truncated: false } };
+		});
+		renderWithQuery(<SessionFileExplorer onOpenFile={onOpenFile} sessionId={sessionId} />);
+
+		await waitFor(() => expect(screen.getByTestId("tree-files")).toHaveTextContent("docs/notes.md src/App.tsx README.md"));
+		// Before any pick, Changes shows the tree's first file, which the tree highlights.
+		expect(screen.getByTestId("tree-selected")).toHaveTextContent("docs/notes.md");
+		await userEvent.click(screen.getByRole("button", { name: "expand src" }));
+		await userEvent.click(screen.getByRole("tab", { name: "Changes" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("docs/notes.md");
+
+		// Back on Files the tree is the same instance: folders stay expanded.
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
+		expect(screen.getByRole("tab", { name: "Changes" })).toHaveAttribute("aria-selected", "true");
+		// Focus moves to the switch instead of dropping with the hidden tree row.
+		expect(screen.getByRole("tab", { name: "Changes" })).toHaveFocus();
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+		expect(screen.getByTestId("tree-selected")).toHaveTextContent("src/App.tsx");
+		expect(onOpenFile).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+		expect(screen.getByText("src directory expanded")).toBeInTheDocument();
+
+		// Leaving and re-entering the PR reopens it on its tree.
+		await userEvent.click(screen.getByRole("tab", { name: "Changes" }));
+		await userEvent.click(screen.getByRole("button", { name: "Workspace" }));
+		await userEvent.click(screen.getByRole("button", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · files" }));
+		expect(await screen.findByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("pr-files-tree")).not.toHaveClass("invisible");
+	});
+
+	it("reopens on the new PR's tree when the shared source changes from elsewhere", async () => {
+		const sessionId = "sess-pr-shared";
+		const first = "https://example.test/pr/1";
+		const second = "https://example.test/pr/2";
+		const changed = (path: string) => ({ path, status: "modified", additions: 1, deletions: 0, size: 10, binary: false });
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 1, url: first, label: "PR #1 · one" });
+		getMock.mockImplementation(async (path: string, init?: { params?: { path?: { prNumber?: number } } }) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId, prs: [
+					{ headSha: "head-1", number: 1, url: first, sourceBranch: "one", title: "One" },
+					{ headSha: "head-2", number: 2, url: second, sourceBranch: "two", title: "Two" },
+				] } };
+			}
+			const files = init?.params?.path?.prNumber === 2 ? [changed("c.ts")] : [changed("a.ts"), changed("b.ts")];
+			return { data: { sessionId, files, truncated: false } };
+		});
+		renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "select b.ts" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("b.ts");
+
+		// The maximized twin shares the source, not this instance's pick.
+		act(() => useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 2, url: second, label: "PR #2 · two" }));
+		await waitFor(() => expect(screen.getByTestId("tree-files")).toHaveTextContent("c.ts"));
+		expect(screen.getByRole("tab", { name: "Files" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.getByTestId("tree-selected")).toHaveTextContent("c.ts");
+		await userEvent.click(screen.getByRole("tab", { name: "Changes" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("c.ts");
+	});
+
+	it("has no Changes view for a PR without changed files", async () => {
+		const sessionId = "sess-pr-empty";
+		const url = "https://example.test/pr/42";
+		useUiStore.getState().setFilesSource(sessionId, { kind: "pull_request", number: 42, url, label: "PR #42 · files" });
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId, prs: [{ headSha: "head-1", number: 42, url, sourceBranch: "files", title: "Files" }] } };
+			}
+			return { data: { sessionId, files: [], truncated: false } };
+		});
+		renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
+
+		expect(await screen.findByTestId("tree-changed-only")).toHaveTextContent("true");
+		await waitFor(() => expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/files", expect.anything()));
+		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
+		expect(screen.queryByTestId("content-pane")).not.toBeInTheDocument();
 	});
 
 	it("selects duplicate PR numbers by URL and preserves the source across remounts", async () => {

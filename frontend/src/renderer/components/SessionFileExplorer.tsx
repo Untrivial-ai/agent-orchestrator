@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -23,7 +23,7 @@ import {
 } from "../hooks/useSessionWorkspaceFiles";
 import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
-import { buildChangedOnlyTree, buildWorkspaceFileTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
+import { buildChangedOnlyTree, buildWorkspaceFileTree, flattenChangedFiles, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
@@ -103,6 +103,10 @@ export function SessionFileExplorer({
 	const [selectedPRCommit, setSelectedPRCommit] = useState<{ url: string; sha: string } | null>(null);
 	const filesTopbarHost = useFilesTopbarHost();
 	const [treeOpen, setTreeOpen] = useState(true);
+	// A PR has no continuous review, so its Changes tab previews one changed file
+	// and its Files tab is the changed-files tree: the same switch as Workspace's.
+	const [prView, setPRView] = useState<"changes" | "files">("files");
+	const changesTabRef = useRef<HTMLButtonElement>(null);
 	const uiKey = sessionUiKey(sessionId, hostId);
 	const scmQuery = useSessionScmSummary(sessionId, true, undefined, false, hostId);
 	const prSummaries = scmQuery.data?.prs ?? [];
@@ -175,7 +179,15 @@ export function SessionFileExplorer({
 	);
 	const hasChanges = filesData?.files.some((file) => file.status !== "unmodified") ?? false;
 	const showChanges = source.kind === "workspace" && changedOnly && (!filesData || hasChanges);
-	const splitView = !showChanges && (isMaximized || source.kind === "pull_request");
+	const splitView = !showChanges && isMaximized && source.kind === "workspace";
+	// The PR's changed files in tree order. Like a clean workspace, a PR (or
+	// picked commit) with none has no Changes view, only the empty tree.
+	const prFiles = useMemo(
+		() => (source.kind === "pull_request" ? flattenChangedFiles(changedOnlyData) : []),
+		[changedOnlyData, source.kind],
+	);
+	const showPRChanges = prFiles.length > 0 && prView === "changes";
+	const sourceKey = source.kind === "pull_request" ? source.url : source.kind;
 	const sourceUnavailable = source.kind === "pull_request"
 		&& (filesQuery.isError || Boolean(scmQuery.data && !prSummaries.some((pr) => pr.url === source.url)));
 
@@ -185,7 +197,12 @@ export function SessionFileExplorer({
 		setFilter("");
 		setSourceNotice("");
 		setSelectedPRCommit(null);
+		setPRView("files");
 	}, [uiKey]);
+	// Any source change (the picker, the Workspace button, the unavailable-PR
+	// fallback, or the docked/maximized twin sharing the source) reopens a PR
+	// on its tree.
+	useEffect(() => setPRView("files"), [sourceKey]);
 
 	useEffect(() => {
 		if (!sourceUnavailable) return;
@@ -218,7 +235,12 @@ export function SessionFileExplorer({
 	const handleSelectPath = (node: TreeNode) => {
 		setPreviewRequest(null);
 		setSelectedPath(node.path);
-		if (!isMaximized && source.kind === "workspace") onOpenFile?.(node.path, { mode: "file" });
+		if (source.kind === "pull_request") {
+			setPRView("changes");
+			// The tree hides behind the preview; keep focus on the switch that
+			// brings it back instead of letting it drop to the page.
+			changesTabRef.current?.focus();
+		} else if (!isMaximized) onOpenFile?.(node.path, { mode: "file" });
 	};
 	const handleSelectArtifact = (node: TreeNode) => {
 		setSelectedArtifactPath(node.path);
@@ -234,7 +256,16 @@ export function SessionFileExplorer({
 		setFilesChangedOnly(uiKey, false);
 	};
 	const treeSelectedPath = selectedPath;
-	const selectedPreviousPath = sourceFiles?.find((file) => file.path === selectedPath)?.previousPath;
+	// A PR previews the picked file while it is still in this PR or commit;
+	// otherwise the tree's first file (that matches the filter), which the tree
+	// highlights, so both tabs agree on the current file.
+	const normalizedFilter = filter.trim().toLocaleLowerCase();
+	const previewPath = source.kind === "pull_request"
+		? (prFiles.find((file) => file.path === selectedPath)
+			?? prFiles.find((file) => file.path.toLocaleLowerCase().includes(normalizedFilter))
+			?? prFiles[0])?.path ?? null
+		: selectedPath;
+	const selectedPreviousPath = sourceFiles?.find((file) => file.path === previewPath)?.previousPath;
 	const sourceValue = source.kind === "pull_request" ? source.url : source.kind === "artifact" ? ARTIFACT_SOURCE_VALUE : "workspace";
 	// Artifacts remain viewable by clicking one from the Summary panel (which
 	// switches the Files source programmatically to ARTIFACT_SOURCE), but are
@@ -279,9 +310,10 @@ export function SessionFileExplorer({
 		if (pr) setFilesSource(uiKey, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
 
-	// The Changes view only exists for the workspace; for a PR the switch would
-	// do nothing, so it is not shown.
-	const hasViewTabs = hasChanges && source.kind === "workspace";
+	// Workspace and PR share one Changes/Files switch, shown only when there are
+	// changes to switch to.
+	const hasViewTabs = prFiles.length > 0 || (hasChanges && source.kind === "workspace");
+	const changesTabActive = source.kind === "pull_request" ? showPRChanges : showChanges;
 	// Docked with nothing to pick or review, the header would hold only the
 	// maximize button (the filter lives in the top bar), so it floats over the
 	// tree's top-right corner instead of reserving an empty row above it.
@@ -387,9 +419,9 @@ export function SessionFileExplorer({
 				{filesTopbarHost ? null : <span aria-hidden="true" className="flex-1" />}
 				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}
 				<span aria-hidden="true" className="flex-1" />
-				{/* Unified/split applies wherever a diff shows: the Changes review and
-				    the preview beside the tree. */}
-				{showChanges || splitView ? (
+				{/* Unified/split applies wherever a diff shows: the Changes review, a
+				    PR's Changes preview, and the maximized preview beside the tree. */}
+				{showChanges || splitView || showPRChanges ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button
@@ -421,9 +453,10 @@ export function SessionFileExplorer({
 							<TooltipTrigger asChild>
 								<button
 									aria-label={t("files.reviewChanges")}
-									aria-selected={showChanges}
-									className={cn(viewTabClass, "w-control-md justify-center px-0", showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
-									onClick={() => handleViewChange(true)}
+									aria-selected={changesTabActive}
+									ref={changesTabRef}
+									className={cn(viewTabClass, "w-control-md justify-center px-0", changesTabActive ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
+									onClick={() => (source.kind === "pull_request" ? setPRView("changes") : handleViewChange(true))}
 									role="tab"
 									type="button"
 								>
@@ -436,9 +469,9 @@ export function SessionFileExplorer({
 							<TooltipTrigger asChild>
 								<button
 									aria-label={allFilesTabLabel}
-									aria-selected={!showChanges}
-									className={cn(viewTabClass, "w-control-md justify-center px-0", !showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
-									onClick={() => (!showChanges && splitView ? setTreeOpen((open) => !open) : handleViewChange(false))}
+									aria-selected={!changesTabActive}
+									className={cn(viewTabClass, "w-control-md justify-center px-0", !changesTabActive ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
+									onClick={() => (source.kind === "pull_request" ? setPRView("files") : !showChanges && splitView ? setTreeOpen((open) => !open) : handleViewChange(false))}
 									role="tab"
 									type="button"
 								>
@@ -531,13 +564,37 @@ export function SessionFileExplorer({
 						split={split}
 					/>
 				) : null
+			) : source.kind === "pull_request" ? (
+				// The tree stays mounted (hidden) under the preview, so its expanded
+				// folders and scroll position survive a pick and Files returns to them.
+				<div className="relative min-h-0 flex-1">
+					<div className={cn("absolute inset-0 flex flex-col", showPRChanges && "invisible")} data-testid="pr-files-tree">
+						<FileTree
+							activateOnClick
+							hostId={hostId}
+							changedOnly
+							changedOnlyData={changedOnlyData}
+							filterText={filter}
+							onSelectPath={handleSelectPath}
+							selectedPath={previewPath}
+							sessionId={sessionId}
+						/>
+					</div>
+					{showPRChanges ? (
+						<div className="absolute inset-0 flex flex-col">
+							<ContentScrollArea>
+								<FileContentPane annotation={annotation} commitSha={prCommit?.sha} hostId={hostId} path={previewPath} previousPath={selectedPreviousPath} sessionId={sessionId} source={querySource} split={split} toolbar="compact" />
+							</ContentScrollArea>
+						</div>
+					) : null}
+				</div>
 			) : splitView ? (
-				// Preview on the left, tree on the right (collapsible from the header),
-				// like an editor's changed-files rail.
+				// Maximized Workspace: preview on the left, the full tree on the right
+				// (collapsible from the header).
 				<ResizablePanelGroup className="min-h-0 flex-1 border-t border-border">
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
-							<FileContentPane annotation={annotation} commitSha={prCommit?.sha ?? previewRequest?.commitSha} hostId={hostId} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={selectedPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split} toolbar="compact" />
+							<FileContentPane annotation={annotation} commitSha={previewRequest?.commitSha} hostId={hostId} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={previewPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split} toolbar="compact" />
 						</ContentScrollArea>
 					</ResizablePanel>
 					{treeOpen ? (
@@ -546,7 +603,7 @@ export function SessionFileExplorer({
 							<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
 								<FileTree
 									hostId={hostId}
-									changedOnly={source.kind === "pull_request"}
+									changedOnly={false}
 									changedOnlyData={changedOnlyData}
 									filterText={filter}
 									onSelectPath={handleSelectPath}

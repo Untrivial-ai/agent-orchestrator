@@ -204,4 +204,40 @@ describe("FileTree", () => {
 		await userEvent.click(row);
 		expect(onSelectPath).toHaveBeenCalledWith(expect.objectContaining({ path: "notes.txt", type: "file" }));
 	});
+
+	it("reports re-clicking the already-selected changed file when activateOnClick is set", async () => {
+		const changedOnlyData: TreeNode[] = [
+			{ name: "notes.txt", path: "notes.txt", type: "file", status: "modified" },
+			{ name: "todo.txt", path: "todo.txt", type: "file", status: "added" },
+		];
+		const onSelectPath = vi.fn();
+
+		renderWithQuery(
+			<FileTree
+				activateOnClick
+				changedOnly={true}
+				changedOnlyData={changedOnlyData}
+				onSelectPath={onSelectPath}
+				selectedPath="notes.txt"
+				sessionId="sess-1"
+				filterText=""
+			/>,
+		);
+
+		const tree = await screen.findByTestId("changed-file-tree");
+		const rowFor = (path: string) => waitFor(() => {
+			const match = tree.shadowRoot?.querySelector<HTMLElement>(`[data-item-path="${path}"]`);
+			expect(match).not.toBeNull();
+			return match!;
+		});
+		// Pierre stays silent for a selection that does not change; activation does not.
+		await userEvent.click(await rowFor("notes.txt"));
+		await userEvent.click(await rowFor("notes.txt"));
+		expect(onSelectPath).toHaveBeenCalledTimes(2);
+		expect(onSelectPath).toHaveBeenLastCalledWith(expect.objectContaining({ path: "notes.txt", type: "file" }));
+		// A different row reports once (not again through the selection change).
+		await userEvent.click(await rowFor("todo.txt"));
+		expect(onSelectPath).toHaveBeenCalledTimes(3);
+		expect(onSelectPath).toHaveBeenLastCalledWith(expect.objectContaining({ path: "todo.txt", type: "file" }));
+	});
 });

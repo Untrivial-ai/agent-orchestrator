@@ -48,6 +48,15 @@ export function buildChangedOnlyTree(files: WorkspaceFileSummary[]): TreeNode[] 
 	return buildWorkspaceFileTree(files.filter(isChangedWorkspaceFile));
 }
 
+/** The files of a (changed-only) tree, in its directories-first display order. */
+export function flattenChangedFiles(nodes: TreeNode[], files: TreeNode[] = []): TreeNode[] {
+	for (const node of nodes) {
+		if (node.type === "file") files.push(node);
+		else flattenChangedFiles(node.children ?? [], files);
+	}
+	return files;
+}
+
 /** Builds a compact nested tree from a flat, already-filtered file result set. */
 export function buildWorkspaceFileTree(files: Array<Pick<WorkspaceFileSummary, "path" | "status" | "binary">>): TreeNode[] {
 	const root: TreeNode[] = [];

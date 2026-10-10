@@ -5,6 +5,7 @@ import { preparePresortedFileTreeInput, type GitStatus, type GitStatusEntry } fr
 import { FileTree as PierreFileTree, useFileTree } from "@pierre/trees/react";
 import {
 	buildWorkspaceFileTree,
+	flattenChangedFiles,
 	sessionWorkspaceTreeQueryOptions,
 	type TreeNode,
 	type WorkspaceTreeEntry,
@@ -47,6 +48,7 @@ function mergeRootEntries(current: TreeNode[], entries: WorkspaceTreeEntry[]): T
 }
 
 export function FileTree({
+	activateOnClick = false,
 	filterText,
 	sessionId,
 	hostId,
@@ -56,6 +58,12 @@ export function FileTree({
 	onSelectPath,
 	flushTop = false,
 }: {
+	/**
+	 * Changed-only trees: report every click (or Enter) on a file row, including
+	 * the already-selected one, instead of only selection changes. For a tree
+	 * whose pick swaps the view, so re-picking the same file still opens it.
+	 */
+	activateOnClick?: boolean;
 	/** Start the first row at the top edge (the Files split view's divider). */
 	flushTop?: boolean;
 	filterText: string;
@@ -69,6 +77,7 @@ export function FileTree({
 	if (changedOnly) {
 		return (
 			<ChangedFileTree
+				activateOnClick={activateOnClick}
 				data={changedOnlyData}
 				filterText={filterText}
 				flushTop={flushTop}
@@ -178,14 +187,6 @@ function WorkspaceFileTree({
 			) : null}
 		</div>
 	);
-}
-
-function flattenChangedFiles(nodes: TreeNode[], files: TreeNode[] = []): TreeNode[] {
-	for (const node of nodes) {
-		if (node.type === "file") files.push(node);
-		else flattenChangedFiles(node.children ?? [], files);
-	}
-	return files;
 }
 
 function toPierreGitStatus(status: TreeNode["status"]): GitStatus | null {
@@ -325,6 +326,7 @@ function PierreTreeSurface({
  * stable model instead of rebuilding a React node for every visible file.
  */
 function ChangedFileTree({
+	activateOnClick,
 	data,
 	filterText,
 	flushTop,
@@ -332,6 +334,7 @@ function ChangedFileTree({
 	selectedPath,
 	sessionId,
 }: {
+	activateOnClick: boolean;
 	data: TreeNode[];
 	filterText: string;
 	flushTop: boolean;
@@ -372,7 +375,7 @@ function ChangedFileTree({
 		overscan: 8,
 		gitStatus,
 		onSelectionChange: (selectedPaths) => {
-			if (syncingSelection.current) return;
+			if (syncingSelection.current || activateOnClick) return;
 			const path = selectedPaths.at(-1);
 			const file = path ? filesByPathRef.current.get(path) : undefined;
 			if (file) onSelectPathRef.current(file);
@@ -397,6 +400,18 @@ function ChangedFileTree({
 	}, [filesByPath, model, selectedPath]);
 	useLayoutEffect(() => markFileViewerPerformance("tree-painted"), [model, preparedInput]);
 
+	// Pierre reports selection changes only, so re-clicking the selected row is
+	// silent. Rows render in Pierre's open shadow root with a data-item-path, and
+	// a click (Enter and Space click a button too) reaches this wrapper composed.
+	const handleActivate = (event: React.MouseEvent) => {
+		if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+		const row = event.nativeEvent.composedPath().find(
+			(target): target is HTMLElement => target instanceof HTMLElement && target.dataset.itemType === "file" && Boolean(target.dataset.itemPath),
+		);
+		const file = row?.dataset.itemPath ? filesByPathRef.current.get(row.dataset.itemPath) : undefined;
+		if (file) onSelectPathRef.current(file);
+	};
+
 	if (files.length === 0) {
 		return (
 			<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2">
@@ -406,7 +421,7 @@ function ChangedFileTree({
 	}
 
 	return (
-		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2">
+		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2" onClick={activateOnClick ? handleActivate : undefined}>
 			<PierreFileTree
 				aria-label={t("files.explorer.tree")}
 				className="min-h-0 flex-1"
