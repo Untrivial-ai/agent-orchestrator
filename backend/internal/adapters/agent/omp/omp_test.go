@@ -178,6 +178,66 @@ func TestGetRestoreCommandWithoutNativeSessionIDReturnsNotOK(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandMapsPermissionModeToApprovalMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode ports.PermissionMode
+		want []string
+	}{
+		{name: "unset defers to OMP settings", mode: "", want: []string{"omp", "fix it"}},
+		{name: "default defers to OMP settings", mode: ports.PermissionModeDefault, want: []string{"omp", "fix it"}},
+		{name: "accept edits uses write", mode: ports.PermissionModeAcceptEdits, want: []string{"omp", "--approval-mode", "write", "fix it"}},
+		{name: "auto uses write", mode: ports.PermissionModeAuto, want: []string{"omp", "--approval-mode", "write", "fix it"}},
+		{name: "bypass uses yolo", mode: ports.PermissionModeBypassPermissions, want: []string{"omp", "--approval-mode", "yolo", "fix it"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Plugin{resolvedBinary: "omp"}
+			cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{Permissions: tt.mode, Prompt: "fix it"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cmd, tt.want) {
+				t.Fatalf("cmd = %#v, want %#v", cmd, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetRestoreCommandMapsPermissionModeToApprovalMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode ports.PermissionMode
+		want []string
+	}{
+		{name: "unset defers to OMP settings", mode: "", want: []string{"omp", "--resume", "native-omp-1"}},
+		{name: "default defers to OMP settings", mode: ports.PermissionModeDefault, want: []string{"omp", "--resume", "native-omp-1"}},
+		{name: "accept edits uses write", mode: ports.PermissionModeAcceptEdits, want: []string{"omp", "--approval-mode", "write", "--resume", "native-omp-1"}},
+		{name: "auto uses write", mode: ports.PermissionModeAuto, want: []string{"omp", "--approval-mode", "write", "--resume", "native-omp-1"}},
+		{name: "bypass uses yolo", mode: ports.PermissionModeBypassPermissions, want: []string{"omp", "--approval-mode", "yolo", "--resume", "native-omp-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Plugin{resolvedBinary: "omp"}
+			cmd, ok, err := p.GetRestoreCommand(context.Background(), ports.RestoreConfig{
+				Permissions: tt.mode,
+				Session: ports.SessionRef{
+					Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "native-omp-1"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok {
+				t.Fatal("ok=false, want true")
+			}
+			if !reflect.DeepEqual(cmd, tt.want) {
+				t.Fatalf("cmd = %#v, want %#v", cmd, tt.want)
+			}
+		})
+	}
+}
+
 func TestGetAgentHooksInstallsManagedActivityExtension(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake OMP version binary uses a Unix shebang")

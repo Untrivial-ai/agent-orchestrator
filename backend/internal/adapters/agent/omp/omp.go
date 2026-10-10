@@ -63,7 +63,7 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 
 // GetLaunchCommand builds the argv to start a fresh interactive OMP session:
 //
-//	omp [--append-system-prompt <system prompt>] [--model <model>] [<prompt>]
+//	omp [--append-system-prompt <system prompt>] [--model <model>] [--approval-mode <write|yolo>] [<prompt>]
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) ([]string, error) {
 	binary, err := p.ompBinary(ctx)
 	if err != nil {
@@ -77,6 +77,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
+	AppendApprovalModeFlag(&cmd, cfg.Permissions)
 	if prompt := strings.TrimSpace(cfg.Prompt); prompt != "" {
 		cmd = append(cmd, prompt)
 	}
@@ -106,6 +107,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	agentbase.AppendModelFlag(&cmd, cfg.Config, "--model")
+	AppendApprovalModeFlag(&cmd, cfg.Permissions)
 	cmd = append(cmd, "--resume", agentSessionID)
 	return cmd, true, nil
 }
@@ -184,6 +186,29 @@ func appendSystemPrompt(cmd *[]string, inline, file string) error {
 	}
 	*cmd = append(*cmd, "--append-system-prompt", string(data))
 	return nil
+}
+
+// ApprovalMode maps AO's permission modes onto OMP's `--approval-mode` values.
+// Empty or unknown modes normalize to default, which defers to the user's own
+// OMP settings.
+func ApprovalMode(mode ports.PermissionMode) string {
+	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
+		return "write"
+	case ports.PermissionModeBypassPermissions:
+		return "yolo"
+	default:
+		return "default"
+	}
+}
+
+// AppendApprovalModeFlag appends `--approval-mode <mode>` unless the mode is
+// default. The TUI adapter and the ompacp Chat driver share it so both
+// interfaces launch OMP with the same approval policy.
+func AppendApprovalModeFlag(cmd *[]string, mode ports.PermissionMode) {
+	if approval := ApprovalMode(mode); approval != "default" {
+		*cmd = append(*cmd, "--approval-mode", approval)
+	}
 }
 
 var ompBinarySpec = binaryutil.BinarySpec{

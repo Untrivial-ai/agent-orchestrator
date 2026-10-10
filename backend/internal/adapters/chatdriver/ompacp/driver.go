@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/omp"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/nativeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -45,12 +46,7 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	if prompt := strings.TrimSpace(cfg.SystemPrompt); prompt != "" {
 		args = append(args, "--append-system-prompt", prompt)
 	}
-	switch ports.NormalizePermissionMode(cfg.Permissions) {
-	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
-		args = append(args, "--approval-mode", "write")
-	case ports.PermissionModeBypassPermissions:
-		args = append(args, "--approval-mode", "yolo")
-	}
+	omp.AppendApprovalModeFlag(&args, cfg.Permissions)
 	return args, nil, nil
 }
 
@@ -62,20 +58,9 @@ func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {
 }
 
 func validateTurnSettings(initial ports.PermissionMode, settings ports.ChatTurnSettings) error {
-	if settings.Approval == "" || ompApprovalMode(settings.Approval) == ompApprovalMode(initial) {
+	if settings.Approval == "" || omp.ApprovalMode(settings.Approval) == omp.ApprovalMode(initial) {
 		return nil
 	}
 	return fmt.Errorf("%w: OMP ACP approval mode is fixed at process launch (%s); restart Chat to change it to %s",
-		acpdriver.ErrACPSetterUnsupported, ompApprovalMode(initial), ompApprovalMode(settings.Approval))
-}
-
-func ompApprovalMode(mode ports.PermissionMode) string {
-	switch ports.NormalizePermissionMode(mode) {
-	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
-		return "write"
-	case ports.PermissionModeBypassPermissions:
-		return "yolo"
-	default:
-		return "default"
-	}
+		acpdriver.ErrACPSetterUnsupported, omp.ApprovalMode(initial), omp.ApprovalMode(settings.Approval))
 }
