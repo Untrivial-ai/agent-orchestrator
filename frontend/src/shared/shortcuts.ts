@@ -49,6 +49,12 @@ export type ShortcutDefinition = {
 	id: AppShortcutId;
 	label: string;
 	category: ShortcutCategory;
+	/**
+	 * English synonym words searched in addition to the localized label so a
+	 * non-English UI can still find a shortcut by a common term. Intentionally
+	 * not localized; keep these in English.
+	 */
+	keywords?: readonly string[];
 	/** Indexed project selection is a family of nine bindings, not one command. */
 	customizable?: boolean;
 };
@@ -62,77 +68,92 @@ export const APP_SHORTCUTS: readonly ShortcutDefinition[] = [
 		id: "new-session",
 		label: "New session",
 		category: "General",
+		keywords: ["task", "create", "start"],
 	},
 	{
 		id: "new-shell-terminal",
 		label: "New terminal",
 		category: "General",
+		keywords: ["terminal", "shell", "tab"],
 	},
 	{
 		id: "close-shell-terminal",
 		label: "Close terminal",
 		category: "Session",
+		keywords: ["terminal", "shell", "exit"],
 	},
 	{
 		id: "keyboard-shortcuts",
 		label: "Show keyboard shortcuts",
 		category: "General",
+		keywords: ["help", "keys", "hotkeys", "cheat sheet"],
 	},
 	{
 		id: "command-palette",
 		label: "Open command palette",
 		category: "General",
+		keywords: ["palette", "command bar"],
 	},
 	{
 		id: "open-settings",
 		label: "Open settings",
 		category: "General",
+		keywords: ["preferences", "configuration"],
 	},
 	{
 		id: "toggle-sidebar",
 		label: "Toggle sidebar",
 		category: "General",
+		keywords: ["sidebar", "side panel"],
 	},
 	{
 		id: "open-project",
 		label: "Open project 1–9",
 		category: "Navigation",
+		keywords: ["project", "workspace", "repository", "repo"],
 		customizable: false,
 	},
 	{
 		id: "previous-session",
 		label: "Previous session",
 		category: "Navigation",
+		keywords: ["session", "back"],
 	},
 	{
 		id: "next-session",
 		label: "Next session",
 		category: "Navigation",
+		keywords: ["session", "forward"],
 	},
 	{
 		id: "previous-tab",
 		label: "Previous tab",
 		category: "Navigation",
+		keywords: ["tab", "back"],
 	},
 	{
 		id: "next-tab",
 		label: "Next tab",
 		category: "Navigation",
+		keywords: ["tab", "forward"],
 	},
 	{
 		id: "toggle-inspector",
 		label: "Toggle inspector",
 		category: "Session",
+		keywords: ["inspector", "details", "panel"],
 	},
 	{
 		id: "focus-terminal",
 		label: "Focus terminal",
 		category: "Session",
+		keywords: ["terminal", "shell"],
 	},
 	{
 		id: "toggle-browser-devtools",
 		label: "Toggle browser DevTools",
 		category: "Session",
+		keywords: ["devtools", "developer tools", "browser", "inspect"],
 	},
 ];
 

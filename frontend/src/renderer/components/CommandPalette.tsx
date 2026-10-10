@@ -14,10 +14,13 @@ import {
 	buildCommands,
 	buildFileSessionCommands,
 	buildSessionActions,
+	buildShortcutCommands,
 	buildWorkspaceFileCommands,
 	displayGroups,
 	filterCommands,
 	findSession,
+	paletteShortcutRunMode,
+	RUN_APP_SHORTCUT_EVENT,
 	type CommandItem as CommandItemModel,
 	type NavigateTarget,
 	type WorkspaceFileSearchTarget,
@@ -32,6 +35,7 @@ import {
 import { iconForCommand } from "../lib/command-palette-icons";
 import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { isMacPlatform } from "../lib/platform";
+import type { AppShortcutId } from "../../shared/shortcuts";
 import { sessionReviewsQueryOptions, type PRReviewState } from "../lib/session-reviews";
 import { spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { useShell } from "../lib/shell-context";
@@ -43,7 +47,7 @@ import {
 	workerSessions,
 } from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
-import { matchesRendererShortcut } from "../stores/keybindings-store";
+import { matchesRendererShortcut, useKeybindingsStore } from "../stores/keybindings-store";
 import { Button } from "./ui/button";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { TaskComposer } from "./TaskComposer";
@@ -81,6 +85,7 @@ export function CommandPalette() {
 	const isOpen = useUiStore((s) => s.isCommandPaletteOpen);
 	const setOpen = useUiStore((s) => s.setCommandPaletteOpen);
 	const restartingProjectIds = useUiStore((s) => s.restartingProjectIds);
+	const overrides = useKeybindingsStore((s) => s.overrides);
 	// The palette stays mounted to preserve its close animation and global
 	// shortcut. While closed, commands are invisible, so retain the cached
 	// snapshot without subscribing this hidden surface to streamed updates.
@@ -215,16 +220,21 @@ export function CommandPalette() {
 	const reviewStatesForCommands = isOpen && reviewActionsReady ? reviewStatesSnapshot : EMPTY_REVIEW_STATES;
 
 	const rootItems = useMemo(
-		() =>
-			buildCommands({
-				workspaces,
-				currentProjectId,
-				currentSessionId: params.sessionId,
-				currentHostId: params.hostId,
-				restartingProjectIds,
-				reviewStatesBySessionId: reviewStatesForCommands,
-			}, t),
-		[workspaces, currentProjectId, params.hostId, params.sessionId, restartingProjectIds, reviewStatesForCommands, t, i18n.resolvedLanguage],
+		() => [
+			...buildCommands(
+				{
+					workspaces,
+					currentProjectId,
+					currentSessionId: params.sessionId,
+					currentHostId: params.hostId,
+					restartingProjectIds,
+					reviewStatesBySessionId: reviewStatesForCommands,
+				},
+				t,
+			),
+			...buildShortcutCommands({ isMac: isMacPlatform(), overrides }, t),
+		],
+		[workspaces, currentProjectId, params.hostId, params.sessionId, restartingProjectIds, reviewStatesForCommands, t, i18n.resolvedLanguage, overrides],
 	);
 	const scoped = useMemo(
 		() => (view.mode === "session-actions" ? findSession(workspaces, view.sessionId) : undefined),
@@ -593,9 +603,21 @@ export function CommandPalette() {
 					case "open-new-project":
 						openNewProject();
 						break;
-					case "open-orchestrator":
-							await openOrchestrator(action.projectId);
-							break;
+				case "open-orchestrator":
+						await openOrchestrator(action.projectId);
+						break;
+				case "run-shortcut": {
+					const mode = paletteShortcutRunMode(action.shortcutId);
+					if (mode === "shell") {
+						window.dispatchEvent(
+							new CustomEvent<AppShortcutId>(RUN_APP_SHORTCUT_EVENT, { detail: action.shortcutId }),
+						);
+					} else if (mode === "settings") {
+						useUiStore.getState().openGlobalSettings("shortcuts");
+					}
+					closePalette();
+					break;
+				}
 				}
 			} catch (err) {
 				if (isCurrentRun()) setError(err instanceof Error ? err.message : t("command.failed"));

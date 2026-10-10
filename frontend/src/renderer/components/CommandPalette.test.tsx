@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AppShortcutId } from "../../shared/shortcuts";
 import { STANDALONE_WORKSPACE_ID, type WorkspaceSummary } from "../types/workspace";
 import { useUiStore } from "../stores/ui-store";
 
@@ -811,6 +812,60 @@ describe("CommandPalette actions", () => {
 			to: "/projects/$projectId",
 			params: { projectId: "proj-2" },
 		});
+	});
+});
+
+describe("CommandPalette shortcut results", () => {
+	// Wire literal, intentionally not the imported constant: the palette must
+	// dispatch this exact string for the shell's listener to hear it, so a
+	// rename on either side of the wire breaks this test.
+	const RUN_EVENT = "ao:run-app-shortcut";
+
+	function listenForShortcutRuns() {
+		const received: AppShortcutId[] = [];
+		const listener = (event: Event) => received.push((event as CustomEvent<AppShortcutId>).detail);
+		window.addEventListener(RUN_EVENT, listener);
+		return { received, dispose: () => window.removeEventListener(RUN_EVENT, listener) };
+	}
+
+	it("stays hidden until typed, then runs the shell-owned shortcut through the palette event", async () => {
+		const { received, dispose } = listenForShortcutRuns();
+		try {
+			renderPalette();
+			act(() => useUiStore.getState().setCommandPaletteOpen(true));
+			const input = await screen.findByPlaceholderText(/search projects/i);
+			expect(screen.queryByText("Focus terminal")).not.toBeInTheDocument();
+
+			fireEvent.change(input, { target: { value: "focus terminal" } });
+			const row = await screen.findByText("Focus terminal");
+			expect(row.closest("[cmdk-item]")).toHaveTextContent(/ctrl/i);
+			fireEvent.click(row);
+
+			await waitFor(() => expect(received).toEqual(["focus-terminal"]));
+			await waitFor(() => expect(useUiStore.getState().isCommandPaletteOpen).toBe(false));
+		} finally {
+			dispose();
+		}
+	});
+
+	it("opens Keyboard Shortcuts settings when the shortcut has no shell handler", async () => {
+		const { received, dispose } = listenForShortcutRuns();
+		try {
+			renderPalette();
+			act(() => useUiStore.getState().setCommandPaletteOpen(true));
+			const input = await screen.findByPlaceholderText(/search projects/i);
+
+			fireEvent.change(input, { target: { value: "previous tab" } });
+			fireEvent.click(await screen.findByText("Previous tab"));
+
+			await waitFor(() =>
+				expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "shortcuts" }),
+			);
+			expect(received).toEqual([]);
+			await waitFor(() => expect(useUiStore.getState().isCommandPaletteOpen).toBe(false));
+		} finally {
+			dispose();
+		}
 	});
 });
 

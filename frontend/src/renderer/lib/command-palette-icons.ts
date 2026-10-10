@@ -6,6 +6,7 @@ import {
 	FolderPlus,
 	GitPullRequest,
 	House,
+	Keyboard,
 	Settings,
 	SquarePen,
 	Sun,
@@ -31,6 +32,9 @@ const GROUP_ICONS: Partial<Record<CommandGroupId, LucideIcon>> = {
 	projects: Folder,
 	files: File,
 	prs: GitPullRequest,
+	// The three fixed global rows have exact icons above; the fallback covers
+	// the search-only shortcut rows (shortcut:<id>).
+	global: Keyboard,
 	// Sessions / attention stay text-only, matching Cursor's "Chats" rows.
 };
 

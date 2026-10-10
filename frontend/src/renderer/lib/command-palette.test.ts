@@ -3,11 +3,13 @@ import {
 	buildCommands,
 	buildFileSessionCommands,
 	buildSessionActions,
+	buildShortcutCommands,
 	buildWorkspaceFileCommands,
 	filterCommands,
 	groupCommands,
 	displayGroups,
 	findSession,
+	paletteShortcutRunMode,
 	visibleForQuery,
 	MAX_ATTENTION_SEARCH_RESULTS,
 	MAX_ITEMS_PER_GROUP,
@@ -15,6 +17,15 @@ import {
 	type CommandItem,
 } from "./command-palette";
 import type { PRReviewState } from "./session-reviews";
+import {
+	APP_SHORTCUTS,
+	effectiveShortcutBindings,
+	shortcutBindingLabel,
+	type AppShortcutId,
+	type KeybindingOverrides,
+	type ShortcutBinding,
+} from "../../shared/shortcuts";
+import { shortcutLabelKeys } from "../i18n/key-maps";
 import {
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
@@ -720,5 +731,101 @@ describe("buildSessionActions", () => {
 	it("omits Copy branch for a synthetic branch", () => {
 		const items = buildSessionActions(workspace, session({ id: "syn", branch: "session/syn" }));
 		expect(items.some((i) => i.action?.kind === "copy-branch")).toBe(false);
+	});
+});
+
+const shortcutRow = (items: CommandItem[], id: AppShortcutId) =>
+	items.find((item) => item.action?.kind === "run-shortcut" && item.action.shortcutId === id);
+
+describe("buildShortcutCommands", () => {
+	it("offers one search-only row per catalog shortcut in the Global group", () => {
+		const items = buildShortcutCommands({ isMac: false });
+		expect(items).toHaveLength(APP_SHORTCUTS.length);
+		expect(new Set(items.map((item) => item.id)).size).toBe(APP_SHORTCUTS.length);
+		for (const shortcut of APP_SHORTCUTS) {
+			const row = shortcutRow(items, shortcut.id);
+			expect(row).toBeDefined();
+			expect(row?.id).toBe(`shortcut:${shortcut.id}`);
+			expect(row?.group).toBe("global");
+			expect(row?.searchOnly).toBe(true);
+			expect(row?.action).toEqual({ kind: "run-shortcut", shortcutId: shortcut.id });
+			expect(row?.title).toBe(appI18n.t(shortcutLabelKeys[shortcut.id]));
+			expect(row?.keywords).toEqual([...(shortcut.keywords ?? []), shortcut.id]);
+		}
+	});
+
+	it("shows each shortcut's effective binding as the subtitle, per platform", () => {
+		const windows = buildShortcutCommands({ isMac: false });
+		const mac = buildShortcutCommands({ isMac: true });
+		for (const shortcut of APP_SHORTCUTS) {
+			const expectedWindows = effectiveShortcutBindings(shortcut.id, false)
+				.map((binding) => shortcutBindingLabel(binding, false))
+				.join(", ");
+			expect(shortcutRow(windows, shortcut.id)?.subtitle).toBe(expectedWindows);
+			const expectedMac = effectiveShortcutBindings(shortcut.id, true)
+				.map((binding) => shortcutBindingLabel(binding, true))
+				.join(", ");
+			expect(shortcutRow(mac, shortcut.id)?.subtitle).toBe(expectedMac);
+		}
+		expect(shortcutRow(mac, "new-session")?.subtitle).not.toBe(shortcutRow(windows, "new-session")?.subtitle);
+	});
+
+	it("reflects a user keybinding override in the subtitle", () => {
+		const override: readonly ShortcutBinding[] = [
+			{ key: "k", ctrl: true, meta: false, shift: true, alt: false },
+		];
+		const overrides: KeybindingOverrides = { "new-session": override };
+		const items = buildShortcutCommands({ isMac: false, overrides });
+		expect(shortcutRow(items, "new-session")?.subtitle).toBe(shortcutBindingLabel(override[0]!, false));
+		expect(shortcutRow(buildShortcutCommands({ isMac: false }), "new-session")?.subtitle).not.toBe(
+			shortcutBindingLabel(override[0]!, false),
+		);
+	});
+
+	it("stays hidden until typed, then surfaces for the planned queries", () => {
+		const items = [...buildCommands({ workspaces: [] }), ...buildShortcutCommands({ isMac: false })];
+		expect(filterCommands(items, "").some((item) => item.id.startsWith("shortcut:"))).toBe(false);
+		expect(filterCommands(items, "focus terminal").some((item) => item.id === "shortcut:focus-terminal")).toBe(true);
+		expect(filterCommands(items, "new session").some((item) => item.id === "shortcut:new-session")).toBe(true);
+		expect(filterCommands(items, "toggle-sidebar").some((item) => item.id === "shortcut:toggle-sidebar")).toBe(
+			true,
+		);
+		expect(filterCommands(items, "side panel").some((item) => item.id === "shortcut:toggle-sidebar")).toBe(true);
+	});
+});
+
+describe("paletteShortcutRunMode", () => {
+	const shellIds: AppShortcutId[] = [
+		"new-session",
+		"new-shell-terminal",
+		"focus-terminal",
+		"previous-session",
+		"next-session",
+		"toggle-sidebar",
+		"open-settings",
+		"keyboard-shortcuts",
+	];
+	const settingsIds: AppShortcutId[] = [
+		"previous-tab",
+		"next-tab",
+		"close-shell-terminal",
+		"toggle-inspector",
+		"toggle-browser-devtools",
+		"open-project",
+	];
+
+	it("keeps the palette open for the command-palette shortcut itself", () => {
+		expect(paletteShortcutRunMode("command-palette")).toBe("toggle-palette");
+	});
+
+	it("routes shell-owned ids to the shell listener and view-local ids to settings", () => {
+		for (const id of shellIds) expect(paletteShortcutRunMode(id)).toBe("shell");
+		for (const id of settingsIds) expect(paletteShortcutRunMode(id)).toBe("settings");
+	});
+
+	it("covers every catalog shortcut exactly once across the three modes", () => {
+		const modes = new Set(APP_SHORTCUTS.map((shortcut) => paletteShortcutRunMode(shortcut.id)));
+		expect(modes).toEqual(new Set(["toggle-palette", "shell", "settings"]));
+		expect(new Set([...shellIds, ...settingsIds, "command-palette"]).size).toBe(APP_SHORTCUTS.length);
 	});
 });

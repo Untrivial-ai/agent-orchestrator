@@ -14,6 +14,7 @@ import {
 	type KeybindingOverrides,
 	type ShortcutBinding,
 } from "../../../shared/shortcuts";
+import { shortcutMatchesSearch } from "../../../shared/shortcut-search";
 import { isMacPlatform } from "../../lib/platform";
 import { aoBridge } from "../../lib/bridge";
 import { cn } from "../../lib/utils";
@@ -167,14 +168,15 @@ export function KeyboardShortcutsSettingsDialog({
 	};
 
 	const filteredShortcuts = useMemo(() => {
-		const needle = query.trim().toLowerCase();
-		if (!needle) return APP_SHORTCUTS;
-		return APP_SHORTCUTS.filter((shortcut) => {
-			const labels = effectiveShortcutBindings(shortcut.id, isMac, overrides)
-				.map((candidate) => shortcutBindingLabel(candidate, isMac))
-				.join(" ");
-			return `${shortcutLabel(shortcut.id, t)} ${shortcutCategoryLabel(shortcut.category, t)} ${labels}`.toLowerCase().includes(needle);
-		});
+		if (!query.trim()) return APP_SHORTCUTS;
+		return APP_SHORTCUTS.filter((shortcut) =>
+			shortcutMatchesSearch(shortcut, query, {
+				label: shortcutLabel(shortcut.id, t),
+				category: shortcutCategoryLabel(shortcut.category, t),
+				isMac,
+				overrides,
+			}),
+		);
 	}, [isMac, overrides, query, t]);
 
 	const applyBinding = async (

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { CancelledError } from "@tanstack/react-query";
 import { Suspense, type ComponentType, type PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { KeybindingOverrides } from "../../shared/shortcuts";
+import type { AppShortcutId, KeybindingOverrides } from "../../shared/shortcuts";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSummary } from "../types/workspace";
@@ -941,6 +941,24 @@ describe("shell new-session shortcut subscription", () => {
 
 		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "__standalone__");
 		expect(screen.queryByTestId("create-project-flow")).not.toBeInTheDocument();
+	});
+});
+
+describe("palette run-shortcut event", () => {
+	// Wire literal, intentionally not the imported constant: the palette
+	// dispatches this exact string (asserted in CommandPalette.test.tsx), so
+	// this side must hear it too for the palette → shell round trip to hold.
+	const RUN_EVENT = "ao:run-app-shortcut";
+
+	it("runs the new-session handler when the palette dispatches it", async () => {
+		shellMocks.state.routeParams = { projectId: "proj-1" };
+		await renderShell();
+
+		act(() => {
+			window.dispatchEvent(new CustomEvent<AppShortcutId>(RUN_EVENT, { detail: "new-session" }));
+		});
+
+		expect(screen.getByTestId("new-task-flow")).toHaveAttribute("data-project", "proj-1");
 	});
 });
 

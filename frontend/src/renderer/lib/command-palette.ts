@@ -19,6 +19,14 @@ import {
 	reviewSessionRunAction,
 	type PRReviewState,
 } from "./session-reviews";
+import {
+	APP_SHORTCUTS,
+	effectiveShortcutBindings,
+	shortcutBindingLabel,
+	type AppShortcutId,
+	type KeybindingOverrides,
+} from "../../shared/shortcuts";
+import { shortcutLabelKeys } from "../i18n/key-maps";
 import { appI18n, type MessageKey } from "../i18n";
 
 export type CommandGroupId = "current" | "attention" | "files" | "projects" | "sessions" | "prs" | "global";
@@ -59,7 +67,43 @@ export type CommandAction =
 	| { kind: "open-pr"; url: string }
 	| { kind: "copy-pr-url"; url: string }
 	| { kind: "trigger-review"; sessionId: string }
-	| { kind: "toggle-theme" };
+	| { kind: "toggle-theme" }
+	| { kind: "run-shortcut"; shortcutId: AppShortcutId };
+
+/**
+ * Window event the palette uses to ask the shell layout to run an app
+ * shortcut. The shell owns the handlers (it is mounted on every route), so
+ * Enter on a palette row reuses exactly the code path the real keypress
+ * reaches instead of a parallel implementation.
+ */
+export const RUN_APP_SHORTCUT_EVENT = "ao:run-app-shortcut";
+
+export type PaletteShortcutRunMode = "toggle-palette" | "shell" | "settings";
+
+/**
+ * Where a shortcut result runs when selected. "shell" ids are executed by the
+ * shell's RUN_APP_SHORTCUT_EVENT listener; the rest are view-local (tab
+ * strips, inspector, browser, numbered project jumps) and fall back to the
+ * Keyboard Shortcuts settings, which lists the binding. Keep the "shell" list
+ * in sync with that listener in routes/_shell.tsx.
+ */
+export function paletteShortcutRunMode(id: AppShortcutId): PaletteShortcutRunMode {
+	switch (id) {
+		case "command-palette":
+			return "toggle-palette";
+		case "new-session":
+		case "new-shell-terminal":
+		case "focus-terminal":
+		case "previous-session":
+		case "next-session":
+		case "toggle-sidebar":
+		case "open-settings":
+		case "keyboard-shortcuts":
+			return "shell";
+		default:
+			return "settings";
+	}
+}
 
 export type CommandItem = {
 	id: string;
@@ -497,6 +541,35 @@ export function buildCommands(ctx: CommandPaletteContext, t: TFunction = appI18n
 	});
 
 	return items;
+}
+
+export type ShortcutCommandContext = {
+	isMac: boolean;
+	/** User keybinding overrides; reflected in each row's binding subtitle. */
+	overrides?: KeybindingOverrides;
+};
+
+/**
+ * Search-only rows for the app shortcut catalog, so queries like
+ * "focus terminal" or "new session" surface the shortcut with its current
+ * binding. Hidden from the default (empty-query) view and ranked through the
+ * palette's normal title/keyword scoring.
+ */
+export function buildShortcutCommands(ctx: ShortcutCommandContext, t: TFunction = appI18n.t): CommandItem[] {
+	return APP_SHORTCUTS.map((shortcut) => {
+		const bindingLabel = effectiveShortcutBindings(shortcut.id, ctx.isMac, ctx.overrides)
+			.map((binding) => shortcutBindingLabel(binding, ctx.isMac))
+			.join(", ");
+		return {
+			id: `shortcut:${shortcut.id}`,
+			group: "global" as const,
+			title: t(shortcutLabelKeys[shortcut.id]),
+			subtitle: bindingLabel === "" ? undefined : bindingLabel,
+			keywords: [...(shortcut.keywords ?? []), shortcut.id],
+			searchOnly: true,
+			action: { kind: "run-shortcut" as const, shortcutId: shortcut.id },
+		};
+	});
 }
 
 /**

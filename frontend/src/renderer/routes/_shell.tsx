@@ -47,6 +47,7 @@ import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import { aoBridge } from "../lib/bridge";
+import { RUN_APP_SHORTCUT_EVENT } from "../lib/command-palette";
 import { handleModifierLinkClick } from "../lib/external-link-policy";
 import { recordProjectOpened } from "../lib/project-history";
 import { cn } from "../lib/utils";
@@ -61,6 +62,7 @@ import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/u
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { CLOUD_PROJECT_KIND, hasConfiguredOrchestratorAgent, newestActiveOrchestrator, sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSession, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
+import type { AppShortcutId } from "../../shared/shortcuts";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
 import { remoteWorkspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { clientForHost } from "../lib/host-clients";
@@ -1075,24 +1077,24 @@ function ShellLayout() {
 	// delivered here, so it fires even when focus is inside xterm or a native
 	// Browser-preview view. The shell owns the routing: open the New Task flow
 	// for the in-scope project, or a standalone agent when no project is in scope.
-	useEffect(
-		() =>
-			aoBridge.app.onNewSessionShortcut(() => {
-			if (routeParams.hostId) {
-				if (routeParams.projectId) requestNewTask(routeParams.projectId, routeParams.hostId);
-				else requestNewTask(STANDALONE_WORKSPACE_ID, routeParams.hostId);
-				return;
-			}
-				if (scopedProjectId) {
-					requestNewTask(scopedProjectId);
-				} else {
-					requestNewTask(STANDALONE_WORKSPACE_ID);
-				}
-			}),
-		[routeParams.hostId, routeParams.projectId, scopedProjectId, requestNewTask],
-	);
+	// Shared with the palette's run-shortcut event so Enter on the "New session"
+	// row routes identically to the keypress.
+	const runNewSession = useCallback(() => {
+		if (routeParams.hostId) {
+			if (routeParams.projectId) requestNewTask(routeParams.projectId, routeParams.hostId);
+			else requestNewTask(STANDALONE_WORKSPACE_ID, routeParams.hostId);
+			return;
+		}
+		if (scopedProjectId) {
+			requestNewTask(scopedProjectId);
+		} else {
+			requestNewTask(STANDALONE_WORKSPACE_ID);
+		}
+	}, [routeParams.hostId, routeParams.projectId, scopedProjectId, requestNewTask]);
+	useEffect(() => aoBridge.app.onNewSessionShortcut(runNewSession), [runNewSession]);
 
-	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(() => setIsKeyboardShortcutsOpen(true)), []);
+	const showKeyboardShortcutsHelp = useCallback(() => setIsKeyboardShortcutsOpen(true), []);
+	useEffect(() => aoBridge.app.onKeyboardShortcutsHelp(showKeyboardShortcutsHelp), []);
 
 	// A folder was dropped on the app's taskbar icon/shortcut (main process,
 	// cold start or an already-running instance) — feeds the same drop flow as
@@ -1105,19 +1107,17 @@ function ShellLayout() {
 	// New standalone terminal (⌘T / Ctrl+T), also detected in the main process so it
 	// fires from inside a terminal pane. It raises the same store signal as the
 	// tab-strip + button so the two cannot drift apart.
-	useEffect(
-		() =>
-			aoBridge.app.onNewShellTerminalShortcut(() => {
-				// The project board is not a terminal surface — ⌘T here used to yank
-				// users into the standalone /terminals route (#4772). Sessions and the
-				// dedicated terminals view keep the shortcut; explicit UI can still
-				// open shells from the board.
-				if (!routeParams.hostId && (routeParams.sessionId || isTerminalsRoute)) {
-					requestNewShellTerminal();
-				}
-			}),
-		[isTerminalsRoute, requestNewShellTerminal, routeParams.hostId, routeParams.sessionId],
-	);
+	const runNewShellTerminal = useCallback(() => {
+		// The project board is not a terminal surface — ⌘T here used to yank
+		// users into the standalone /terminals route (#4772). Sessions and the
+		// dedicated terminals view keep the shortcut; explicit UI can still
+		// open shells from the board. Remote-host routes own their own
+		// terminals, so they never trigger the local shell here.
+		if (!routeParams.hostId && (routeParams.sessionId || isTerminalsRoute)) {
+			requestNewShellTerminal();
+		}
+	}, [isTerminalsRoute, requestNewShellTerminal, routeParams.hostId, routeParams.sessionId]);
+	useEffect(() => aoBridge.app.onNewShellTerminalShortcut(runNewShellTerminal), [runNewShellTerminal]);
 
 	// The shell layout is the single consumer of that signal, because it is the
 	// only component mounted on EVERY route. Owning it here is what lets the
@@ -1167,18 +1167,52 @@ function ShellLayout() {
 		};
 	}, [navigateSession]);
 
-	useEffect(
-		() =>
-			aoBridge.app.onFocusTerminalShortcut(() => {
-				document
-					.querySelector<HTMLElement>(
-						"[data-terminal-activation-phase='visible'] .xterm-helper-textarea, " +
-							"[data-testid='session-terminal-slot'] .xterm-helper-textarea",
-					)
-					?.focus();
-			}),
-		[],
-	);
+	const focusActiveTerminal = useCallback(() => {
+		document
+			.querySelector<HTMLElement>(
+				"[data-terminal-activation-phase='visible'] .xterm-helper-textarea, " +
+					"[data-testid='session-terminal-slot'] .xterm-helper-textarea",
+			)
+			?.focus();
+	}, []);
+	useEffect(() => aoBridge.app.onFocusTerminalShortcut(focusActiveTerminal), []);
+
+	// The command palette executes shell-owned shortcuts (see
+	// paletteShortcutRunMode) through these same handlers, so Enter on a
+	// shortcut row behaves exactly like pressing its keys. View-local ids get
+	// mode "settings" in the palette and never dispatch here.
+	useEffect(() => {
+		const handleRunShortcut = (event: Event) => {
+			switch ((event as CustomEvent<AppShortcutId>).detail) {
+				case "new-session":
+					runNewSession();
+					break;
+				case "new-shell-terminal":
+					runNewShellTerminal();
+					break;
+				case "focus-terminal":
+					focusActiveTerminal();
+					break;
+				case "previous-session":
+					navigateSession(-1);
+					break;
+				case "next-session":
+					navigateSession(1);
+					break;
+				case "keyboard-shortcuts":
+					showKeyboardShortcutsHelp();
+					break;
+				case "toggle-sidebar":
+					toggleSidebar();
+					break;
+				case "open-settings":
+					useUiStore.getState().openGlobalSettings();
+					break;
+			}
+		};
+		window.addEventListener(RUN_APP_SHORTCUT_EVENT, handleRunShortcut);
+		return () => window.removeEventListener(RUN_APP_SHORTCUT_EVENT, handleRunShortcut);
+	}, [runNewSession, runNewShellTerminal, focusActiveTerminal, navigateSession, showKeyboardShortcutsHelp, toggleSidebar]);
 	const openProject = useCallback(
 		(projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
 		[navigate],
