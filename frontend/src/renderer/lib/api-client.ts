@@ -60,6 +60,9 @@ export function setApiDaemonStatus(nextStatus: DaemonStatus): void {
 // still normalizes IDs for every resource, including ones a segment heuristic
 // would miss (orchestrators/{id}). Keep in sync with schema.ts.
 const ROUTE_TEMPLATES = [
+	"/api/v1/provider-accounts/{accountId}/actions",
+	"/api/v1/provider-accounts/login/{loginId}",
+	"/api/v1/provider-accounts/sessions/{sessionId}",
 	"/api/v1/agents",
 	"/api/v1/agents/install-jobs",
 	"/api/v1/agents/auth-plans",
@@ -69,18 +72,6 @@ const ROUTE_TEMPLATES = [
 	"/api/v1/agents/readiness/ensure",
 	"/api/v1/agents/{agent}/auth",
 	"/api/v1/agents/{agent}/install",
-	"/api/v1/agents/codex/accounts",
-	"/api/v1/agents/codex/accounts/{accountId}",
-	"/api/v1/agents/codex/accounts/ensure",
-	"/api/v1/agents/codex/accounts/{accountId}/login-terminal",
-	"/api/v1/agents/codex/accounts/{accountId}/logout",
-	"/api/v1/agents/codex/accounts/{accountId}/reset-credit/consume",
-	"/api/v1/agents/codex/accounts/events",
-	"/api/v1/agents/codex/accounts/login-terminal",
-	"/api/v1/agents/codex/accounts/login-operations/{operationId}/verify",
-	"/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel",
-	"/api/v1/agents/codex/account-switches",
-	"/api/v1/agents/codex/account-switches/{switchId}",
 	"/api/v1/agents/{agent}/models",
 	"/api/v1/agents/{agent}/models/refresh",
 	"/api/v1/agents/{agent}/probe",

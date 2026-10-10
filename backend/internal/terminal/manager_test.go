@@ -103,6 +103,27 @@ func TestServeOpenStreamsAndWritesTerminal(t *testing.T) {
 	})
 }
 
+func TestTerminalIsOnScreenOnlyWhileAClientShowsItWithAGrid(t *testing.T) {
+	src := &fakeSource{alive: true, spawner: &fakeSpawner{ptys: []*fakePTY{newFakePTY()}}}
+	mgr := NewManager(src, nil, testLogger(), WithHeartbeat(0))
+	defer mgr.Close()
+	conn := newFakeConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Serve(ctx, conn)
+
+	// A parked pane attaches without a grid.
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgOpen}
+	recv(t, conn, chTerminal, msgOpened, time.Second)
+	if mgr.TerminalOnScreen("t1") || mgr.TerminalOnScreen("t2") {
+		t.Fatal("a terminal no client shows is on screen")
+	}
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgResize, Rows: 30, Cols: 100}
+	eventually(t, time.Second, func() bool { return mgr.TerminalOnScreen("t1") })
+	conn.in <- clientMsg{Ch: chTerminal, ID: "t1", Type: msgClose}
+	eventually(t, time.Second, func() bool { return !mgr.TerminalOnScreen("t1") })
+}
+
 type fixedSessionInputLease bool
 
 func (l fixedSessionInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {

@@ -548,6 +548,11 @@ type Project struct {
 	Kind          string
 }
 
+type ProviderAccountState struct {
+	ID    int64
+	Facts string
+}
+
 type Report struct {
 	ID                 string
 	SessionID          string

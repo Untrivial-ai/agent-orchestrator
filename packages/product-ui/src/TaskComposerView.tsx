@@ -12,6 +12,7 @@ import {
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+	ArrowUpIcon as ArrowUp,
 	FileTextIcon as FileText,
 	LoaderCircleIcon as Loader2,
 	PaperclipIcon as Paperclip,
@@ -444,10 +445,14 @@ export function TaskComposerView({
 				<button
 					type="submit"
 					disabled={submission.isSubmitting || !canSubmit}
-					className="inline-flex h-(--size-composer-toolbar-height) shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/80 disabled:pointer-events-none disabled:opacity-50"
+					className="inline-flex size-(--size-composer-toolbar-height) shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+					title={submission.isSubmitting ? labels.starting : labels.start}
 				>
-					{submission.isSubmitting ? <Loader2 className="size-icon-base animate-spin" aria-hidden="true" /> : null}
-					{submission.isSubmitting ? labels.starting : labels.start}
+					{/* Round, so the choices beside it get the width a worded button took. */}
+					{submission.isSubmitting
+						? <Loader2 className="size-icon-base animate-spin" aria-hidden="true" />
+						: <ArrowUp className="size-icon-base" aria-hidden="true" />}
+					<span className="sr-only">{submission.isSubmitting ? labels.starting : labels.start}</span>
 				</button>
 			</div>
 		</form>

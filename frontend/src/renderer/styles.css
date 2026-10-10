@@ -803,6 +803,18 @@ button.settings-row-bar {
 	padding-inline: 0;
 }
 
+/* Accounts fills the settings page: its list and its detail reach the edges
+ * and scroll on their own, so the page gives up its inset and its own scroll. */
+.settings-thin-scrollbar > .settings-dialog-body:has(> div > [data-section="accountManager"]:only-child) {
+	height: 100%;
+	padding: 0;
+}
+.settings-thin-scrollbar > .settings-dialog-body > div:has(> [data-section="accountManager"]:only-child),
+.settings-thin-scrollbar > .settings-dialog-body [data-section="accountManager"]:only-child,
+.settings-thin-scrollbar > .settings-dialog-body [data-section="accountManager"]:only-child > div {
+	height: 100%;
+}
+
 /* Match the open row layout used by the main Settings pages. */
 .project-settings-form > section,
 .project-settings-form > fieldset > section {

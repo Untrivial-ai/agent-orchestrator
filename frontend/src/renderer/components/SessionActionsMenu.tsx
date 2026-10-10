@@ -31,16 +31,16 @@ export function SessionActionsMenu({
 				<DropdownMenuTrigger asChild>
 					<TopbarButton
 						aria-label={t("session.actionsMenu")}
-						className="size-7 !bg-transparent text-muted-foreground hover:!bg-transparent active:!bg-transparent focus:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground"
+						className="size-6 !bg-transparent text-muted-foreground hover:!bg-transparent active:!bg-transparent focus:!bg-transparent data-[state=open]:!bg-transparent hover:text-foreground"
 						data-session-actions-trigger
 						title={t("session.actionsMenu")}
 						type="button"
 						variant="icon"
 					>
-						<MoreVertical aria-hidden="true" className="size-icon-md" />
+						<MoreVertical aria-hidden="true" className="size-4" />
 					</TopbarButton>
 				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end" className="min-w-44">
+				<DropdownMenuContent align="start" className="min-w-40 text-xs">
 					{menuItems}
 				</DropdownMenuContent>
 			</DropdownMenu>

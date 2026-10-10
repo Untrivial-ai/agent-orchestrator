@@ -5,7 +5,7 @@ import type { GlobalSettingsSection } from "../../stores/ui-store";
 import { BrowserDownloadsSection } from "./BrowserDownloadsSection";
 import { BrowserProfilesSection } from "./BrowserProfilesSection";
 import { Coder11xSection } from "./Coder11xSection";
-import { CodexAccountsSection } from "./CodexAccountsSection";
+import { ProviderAccountsSection } from "./ProviderAccountsSection";
 import { ConnectMobileContent } from "./ConnectMobileContent";
 import { GeneralSettingsSection } from "./GeneralSettingsSection";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
@@ -70,10 +70,10 @@ const globalSettingsCatalog: SettingsCatalogItem[] = [
 		render: (_t, titleHidden, { focusAgentId, hostId, harnessView, startLogin }) => <HarnessSettingsSection focusAgentId={focusAgentId} {...(hostId ? { hostId } : {})} {...(harnessView ? { initialView: harnessView } : {})} {...(startLogin ? { startLogin } : {})} titleHidden={titleHidden} />,
 	},
 	{
-		id: "agents",
+		id: "accountManager",
 		icon: BadgeCheck,
-		label: (t) => t("settings.agents"),
-		render: (_t, titleHidden) => <CodexAccountsSection titleHidden={titleHidden} />,
+		label: (t) => t("providerAccounts.title"),
+		render: (_t, titleHidden) => <ProviderAccountsSection titleHidden={titleHidden} />,
 	},
 	{
 		id: "browserProfiles",

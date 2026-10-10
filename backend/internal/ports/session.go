@@ -18,6 +18,7 @@ var ErrActivityProjectionContention = errors.New("activity projection contention
 type SpawnConfig struct {
 	ProjectID domain.ProjectID
 	IssueID   domain.IssueID
+	AccountID string // managed account the caller chose; empty uses the default
 	// AutomationRunID makes one scheduled occurrence idempotent across daemon
 	// restarts. Ordinary interactive spawns leave this unset.
 	AutomationRunID *domain.AutomationRunID

@@ -26,7 +26,7 @@ func TestStartRejectsUnstartablePlans(t *testing.T) {
 		code    string
 	}{
 		{name: "unknown target", agentID: "not-a-harness", code: "AGENT_AUTH_TARGET_UNKNOWN"},
-		{name: "unavailable command", agentID: "codex", code: "AGENT_AUTH_UNAVAILABLE"},
+		{name: "unavailable command", agentID: "cursor", code: "AGENT_AUTH_UNAVAILABLE"},
 		{name: "documentation setup", agentID: "aider", code: "AGENT_AUTH_DOCUMENTATION_ONLY"},
 	}
 	for _, tc := range cases {
@@ -201,24 +201,6 @@ func TestStartFallsBackToAgentResolvedBinaryOutsidePATH(t *testing.T) {
 	}
 	if got := opener.input.Argv; !reflect.DeepEqual(got, []string{"/Applications/AO.app/Contents/MacOS/ao", "claude-login", "--executable", "/Users/test/.claude/local/claude"}) {
 		t.Fatalf("terminal argv = %#v, want trusted Claude login menu with adapter-resolved binary", got)
-	}
-}
-
-func TestStartOpensCodexLoginMethodMenu(t *testing.T) {
-	t.Parallel()
-
-	opener := &recordingTerminalOpener{}
-	resolver := managedExecutableResolver{agentID: "codex", path: "/managed/bin/codex"}
-	svc := NewWithAgentResolver(resolver, resolver, opener, "")
-	svc.selfExecutable = func() (string, error) { return "/Applications/AO.app/Contents/MacOS/ao", nil }
-
-	_, err := svc.Start(context.Background(), "codex")
-	if err != nil {
-		t.Fatalf("Start(codex): %v", err)
-	}
-	want := []string{"/Applications/AO.app/Contents/MacOS/ao", "codex-login", "--executable", "/managed/bin/codex", "--use-default-credential-store"}
-	if got := opener.input.Argv; !reflect.DeepEqual(got, want) {
-		t.Fatalf("terminal argv = %#v, want trusted Codex login menu", got)
 	}
 }
 

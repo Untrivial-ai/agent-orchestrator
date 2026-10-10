@@ -92,9 +92,6 @@ function cdcSources() {
 	return EventSourceStub.instances.filter((source) => source.url.endsWith("/api/v1/events"));
 }
 
-function accountSources() {
-	return EventSourceStub.instances.filter((source) => source.url.endsWith("/agents/codex/accounts/events"));
-}
 
 beforeEach(() => {
 	EventSourceStub.instances = [];
@@ -262,13 +259,9 @@ describe("createEventTransport", () => {
 			const client = fakeQueryClient();
 			const disconnect = createEventTransport(client).connect();
 			const cdc = cdcSources()[0];
-			const accounts = accountSources()[0];
 			disconnect();
 			cdc.onopen?.();
 			cdc.onerror?.();
-			accounts.onopen?.();
-			accounts.onerror?.();
-			accounts.emit("codex_account", JSON.stringify({ accounts: [], accountRevision: 1 }));
 			onStatusMock.mock.calls[0][0]();
 			await vi.advanceTimersByTimeAsync(60_000);
 			expect(client.invalidateQueries).not.toHaveBeenCalled();
@@ -276,24 +269,21 @@ describe("createEventTransport", () => {
 			expect(client.setQueryData).not.toHaveBeenCalled();
 			expect(setTransportHealthyMock).not.toHaveBeenCalled();
 			expect(getEventsConnectionState()).toBe("idle");
-			expect(EventSourceStub.instances).toHaveLength(2);
+			expect(EventSourceStub.instances).toHaveLength(1);
 		} finally { vi.useRealTimers(); }
 	});
 
-	it("opens the CDC and Codex account SSE connections on connect", () => {
+	it("opens the CDC SSE connection on connect", () => {
 		createEventTransport(fakeQueryClient()).connect();
 
-		expect(EventSourceStub.instances).toHaveLength(2);
+		expect(EventSourceStub.instances).toHaveLength(1);
 		expect(cdcSources()).toHaveLength(1);
-		expect(accountSources()).toHaveLength(1);
 		expect(cdcSources()[0].url).toBe("http://127.0.0.1:3001/api/v1/events");
-		expect(accountSources()[0].url).toBe("http://127.0.0.1:3001/api/v1/agents/codex/accounts/events");
 		// All CDC event types plus onmessage are wired up.
 		expect(cdcSources()[0].listeners).toContain("session_updated");
 		expect(cdcSources()[0].listeners).toContain("review_run_created");
 		expect(cdcSources()[0].listeners).toContain("review_run_updated");
 		expect(cdcSources()[0].onmessage).toBeTypeOf("function");
-		expect(accountSources()[0].listeners).toContain("codex_account");
 	});
 
 	it("does not reconnect when a daemon status keeps the same base URL", () => {
@@ -302,22 +292,19 @@ describe("createEventTransport", () => {
 
 		onStatusHandler();
 
-		expect(EventSourceStub.instances).toHaveLength(2);
+		expect(EventSourceStub.instances).toHaveLength(1);
 	});
 
 	it("closes the old connection and reconnects when the base URL changes", () => {
 		createEventTransport(fakeQueryClient()).connect();
 		const first = cdcSources()[0];
-		const firstAccount = accountSources()[0];
 		const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
 
 		getApiBaseUrlMock.mockReturnValue("http://127.0.0.1:3099");
 		onStatusHandler();
 
 		expect(first.closed).toBe(true);
-		expect(firstAccount.closed).toBe(true);
 		expect(cdcSources()).toHaveLength(2);
-		expect(accountSources()).toHaveLength(2);
 		expect(cdcSources()[1].url).toBe("http://127.0.0.1:3099/api/v1/events");
 	});
 
@@ -335,13 +322,11 @@ describe("createEventTransport", () => {
 			vi.advanceTimersByTime(computeSseRetryDelayMs(failure, () => 0.5));
 		}
 		const beforeCdcMove = cdcSources().length;
-		const beforeAccountMove = accountSources().length;
 
 		// The daemon comes back on a different port: a fresh target.
 		getApiBaseUrlMock.mockReturnValue("http://127.0.0.1:3099");
 		onStatusHandler();
 		expect(cdcSources()).toHaveLength(beforeCdcMove + 1);
-		expect(accountSources()).toHaveLength(beforeAccountMove + 1);
 
 		const moved = cdcSources().at(-1)!;
 		moved.readyState = 2;
@@ -358,15 +343,13 @@ describe("createEventTransport", () => {
 	it("closes the source and skips reconnecting when the base URL is untrusted", () => {
 		createEventTransport(fakeQueryClient()).connect();
 		const first = cdcSources()[0];
-		const firstAccount = accountSources()[0];
 		const onStatusHandler = onStatusMock.mock.calls[0][0] as () => void;
 
 		hasTrustedApiBaseUrlMock.mockReturnValue(false);
 		onStatusHandler();
 
 		expect(first.closed).toBe(true);
-		expect(firstAccount.closed).toBe(true);
-		expect(EventSourceStub.instances).toHaveLength(2);
+		expect(EventSourceStub.instances).toHaveLength(1);
 		expect(getEventsConnectionState()).toBe("disconnected");
 		expect(setTransportHealthyMock).toHaveBeenCalledWith("active", false);
 		expect(setTransportHealthyMock).toHaveBeenCalledWith("history", false);
@@ -597,51 +580,7 @@ describe("createEventTransport", () => {
 		}
 	});
 
-	it("normalizes account stream snapshots without invalidating workspaces", () => {
-		let cached: unknown;
-		const queryClient = {
-			invalidateQueries: vi.fn(),
-			setQueryData: vi.fn((_key: readonly string[], update: unknown) => {
-				cached = typeof update === "function" ? update(undefined) : update;
-			}),
-		} as unknown as Parameters<typeof createEventTransport>[0];
-		createEventTransport(queryClient).connect();
 
-		accountSources()[0].emit("codex_account", JSON.stringify({
-			activeAccountId: "account-1",
-			accountRevision: 2,
-			accounts: [{ id: "account-1", active: true }],
-			capabilities: {},
-			deviceReconciliation: {
-				status: "verified",
-				activeAccountVerified: true,
-				reasonCode: "verified",
-				retryable: false,
-			},
-		}));
-
-		expect(cached).toMatchObject({ activeAccountId: "account-1", accountRevision: 2 });
-		expect(cached).toMatchObject({ accounts: [{ id: "account-1", active: true }] });
-		expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
-	});
-
-	it("keeps account stream open and CDC invalidation within their own cache domains", () => {
-		vi.useFakeTimers();
-		try {
-			const queryClient = fakeQueryClient();
-			createEventTransport(queryClient).connect();
-			accountSources()[0].onopen?.();
-			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["codex-accounts"] });
-			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
-
-			vi.mocked(queryClient.invalidateQueries).mockClear();
-			cdcSources()[0].emit("session_updated", JSON.stringify({ sessionId: "session-1", payload: {} }));
-			vi.advanceTimersByTime(200);
-			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["codex-accounts"] });
-		} finally {
-			vi.useRealTimers();
-		}
-	});
 
 	it("tears down the source and the daemon listener on disconnect", () => {
 		const disconnect = createEventTransport(fakeQueryClient()).connect();
@@ -649,7 +588,6 @@ describe("createEventTransport", () => {
 		disconnect();
 
 		expect(cdcSources()[0].closed).toBe(true);
-		expect(accountSources()[0].closed).toBe(true);
 		expect(removeStatusMock).toHaveBeenCalledTimes(1);
 	});
 
@@ -736,15 +674,12 @@ describe("createEventTransport", () => {
 		expect(subscribeApiBaseUrlMock).toHaveBeenCalledTimes(1);
 		const onBaseUrlChange = subscribeApiBaseUrlMock.mock.calls[0][0] as () => void;
 		const first = cdcSources()[0];
-		const firstAccount = accountSources()[0];
 
 		getApiBaseUrlMock.mockReturnValue("http://127.0.0.1:4555");
 		onBaseUrlChange();
 
 		expect(first.closed).toBe(true);
-		expect(firstAccount.closed).toBe(true);
 		expect(cdcSources()).toHaveLength(2);
-		expect(accountSources()).toHaveLength(2);
 		expect(cdcSources()[1].url).toBe("http://127.0.0.1:4555/api/v1/events");
 	});
 

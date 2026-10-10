@@ -82,15 +82,14 @@ type Manager interface {
 
 // Service is the API-facing review service. It delegates to the core engine.
 type Service struct {
-	engine             *reviewcore.Engine
-	store              Store
-	requester          ports.SCMReviewRequester
-	resolver           ports.SCMReviewResolver
-	clock              func() time.Time
-	telemetry          ports.EventSink
-	codexOperationGate ports.CodexOperationGate
-	notifications      reviewNotificationSink
-	prRefresher        PRRefresher
+	engine        *reviewcore.Engine
+	store         Store
+	requester     ports.SCMReviewRequester
+	resolver      ports.SCMReviewResolver
+	clock         func() time.Time
+	telemetry     ports.EventSink
+	notifications reviewNotificationSink
+	prRefresher   PRRefresher
 	// engineTrigger indirects the engine's source-tagged trigger so the
 	// instrumented path can be exercised without standing up a full engine and
 	// its eighteen-method store. Defaulted in New; only tests replace it.
@@ -173,12 +172,6 @@ func WithTelemetry(sink ports.EventSink) Option {
 // reached complete. The run id is the dedupe key, so submit retries are safe.
 func WithNotificationSink(sink reviewNotificationSink) Option {
 	return func(s *Service) { s.notifications = sink }
-}
-
-// WithCodexAccountOperationGate prevents new Codex reviewer controllers from
-// entering while the device-global Codex credential is changing.
-func WithCodexAccountOperationGate(gate ports.CodexOperationGate) Option {
-	return func(s *Service) { s.codexOperationGate = gate }
 }
 
 // emit reports an event when a sink is wired.
@@ -571,7 +564,7 @@ func (s *Service) triggerWithOptions(
 	workerID domain.SessionID,
 	opts reviewcore.TriggerOptions,
 ) (reviewcore.TriggerResult, error) {
-	harness, config, source := opts.Harness, opts.Config, opts.Source
+	config, source := opts.Config, opts.Source
 	triggeredPayload := map[string]any{"trigger": string(source), "rerun": opts.Rerun}
 	if err := config.Validate(); err != nil {
 		err = fmt.Errorf("%w: reviewer config: %w", ErrInvalid, err)
@@ -581,16 +574,6 @@ func (s *Service) triggerWithOptions(
 		})
 		s.emit(ctx, "ao.review.triggered", workerID, triggeredPayload)
 		return reviewcore.TriggerResult{}, err
-	}
-	usesCodex := s.codexReviewUsesCodex(ctx, workerID, harness)
-	var release func()
-	if usesCodex && s.codexOperationGate != nil {
-		var err error
-		release, err = s.codexOperationGate.AcquireSharedWait(ctx)
-		if err != nil {
-			return reviewcore.TriggerResult{}, err
-		}
-		defer release()
 	}
 	result, err := s.engineTrigger(ctx, workerID, opts)
 	if err != nil {
@@ -642,42 +625,14 @@ func (s *Service) TeardownReviewerTerminal(ctx context.Context, workerID domain.
 
 // RestoreReviewer relaunches an idle reviewer pane after its worker has been restored.
 func (s *Service) RestoreReviewer(ctx context.Context, workerID domain.SessionID) error {
-	release, err := s.acquireReviewerCodexAdmission(ctx, workerID, "")
-	if err != nil {
-		return err
-	}
-	defer release()
-	_, err = s.engine.RestoreReviewer(ctx, workerID)
+	_, err := s.engine.RestoreReviewer(ctx, workerID)
 	return err
 }
 
 // SwitchReviewer atomically persists a worker's reviewer preference and returns
 // the authoritative post-switch review state.
 func (s *Service) SwitchReviewer(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.SessionReviews, error) {
-	release, err := s.acquireReviewerCodexAdmission(ctx, workerID, harness)
-	if err != nil {
-		return reviewcore.SessionReviews{}, err
-	}
-	defer release()
 	return s.engine.SwitchReviewer(ctx, workerID, harness, config)
-}
-
-func (s *Service) codexReviewUsesCodex(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) bool {
-	if harness == domain.ReviewerCodex {
-		return true
-	}
-	if harness != "" {
-		return false
-	}
-	rec, ok, err := s.store.GetSession(ctx, workerID)
-	return err == nil && ok && (rec.Harness == domain.HarnessCodex || rec.ReviewerHarness == domain.ReviewerCodex)
-}
-
-func (s *Service) acquireReviewerCodexAdmission(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness) (func(), error) {
-	if s.codexOperationGate == nil || !s.codexReviewUsesCodex(ctx, workerID, harness) {
-		return func() {}, nil
-	}
-	return s.codexOperationGate.AcquireSharedWait(ctx)
 }
 
 // ActivitySignal is reviewer-owned hook metadata.

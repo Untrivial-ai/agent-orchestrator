@@ -133,16 +133,12 @@ surface (`npm run sqlc`, `npm run api`).
   installation/authentication observations, purpose-specific freshness,
   single-flight checks, bounded warm-up/retries, launch-time validation, and
   compatibility projections for older agent inventory/probe clients.
-- Codex account management under Settings → Agents. AO reconciles the current
-  device-global Codex identity, adds file-backed accounts through an inline
-  native login terminal, and shows structured authentication, capacity, usage,
-  and confirmed reset-credit facts without parsing credentials. A manual global
-  switch atomically changes the device credential while briefly fencing new
-  Codex mutations. Running AO Codex controllers and reviewers are never
-  interrupted or restarted by account switching; new controllers use the
-  selected account, and an existing session can be resumed manually when the
-  user wants it relaunched. Native history remains in the normal Codex home.
-  Users can sign accounts out and delete inactive signed-out accounts.
+- Managed Codex and Claude accounts are handled through the local CLIProxy
+  account manager. AO keeps the provider/account choice for new sessions and
+  session routing metadata, while provider credentials remain in the private
+  helper storage. The daemon's database is the source of truth for accounts
+  and session assignments; the helper's `routes.json` is a restart cache the
+  daemon refills.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 

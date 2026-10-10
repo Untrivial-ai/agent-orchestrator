@@ -366,8 +366,10 @@ function claudeChoiceLabels(catalog: { id: string; displayName: string }[]) {
 	return (value: string): string | undefined => {
 		const id = value.replace(/\[.*?\]$/, "").toLowerCase();
 		const exact = entries.find((model) => model.id.toLowerCase() === id);
-		if (exact) return exact.label;
-		return newest.find((model) => model.id.toLowerCase().includes(`-${id}-`) || model.label.toLowerCase().startsWith(id))?.label;
+		const label = exact?.label ?? newest.find((model) => model.id.toLowerCase().includes(`-${id}-`) || model.label.toLowerCase().startsWith(id))?.label;
+		// A larger-context row runs the same model; without its mark it would
+		// read as a second copy of that model.
+		return label && /\[1m\]$/i.test(value) && !/1m/i.test(label) ? `${label} (1M context)` : label;
 	};
 }
 

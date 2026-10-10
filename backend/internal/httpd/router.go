@@ -49,7 +49,7 @@ type AgentSwitchPolicyControl interface {
 //	RequestID     → attach a request id for correlation
 //	requestLogger → slog-backed access log + 5xx telemetry, carries the request id
 //	recoverer     → turn a handler panic into 500 instead of crashing the daemon
-//	accountOrigin → exact renderer-origin boundary for Codex account management
+//	accountOrigin → exact renderer-origin boundary for managed account routes
 //	cors          → CORS allowlist for the Electron renderer / dev origins
 //
 // The per-request timeout is deliberately not global: it wraps only bounded
@@ -66,7 +66,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	// Account-management routes do not inherit the general localhost preview
 	// exception. This guard must wrap corsMiddleware so hostile preflights are
 	// rejected before the general CORS layer can answer them.
-	r.Use(codexAccountOriginMiddleware(cfg.AllowedOrigins))
+	r.Use(accountOriginMiddleware(cfg.AllowedOrigins))
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
 	r.Use(previewOriginMiddleware(api.sessions))
 

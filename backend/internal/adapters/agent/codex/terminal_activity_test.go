@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -203,5 +204,155 @@ func TestInspectTerminalSurfaceOnlyProvesAnUnstartedConversationOnInitialFrame(t
 				t.Fatalf("NativeConversationNotStarted = %v, want %v; observation=%+v", got.NativeConversationNotStarted, tt.want, got)
 			}
 		})
+	}
+}
+
+func TestCodexWarningFooterDoesNotBecomeComposerDraft(t *testing.T) {
+	for _, footer := range []string{
+		"? for shortcuts                         ⚠ 3 warnings · f2 to view",
+		"⚠ 2 warnings · f2 to view",
+		"inline",
+		"\x1b[1m?\x1b[m for shortcuts  ⚠ \x1b[38;2;196;167;103m3 warnings\x1b[m · \x1b[1mf2\x1b[m to view",
+	} {
+		for _, tc := range []struct {
+			name, prompt string
+			want         ports.TerminalComposerState
+		}{
+			{"empty", "\x1b[1m›\x1b[m \x1b[2mAsk Codex to do anything\x1b[m", ports.TerminalComposerEmpty},
+			{"draft", "\x1b[1m›\x1b[m Keep my draft", ports.TerminalComposerDraft},
+			{"wrapped draft", "\x1b[1m›\x1b[m Keep my draft\n  and its next line", ports.TerminalComposerDraft},
+			{"middle dot in draft", "\x1b[1m›\x1b[m \x1b[2mAsk Codex to do anything\x1b[m\n  preserve · this text", ports.TerminalComposerDraft},
+		} {
+			t.Run(tc.name+"/"+footer, func(t *testing.T) {
+				output := "\x1b[2m•\x1b[m Previous turn completed.\n\n" + tc.prompt + "\n\n  \x1b[38;2;246;226;183mGPT-5.5 low\x1b[m · ~/project · Task title\n  " + footer
+				if footer == "inline" {
+					output = "\x1b[2m•\x1b[m Previous turn completed.\n\n" + tc.prompt + "\n\n  GPT-5.5 low · ~/project · Task title     ⚠ 2 warnings · f2 to view"
+				}
+				got := (&Plugin{}).InspectTerminalSurface(output)
+				if got.Work != ports.TerminalSurfaceWorkIdle || got.Composer != tc.want {
+					t.Fatalf("warning footer contaminated composer: %+v, want idle/%v", got, tc.want)
+				}
+				active := strings.Replace(output, "Previous turn completed.", "Working (4s • esc to interrupt)", 1)
+				got = (&Plugin{}).InspectTerminalSurface(active)
+				if got.Work != ports.TerminalSurfaceWorkActive || got.Composer != tc.want {
+					t.Fatalf("warning footer hid active work or changed draft: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCodexPromptGlyphCompatibilityPreservesMutationSafety(t *testing.T) {
+	footer := "\n\n  GPT-5.5 low · ~/project · Task title\n  ? for shortcuts  ⚠ 3 warnings · f2 to view\n"
+	cases := []struct {
+		name, frame string
+		work        ports.TerminalSurfaceWorkState
+		composer    ports.TerminalComposerState
+	}{
+		{
+			name:  "idle placeholder with warning footer",
+			frame: "\x1b[2m•\x1b[m Finished.\n\n\x1b[1mPROMPT\x1b[m \x1b[2mAsk Codex to do anything\x1b[m" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "plain provider placeholder after handoff",
+			frame: "PROMPT Ask Codex to do anything" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "unsent draft remains protected",
+			frame: "\x1b[1mPROMPT\x1b[m Keep this draft" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerDraft,
+		},
+		{
+			name:  "wrapped draft remains protected",
+			frame: "\x1b[1mPROMPT\x1b[m Keep this draft\n  and this line" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerDraft,
+		},
+		{
+			name:  "active turn is not idle",
+			frame: "• Working (4s • esc to interrupt)\n\x1b[1mPROMPT\x1b[m \x1b[2mAsk Codex to do anything\x1b[m" + footer,
+			work:  ports.TerminalSurfaceWorkActive, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "active constrained viewport",
+			frame: "• Working (4s • esc to interrupt)\n\n\x1b[1mPROMPT\x1b[m\n",
+			work:  ports.TerminalSurfaceWorkActive, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "idle constrained viewport",
+			frame: "\x1b[2m•\x1b[m Finished.\n\n\x1b[1mPROMPT\x1b[m\n",
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "plain transcript cannot establish idle",
+			frame: "Example symbol:\nPROMPT\n",
+			work:  ports.TerminalSurfaceWorkUnknown, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "dim transcript cannot establish idle",
+			frame: "Example symbol:\n\x1b[1;2mPROMPT\x1b[m\n",
+			work:  ports.TerminalSurfaceWorkUnknown, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "approval first selection remains protected",
+			frame: "Run command?\nPROMPT 1. Approve once\n  2. Deny\nPress enter to confirm or esc to go back\n" + footer,
+			work:  ports.TerminalSurfaceWorkWaitingInput, composer: ports.TerminalComposerUnknown,
+		},
+		{
+			name:  "approval second selection remains protected",
+			frame: "Run command?\n  1. Approve once\nPROMPT 2. Deny\nPress enter to confirm or esc to go back\n",
+			work:  ports.TerminalSurfaceWorkWaitingInput, composer: ports.TerminalComposerUnknown,
+		},
+		{
+			name:  "completed approval is scrollback",
+			frame: "Run command?\nOTHER 1. Approve once\n  2. Deny\nPress enter to confirm or esc to go back\nPROMPT \x1b[2mAsk Codex to do anything\x1b[m" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "current prompt wins over different transcript glyph",
+			frame: "OTHER Previous human input\n• Done.\n\n\x1b[1mPROMPT\x1b[m" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerEmpty,
+		},
+		{
+			name:  "glyph inside draft does not hide draft",
+			frame: "\x1b[1mPROMPT\x1b[m Explain OTHER and PROMPT" + footer,
+			work:  ports.TerminalSurfaceWorkIdle, composer: ports.TerminalComposerDraft,
+		},
+	}
+	for _, marker := range []string{"›", "»"} {
+		other := "»"
+		if marker == other {
+			other = "›"
+		}
+		for _, tc := range cases {
+			t.Run(marker+"/"+tc.name, func(t *testing.T) {
+				frame := strings.NewReplacer("PROMPT", marker, "OTHER", other).Replace(tc.frame)
+				got := (&Plugin{}).InspectTerminalSurface(frame)
+				if got.Work != tc.work || got.Composer != tc.composer {
+					t.Fatalf("observation=%+v, want work=%v composer=%v", got, tc.work, tc.composer)
+				}
+				state, idle := (&Plugin{}).DetectTerminalActivity(frame)
+				if idle != (tc.work == ports.TerminalSurfaceWorkIdle) || (idle && state != domain.ActivityIdle) {
+					t.Fatalf("idle classification=(%v,%v), work=%v", state, idle, tc.work)
+				}
+			})
+		}
+	}
+}
+
+func TestCodexPromptGlyphCompatibilityPreservesConversationStartedProof(t *testing.T) {
+	header := "│ >_ OpenAI Codex (v0.160.0) │\n"
+	footer := "\n\nGPT-5.5 low · ~/project\n"
+	for _, marker := range []string{"›", "»"} {
+		for _, history := range []string{"", "› Previous request\n• Done.\n", "» Previous request\n• Done.\n"} {
+			t.Run(marker+"/"+history, func(t *testing.T) {
+				frame := header + history + "\x1b[1m" + marker + "\x1b[m \x1b[2mAsk Codex to do anything\x1b[m" + footer
+				got := (&Plugin{}).InspectTerminalSurface(frame)
+				if got.NativeConversationNotStarted != (history == "") {
+					t.Fatalf("initial-conversation proof=%v, history=%q", got.NativeConversationNotStarted, history)
+				}
+			})
+		}
 	}
 }

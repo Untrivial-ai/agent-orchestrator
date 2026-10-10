@@ -150,6 +150,19 @@ describe("TaskComposerView", () => {
 		expect(container.querySelector("form")?.firstElementChild).toBe(context);
 	});
 
+	it("starts from a round icon button that keeps its name", () => {
+		const { rerender } = render(<TaskComposerView {...viewProps()} />);
+
+		const start = screen.getByRole("button", { name: "Start task" });
+		expect(start).toHaveClass("rounded-full");
+		expect(start).toHaveAttribute("title", "Start task");
+		expect(start.querySelector("svg")).not.toBeNull();
+
+		const props = viewProps();
+		rerender(<TaskComposerView {...props} submission={{ ...props.submission, isSubmitting: true }} />);
+		expect(screen.getByRole("button", { name: "Starting..." })).toBeDisabled();
+	});
+
 	it("omits effort when the selected model does not advertise it", () => {
 		render(<TaskComposerView {...viewProps({ showEffort: false })} />);
 

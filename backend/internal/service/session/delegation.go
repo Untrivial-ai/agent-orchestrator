@@ -27,6 +27,7 @@ const (
 // may be empty to open an idle worker that the user can instruct later. Empty
 // RequestedAgent means the spawn uses the project's worker-agent default.
 type DelegateTaskInput struct {
+	AccountID         string
 	ProjectID         domain.ProjectID
 	Brief             string
 	RequestedAgent    domain.AgentHarness
@@ -90,6 +91,7 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
 		ClientRequestID:   in.ClientRequestID,
 		ClientRequestHash: in.ClientRequestHash,
+		AccountID:         in.AccountID,
 		ProjectID:         in.ProjectID,
 		Kind:              domain.KindWorker,
 		Harness:           in.RequestedAgent,

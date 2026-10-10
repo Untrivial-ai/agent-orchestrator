@@ -158,6 +158,8 @@ type sessionUsageReactivator interface {
 
 type sessionOperationGate interface {
 	SessionMutationInProgress(id domain.SessionID) bool
+	// SessionTurnEnded is told of a session that went idle. It must not block.
+	SessionTurnEnded(rec domain.SessionRecord)
 }
 
 type pendingLaunch struct {
@@ -1054,6 +1056,12 @@ retryProjection:
 	resolutions := needsInputResolutions(rec, next, now)
 	waitingEvents := m.waitingInputEvents(next, prevState, prevAt, now)
 	m.mu.Unlock()
+	m.operationGateMu.RLock()
+	gate := m.operationGate
+	m.operationGateMu.RUnlock()
+	if gate != nil && prevState != domain.ActivityIdle && next.Activity.State == domain.ActivityIdle {
+		gate.SessionTurnEnded(next)
+	}
 	if err := m.acknowledgeAgentSwitchTarget(ctx, id, s, now); err != nil {
 		return err
 	}

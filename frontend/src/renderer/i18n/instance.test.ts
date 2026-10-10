@@ -23,6 +23,9 @@ const allCatalogs = {
 	"pt-BR": ptBRMessages,
 } as const;
 
+// Account Manager copy is English only for now; the other locales fall back to it.
+const sharedKeys = (Object.keys(enMessages) as (keyof typeof enMessages)[]).filter((key) => !key.startsWith("providerAccounts."));
+
 function emptyCatalogs(): TranslationCatalogs {
 	return Object.fromEntries(APP_LOCALES.map((locale) => [locale, {}])) as TranslationCatalogs;
 }
@@ -167,7 +170,7 @@ describe("app i18next instance", () => {
 	});
 
 	it("keeps locale catalogs covering every English key with non-empty values", () => {
-		const enKeys = Object.keys(enMessages).sort();
+		const enKeys = [...sharedKeys].sort();
 		for (const locale of APP_LOCALES) {
 			const catalog = allCatalogs[locale];
 			for (const key of enKeys) {
@@ -187,7 +190,7 @@ describe("app i18next instance", () => {
 		for (const locale of APP_LOCALES) {
 			if (locale === "en") continue;
 			const catalog = allCatalogs[locale] as unknown as Record<keyof typeof enMessages, string | string[]>;
-			for (const key of Object.keys(enMessages) as (keyof typeof enMessages)[]) {
+			for (const key of sharedKeys) {
 				expect(variables(catalog[key]), `${locale} placeholder mismatch for ${key}`).toEqual(
 					variables(enMessages[key]),
 				);
@@ -198,7 +201,7 @@ describe("app i18next instance", () => {
 	it("provides every CLDR plural form required by each supported locale", () => {
 		const pluralSuffix = /_(zero|one|two|few|many|other)$/;
 		const pluralBases = new Set(
-			Object.keys(enMessages)
+			sharedKeys
 				.filter((key) => pluralSuffix.test(key))
 				.map((key) => key.replace(pluralSuffix, "")),
 		);

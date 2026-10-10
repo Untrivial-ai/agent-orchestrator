@@ -428,7 +428,6 @@
 	--size-import-modal-max: 896px;
 	--size-import-folder-dialog: 640px;
 	--size-composer-prompt-min: 112px;
-	--size-composer-start-button: 7.25rem;
 	--radius-chat-composer: 20px;
 	/* Task composer — inline toolbar values. Quieter than a filled control at rest
 	 * so the task field stays the only thing with visual weight. */

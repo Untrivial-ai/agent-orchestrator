@@ -188,7 +188,7 @@ func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bo
 	}
 	// Source 5: the subscription login, stored in the keychain on macOS and in
 	// a plain file everywhere else.
-	if stored, source, ok := loadOAuth(ctx, opts); ok {
+	if stored, source, ok := loadOAuth(ctx, opts, false); ok {
 		return Credential{
 			Kind: stored.kind, Secret: stored.token, Source: source, Provider: ProviderFirstParty,
 			ExpiresAt: stored.expiresAt, Renewable: stored.renewable,
@@ -199,9 +199,10 @@ func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bo
 
 // storedOAuth is the subscription login Claude Code persisted: the access
 // token plus the expiry metadata stored next to it. The refresh token itself
-// is never retained; only its presence is recorded.
+// is kept only when LocalOAuth asks for it; a Credential records only its presence.
 type storedOAuth struct {
 	token     string
+	refresh   string
 	kind      Kind
 	expiresAt time.Time
 	renewable bool
@@ -215,7 +216,12 @@ type storedOAuth struct {
 // third storage backend to implement. The macOS path falls through to the file
 // on any failure, which is the path the other two platforms always take, so
 // non-Mac platforms exercise strictly less code rather than different code.
-func loadOAuth(ctx context.Context, opts ResolveOptions) (stored storedOAuth, source string, ok bool) {
+func loadOAuth(ctx context.Context, opts ResolveOptions, keepRefresh bool) (stored storedOAuth, source string, ok bool) {
+	defer func() {
+		if !keepRefresh {
+			stored.refresh = ""
+		}
+	}()
 	if opts.goos() == "darwin" && opts.AllowKeychain {
 		if stored, ok := readKeychain(ctx, opts); ok {
 			return stored, "keychain", true
@@ -274,6 +280,7 @@ func oauthTokenFromCredentialsJSON(data []byte) (storedOAuth, bool) {
 		if candidate.ExpiresAt > 0 {
 			stored.expiresAt = time.UnixMilli(int64(candidate.ExpiresAt)).UTC()
 		}
+		stored.refresh = strings.TrimSpace(candidate.RefreshToken)
 		stored.renewable = strings.TrimSpace(candidate.RefreshToken) != ""
 		return stored, true
 	}
@@ -307,4 +314,23 @@ func claudeConfigDir(opts ResolveOptions) (string, error) {
 		dir = filepath.Join(strings.TrimSpace(opts.WorkingDir), dir)
 	}
 	return filepath.Abs(dir)
+}
+
+// LocalOAuth returns Claude Code's stored login, refresh token included, for AO's own
+// account helper. It must never reach the renderer, a log or cloud provisioning.
+func LocalOAuth(ctx context.Context, opts ResolveOptions) (access, refresh string) {
+	if provider, found := ResolveProvider("", opts); !found || provider != ProviderFirstParty {
+		return "", ""
+	}
+	if token := opts.env("CLAUDE_CODE_OAUTH_TOKEN"); token != "" {
+		return token, ""
+	}
+	if opts.env("ANTHROPIC_API_KEY") != "" || opts.env("ANTHROPIC_AUTH_TOKEN") != "" {
+		return "", ""
+	}
+	stored, _, ok := loadOAuth(ctx, opts, true)
+	if !ok || stored.kind != KindOAuthToken {
+		return "", ""
+	}
+	return stored.token, stored.refresh
 }

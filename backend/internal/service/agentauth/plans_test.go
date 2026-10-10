@@ -20,7 +20,6 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		argv                                                 []string
 	}{
 		{"claude-code", "Log in to Claude Code", "claude", "Choose Claude subscription, Anthropic Console, or SSO", "https://code.claude.com/docs/en/installation", "", ActionLogin, []string{"claude", "auth", "login"}},
-		{"codex", "Log in to Codex", "codex", "Choose ChatGPT, device code, API key, or access token", "https://github.com/openai/codex", "", ActionLogin, []string{"codex", "login"}},
 		{"cursor", "Log in to Cursor", "cursor-agent", "Native browser flow", "https://docs.cursor.com/en/cli/installation", "", ActionLogin, []string{"cursor-agent", "login"}},
 		{"opencode", "Log in to OpenCode", "opencode", "Native provider chooser", "https://github.com/anomalyco/opencode", "", ActionLogin, []string{"opencode", "auth", "login"}},
 		{"opencode-v2", "Log in to OpenCode 2", "opencode", "Native provider chooser", "https://opencode.ai/v2/docs", "", ActionLogin, []string{"opencode", "auth", "login"}},
@@ -137,7 +136,7 @@ func TestCommandCodeLoginNeverLaunchesBareCmd(t *testing.T) {
 func TestPlanMissingExecutableIsUnavailable(t *testing.T) {
 	t.Parallel()
 
-	plan, err := New(foundExecutables(nil), nil).Plan(context.Background(), "codex")
+	plan, err := New(foundExecutables(nil), nil).Plan(context.Background(), "cursor")
 	if err != nil {
 		t.Fatal(err)
 	}

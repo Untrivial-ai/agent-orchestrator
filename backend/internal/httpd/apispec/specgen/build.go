@@ -17,6 +17,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/githubpat"
 	importsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
@@ -247,8 +248,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersListProjectsResponse":                     "ListProjectsResponse",
 	"ControllersProjectResponse":                          "ProjectResponse",
 	"ControllersAgentIDParam":                             "AgentIDParam",
-	"ControllersCodexAccountIDParam":                      "CodexAccountIDParam",
-	"ControllersCodexAccountLoginIDParam":                 "CodexAccountLoginIDParam",
 	"ControllersGetProjectResponse":                       "ProjectGetResponse",
 	"ControllersProjectOrDegraded":                        "ProjectOrDegraded",
 	"ControllersListSessionsQuery":                        "ListSessionsQuery",
@@ -312,26 +311,6 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersWorkspaceFileSections":                    "WorkspaceFileSections",
 	"ControllersWorkspaceCommitSummary":                   "WorkspaceCommitSummary",
 	"ControllersWorkspaceSummary":                         "WorkspaceSummary",
-	"ControllersEnsureCodexAccountsRequest":               "EnsureCodexAccountsRequest",
-	"ControllersConsumeCodexAccountResetCreditRequest":    "ConsumeCodexAccountResetCreditRequest",
-	"ControllersCodexAccountsResponse":                    "CodexAccountsResponse",
-	"ControllersCodexDeviceReconciliationResponse":        "CodexDeviceReconciliationResponse",
-	"ControllersCodexAccountResponse":                     "CodexAccountResponse",
-	"ControllersCodexAuthenticationResponse":              "CodexAuthenticationResponse",
-	"ControllersCodexAccountCapacityResponse":             "CodexAccountCapacityResponse",
-	"ControllersCodexCapacityBucketResponse":              "CodexCapacityBucketResponse",
-	"ControllersCodexCapacityWindowResponse":              "CodexCapacityWindowResponse",
-	"ControllersCodexResetCreditsSummaryResponse":         "CodexResetCreditsSummaryResponse",
-	"ControllersCodexAccountUsageSummaryResponse":         "CodexAccountUsageSummaryResponse",
-	"ControllersCodexCapabilityObservationResponse":       "CodexCapabilityObservationResponse",
-	"ControllersCodexAccountCapabilitiesResponse":         "CodexAccountCapabilitiesResponse",
-	"ControllersCodexAccountLoginResponse":                "CodexAccountLoginResponse",
-	"ControllersCodexActiveLoginResponse":                 "CodexActiveLoginResponse",
-	"ControllersCodexAccountSwitchResponse":               "CodexAccountSwitchResponse",
-	"ControllersCodexAccountSwitchPhase":                  "CodexAccountSwitchPhase",
-	"ControllersStartCodexAccountSwitchRequest":           "StartCodexAccountSwitchRequest",
-	"ControllersCodexAccountSwitchIDParam":                "CodexAccountSwitchIDParam",
-	"DomainCodexCapacitySummary":                          "CodexCapacitySummary",
 	"ControllersWorkspaceFileResponse":                    "WorkspaceFileResponse",
 	"ControllersWorkspaceDiffRequest":                     "WorkspaceDiffRequest",
 	"ControllersWorkspaceDiffDeferredResponse":            "WorkspaceDiffDeferredResponse",
@@ -442,14 +421,12 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersUsageHarnessResponse":             "UsageHarnessResponse",
 	"ControllersSessionUsageResponse":             "SessionUsageResponse",
 	// httpd/controllers — standalone shell terminal wire envelopes
-	"ControllersShellTerminalHandleIDParam":            "ShellTerminalHandleIDParam",
-	"ControllersOpenShellTerminalRequest":              "OpenShellTerminalRequest",
-	"ControllersUpdateShellTerminalRequest":            "UpdateShellTerminalRequest",
-	"ControllersShellTerminalResponse":                 "ShellTerminalResponse",
-	"ControllersListShellTerminalsResponse":            "ListShellTerminalsResponse",
-	"ControllersShellTerminalEnvelope":                 "ShellTerminalEnvelope",
-	"ControllersOpenCodexAccountLoginTerminalResponse": "OpenCodexAccountLoginTerminalResponse",
-	"ControllersCodexAccountLoginTerminalResponse":     "CodexAccountLoginTerminalResponse",
+	"ControllersShellTerminalHandleIDParam": "ShellTerminalHandleIDParam",
+	"ControllersOpenShellTerminalRequest":   "OpenShellTerminalRequest",
+	"ControllersUpdateShellTerminalRequest": "UpdateShellTerminalRequest",
+	"ControllersShellTerminalResponse":      "ShellTerminalResponse",
+	"ControllersListShellTerminalsResponse": "ListShellTerminalsResponse",
+	"ControllersShellTerminalEnvelope":      "ShellTerminalEnvelope",
 	// httpd/controllers — project cue wire envelopes
 	"ControllersCueIDParam":           "CueIDParam",
 	"ControllersCueProjectIDParam":    "CueProjectIDParam",
@@ -532,6 +509,26 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	// httpd/controllers: GitHub PAT wire envelopes
 	"ControllersPutGitHubPATRequest": "PutGitHubPATRequest",
 	"GithubpatRepo":                  "GitHubRepo",
+	// managed provider accounts
+	"DomainProviderAccountView":                 "ProviderAccountView",
+	"DomainProviderAccountUsage":                "ProviderAccountUsage",
+	"DomainProviderAccountUsageWindow":          "ProviderAccountUsageWindow",
+	"DomainProviderAccountReset":                "ProviderAccountReset",
+	"DomainProviderAccountCredits":              "ProviderAccountCredits",
+	"DomainProviderAccountExtraUsage":           "ProviderAccountExtraUsage",
+	"DomainProviderAccountActivity":             "ProviderAccountActivity",
+	"DomainProviderAccountDay":                  "ProviderAccountDay",
+	"DomainProviderAccountFailure":              "ProviderAccountFailure",
+	"DomainProviderAccountHealth":               "ProviderAccountHealth",
+	"DomainProviderAccountModelUse":             "ProviderAccountModelUse",
+	"DomainProviderAccountMove":                 "ProviderAccountMove",
+	"DomainProviderAccountRequests":             "ProviderAccountRequests",
+	"DomainProviderAccountTokens":               "ProviderAccountTokens",
+	"ControllersProviderAccountsResponse":       "ProviderAccountsResponse",
+	"PortsProviderAccountAction":                "ProviderAccountAction",
+	"PortsProviderLoginRequest":                 "ProviderLoginRequest",
+	"ControllersProviderLoginResponse":          "ProviderLoginResponse",
+	"ControllersSessionProviderAccountResponse": "SessionProviderAccountResponse",
 }
 
 // markRequestBodyRequired sets requestBody.required: true on the operation's
@@ -625,6 +622,7 @@ type operation struct {
 func operations() []operation {
 	ops := append([]operation{}, eventOperations()...)
 	ops = append(ops, agentOperations()...)
+	ops = append(ops, providerAccountOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, sessionOperations()...)
 	ops = append(ops, automationOperations()...)
@@ -1529,69 +1527,6 @@ func agentOperations() []operation {
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
-		},
-		{
-			method: http.MethodGet, path: "/api/v1/agents/codex/accounts", id: "getCodexAccounts", tag: "agents",
-			summary: "Return cached AO Codex accounts and active-account state",
-			resps:   []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/ensure", id: "ensureCodexAccounts", tag: "agents",
-			summary: "Discover Codex accounts and ensure authentication, capacity, and optional usage",
-			reqBody: controllers.EnsureCodexAccountsRequest{},
-			resps:   []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/{accountId}/reset-credit/consume", id: "consumeCodexAccountResetCredit", tag: "agents",
-			summary: "Consume one provider-reported Codex usage-limit reset credit", pathParams: []any{controllers.CodexAccountIDParam{}},
-			reqBody: controllers.ConsumeCodexAccountResetCreditRequest{},
-			resps:   []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/{accountId}/login-terminal", id: "openCodexAccountReauthenticationTerminal", tag: "agents",
-			summary: "Open native Codex sign-in for one retained account", pathParams: []any{controllers.CodexAccountIDParam{}},
-			resps: []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/{accountId}/logout", id: "logoutCodexAccount", tag: "agents",
-			summary: "Log out one retained Codex account", pathParams: []any{controllers.CodexAccountIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodDelete, path: "/api/v1/agents/codex/accounts/{accountId}", id: "deleteCodexAccount", tag: "agents",
-			summary: "Delete one inactive signed-out Codex account", pathParams: []any{controllers.CodexAccountIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/login-terminal", id: "openCodexAccountLoginTerminal", tag: "agents",
-			summary: "Open an inline native login terminal for a new AO Codex account",
-			resps:   []respUnit{{http.StatusAccepted, controllers.OpenCodexAccountLoginTerminalResponse{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/login-operations/{operationId}/verify", id: "verifyCodexAccountLogin", tag: "agents",
-			summary: "Verify one native Codex account login operation", pathParams: []any{controllers.CodexAccountLoginIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.CodexAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel", id: "cancelCodexAccountLogin", tag: "agents",
-			summary: "Cancel one native Codex account login operation", pathParams: []any{controllers.CodexAccountLoginIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.CodexAccountLoginResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodGet, path: "/api/v1/agents/codex/accounts/events", id: "streamCodexAccounts", tag: "agents",
-			summary:      "Stream cached and live Codex account state",
-			resps:        []respUnit{{http.StatusOK, controllers.CodexAccountsResponse{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
-			contentTypes: map[int]string{http.StatusOK: "text/event-stream"},
-		},
-		{
-			method: http.MethodPost, path: "/api/v1/agents/codex/account-switches", id: "startCodexAccountSwitch", tag: "agents",
-			summary: "Start a global AO Codex account switch", reqBody: controllers.StartCodexAccountSwitchRequest{},
-			resps: []respUnit{{http.StatusAccepted, controllers.CodexAccountSwitchResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}},
-		},
-		{
-			method: http.MethodGet, path: "/api/v1/agents/codex/account-switches/{switchId}", id: "getCodexAccountSwitch", tag: "agents",
-			summary: "Read one durable Codex account switch", pathParams: []any{controllers.CodexAccountSwitchIDParam{}},
-			resps: []respUnit{{http.StatusOK, controllers.CodexAccountSwitchResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusServiceUnavailable, envelope.APIError{}}, {http.StatusNotImplemented, envelope.APIError{}}},
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/agents/refresh", id: "refreshAgents", tag: "agents",
@@ -3129,5 +3064,18 @@ func prOperations() []operation {
 			summary: "List repositories accessible with the stored GitHub token",
 			resps:   []respUnit{{http.StatusOK, map[string]any{"repos": []githubpat.Repo{}}}, {http.StatusUnauthorized, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
 		},
+	}
+}
+
+func providerAccountOperations() []operation {
+	apiErr := envelope.APIError{}
+	account, login := []any{controllers.ProviderAccountIDParam{}}, []any{controllers.ProviderLoginIDParam{}}
+	return []operation{
+		{method: http.MethodGet, path: "/api/v1/provider-accounts", id: "listProviderAccounts", tag: "agents", summary: "List managed provider accounts", pathParams: []any{controllers.ProviderAccountsQuery{}}, resps: []respUnit{{http.StatusOK, controllers.ProviderAccountsResponse{}}, {http.StatusInternalServerError, apiErr}}},
+		{method: http.MethodPost, path: "/api/v1/provider-accounts/{accountId}/actions", id: "providerAccountAction", tag: "agents", summary: "Change one managed account or move a session onto it", pathParams: account, reqBody: ports.ProviderAccountAction{}, resps: []respUnit{{http.StatusOK, controllers.ProviderAccountsResponse{}}, {http.StatusBadRequest, apiErr}, {http.StatusNotFound, apiErr}, {http.StatusConflict, apiErr}}},
+		{method: http.MethodPost, path: "/api/v1/provider-accounts/login", id: "startProviderAccountLogin", tag: "agents", summary: "Start a managed account sign-in", reqBody: ports.ProviderLoginRequest{}, resps: []respUnit{{http.StatusOK, controllers.ProviderLoginResponse{}}, {http.StatusBadRequest, apiErr}, {http.StatusNotFound, apiErr}, {http.StatusConflict, apiErr}}},
+		{method: http.MethodGet, path: "/api/v1/provider-accounts/login/{loginId}", id: "getProviderAccountLogin", tag: "agents", summary: "Read a sign-in attempt and record its account once it finishes", pathParams: login, resps: []respUnit{{http.StatusOK, controllers.ProviderLoginResponse{}}, {http.StatusNotFound, apiErr}}},
+		{method: http.MethodDelete, path: "/api/v1/provider-accounts/login/{loginId}", id: "cancelProviderAccountLogin", tag: "agents", summary: "Cancel a sign-in attempt", pathParams: login, resps: []respUnit{{http.StatusNoContent, nil}, {http.StatusNotFound, apiErr}}},
+		{method: http.MethodGet, path: "/api/v1/provider-accounts/sessions/{sessionId}", id: "getSessionProviderAccount", tag: "sessions", summary: "Read a session's managed account", pathParams: []any{controllers.SessionIDParam{}}, resps: []respUnit{{http.StatusOK, controllers.SessionProviderAccountResponse{}}, {http.StatusInternalServerError, apiErr}}},
 	}
 }

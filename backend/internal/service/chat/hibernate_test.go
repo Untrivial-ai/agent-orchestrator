@@ -1052,20 +1052,70 @@ func TestHibernateChatFinalGateRejectsUnfinishedWork(t *testing.T) {
 			})
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h, conv := settledHibernationHarness(t, tc.state)
-			if tc.add != nil {
-				tc.add(t, h, conv)
+		// A restart skips the wait for the chat to be closed and quiet for a
+		// while. It skips none of the checks that the chat is doing nothing.
+		for _, entry := range []string{"idle", "restart"} {
+			t.Run(tc.name+"/"+entry, func(t *testing.T) {
+				h, conv := settledHibernationHarness(t, tc.state)
+				if tc.add != nil {
+					tc.add(t, h, conv)
+				}
+				stop := h.svc.HibernateChat
+				if entry == "restart" {
+					stop = h.svc.HibernateChatForRestart
+				}
+				hibernated, err := stop(context.Background(), testSession)
+				if err != nil || hibernated || conv.calls.Load() != 0 {
+					t.Fatalf("stopped = %v, %v; provider calls = %d", hibernated, err, conv.calls.Load())
+				}
+				rec, found, err := h.st.GetSession(context.Background(), testSession)
+				if err != nil || !found || rec.HibernatedAt != nil {
+					t.Fatalf("session marker after rejected hibernation = %+v, %v, %v", rec.HibernatedAt, found, err)
+				}
+			})
+		}
+	}
+}
+
+// A restart is not idle hibernation: it does not wait for the setting, for the
+// chat to be closed, or for it to have been quiet for a while, and it may stop
+// an orchestrator, because the caller starts the provider again at once.
+func TestHibernateChatForRestartStopsAQuietChatThatIdleHibernationWouldLeave(t *testing.T) {
+	for _, kind := range []domain.SessionKind{domain.KindWorker, domain.KindOrchestrator} {
+		t.Run(string(kind), func(t *testing.T) {
+			h, conv := settledHibernationHarness(t, domain.TurnStateCompleted, func() bool { return false })
+			ctx := context.Background()
+			if err := h.svc.SetChatView(ctx, testSession, "viewer", true); err != nil {
+				t.Fatal(err)
 			}
-			hibernated, err := h.svc.HibernateChat(context.Background(), testSession)
-			if err != nil || hibernated || conv.calls.Load() != 0 {
-				t.Fatalf("HibernateChat = %v, %v; provider calls = %d", hibernated, err, conv.calls.Load())
+			rec, _, err := h.st.GetSession(ctx, testSession)
+			if err != nil {
+				t.Fatal(err)
 			}
-			rec, found, err := h.st.GetSession(context.Background(), testSession)
-			if err != nil || !found || rec.HibernatedAt != nil {
-				t.Fatalf("session marker after rejected hibernation = %+v, %v, %v", rec.HibernatedAt, found, err)
+			rec.Kind = kind
+			rec.Activity.LastActivityAt = h.now()
+			if err := h.st.UpdateSession(ctx, rec); err != nil {
+				t.Fatal(err)
+			}
+			if stopped, err := h.svc.HibernateChat(ctx, testSession); err != nil || stopped || conv.calls.Load() != 0 {
+				t.Fatalf("idle hibernation: stopped=%v err=%v calls=%d", stopped, err, conv.calls.Load())
+			}
+			if stopped, err := h.svc.HibernateChatForRestart(ctx, testSession); err != nil || !stopped || conv.calls.Load() != 1 {
+				t.Fatalf("restart: stopped=%v err=%v calls=%d", stopped, err, conv.calls.Load())
+			}
+			rec, _, err = h.st.GetSession(ctx, testSession)
+			if err != nil || rec.HibernatedAt == nil {
+				t.Fatalf("a stopped chat was not marked resumable: at=%v err=%v", rec.HibernatedAt, err)
 			}
 		})
+	}
+}
+
+func TestHibernateChatForRestartLeavesBackgroundWorkRunning(t *testing.T) {
+	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted, func() bool { return false })
+	conv.backgroundRunning = true
+	if stopped, err := h.svc.HibernateChatForRestart(context.Background(), testSession); err != nil || stopped || conv.calls.Load() != 0 {
+		t.Fatalf("stopped=%v err=%v calls=%d", stopped, err, conv.calls.Load())
 	}
 }
 

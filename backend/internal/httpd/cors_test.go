@@ -1,12 +1,15 @@
 package httpd
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 // TestCORS exercises the allowlist boundary on a real router: trusted origins
@@ -148,9 +151,15 @@ func TestCORS(t *testing.T) {
 	}
 }
 
-func TestCodexAccountOriginBoundaryBlocksPreviewAndAllowsRenderers(t *testing.T) {
+type listOnlyAccounts struct{ ports.ProviderAccountAdmin }
+
+func (listOnlyAccounts) Accounts(context.Context, bool, bool) ([]domain.ProviderAccountView, error) {
+	return nil, nil
+}
+
+func TestAccountOriginBoundaryBlocksPreviewAndAllowsRenderers(t *testing.T) {
 	cfg := config.Config{AllowedOrigins: []string{"app://renderer", "http://localhost:5173"}}
-	router := newTestRouter(cfg, discardLogger(), nil)
+	router := NewRouterWithControl(cfg, discardLogger(), nil, APIDeps{ProviderAccounts: listOnlyAccounts{}}, ControlDeps{})
 
 	tests := []struct {
 		name       string
@@ -162,32 +171,32 @@ func TestCodexAccountOriginBoundaryBlocksPreviewAndAllowsRenderers(t *testing.T)
 	}{
 		{
 			name:       "preview cannot delete an account",
-			method:     http.MethodDelete,
-			path:       "/api/v1/agents/codex/accounts/account-1",
+			method:     http.MethodPost,
+			path:       "/api/v1/provider-accounts/account-1/actions",
 			origin:     "http://ao-preview.hostile.localhost:5181",
 			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "packaged renderer can read accounts",
 			method:     http.MethodGet,
-			path:       "/api/v1/agents/codex/accounts",
+			path:       "/api/v1/provider-accounts",
 			origin:     "app://renderer",
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusOK,
 			wantACAO:   "app://renderer",
 		},
 		{
 			name:       "configured development renderer can mutate accounts",
-			method:     http.MethodDelete,
-			path:       "/api/v1/agents/codex/accounts/account-1",
+			method:     http.MethodPost,
+			path:       "/api/v1/provider-accounts/account-1/actions",
 			origin:     "http://localhost:5173",
-			wantStatus: http.StatusNotImplemented,
+			wantStatus: http.StatusBadRequest,
 			wantACAO:   "http://localhost:5173",
 		},
 		{
 			name:       "native caller without origin can mutate accounts",
-			method:     http.MethodDelete,
-			path:       "/api/v1/agents/codex/accounts/account-1",
-			wantStatus: http.StatusNotImplemented,
+			method:     http.MethodPost,
+			path:       "/api/v1/provider-accounts/account-1/actions",
+			wantStatus: http.StatusBadRequest,
 		},
 	}
 

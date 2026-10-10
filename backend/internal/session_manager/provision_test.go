@@ -316,6 +316,57 @@ func (c tuningCatalog) Models(context.Context, string, string, bool) (ports.Agen
 	return c.catalog, c.err
 }
 
+type scopedCatalog struct {
+	scopes  *[]string
+	catalog ports.AgentModelCatalog
+}
+
+func (c scopedCatalog) Models(_ context.Context, _ string, scope string, _ bool) (ports.AgentModelCatalog, error) {
+	*c.scopes = append(*c.scopes, scope)
+	return c.catalog, nil
+}
+
+func TestResolveAgentConfigValidatesAgainstTheChosenAccountsCatalogue(t *testing.T) {
+	var scopes []string
+	m := &Manager{modelCatalog: scopedCatalog{scopes: &scopes, catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{ID: "claude-x"}}}}}
+	for _, account := range []string{"", "account-2"} {
+		if _, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+			Harness: domain.HarnessClaudeCode, ProjectID: "project-1", AccountID: account,
+			AgentConfig: ports.AgentConfig{Model: "claude-x"},
+		}, domain.ProjectConfig{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(scopes) != 2 || scopes[0] != "project-1" || scopes[1] != "@account:account-2" {
+		t.Fatalf("catalogue scopes = %v, want the project default then the chosen account", scopes)
+	}
+}
+
+func TestResolveAgentConfigPassesAnEffortOnWhenTheAccountsCatalogueNamesNoDefault(t *testing.T) {
+	models := []ports.AgentModelInfo{{ID: "gpt-a", Efforts: []string{"low", "high"}}}
+	project := domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Effort: "high"}}}
+	spawn := ports.SpawnConfig{ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex}
+
+	// No model is named, so the agent runs its own choice and AO cannot check
+	// the effort against it.
+	managed := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Source: ports.ModelCatalogSourceManagedAccount, Models: models}}}
+	resolved, err := managed.resolveAgentConfig(context.Background(), spawn, project)
+	if err != nil || resolved.Model != "" || resolved.Effort != "high" {
+		t.Fatalf("resolved = %#v err = %v, want the effort passed on with no model", resolved, err)
+	}
+	// A named model is still checked.
+	spawn.AgentConfig = ports.AgentConfig{Model: "gpt-a", Effort: "xhigh"}
+	if _, err := managed.resolveAgentConfig(context.Background(), spawn, project); !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("err = %v, want an unsupported effort", err)
+	}
+	// Any other catalogue is expected to say what the agent runs by default.
+	spawn.AgentConfig = ports.AgentConfig{}
+	native := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: models}}}
+	if _, err := native.resolveAgentConfig(context.Background(), spawn, project); !errors.Is(err, ports.ErrModelCapabilitiesUnavailable) {
+		t.Fatalf("err = %v, want capabilities unavailable", err)
+	}
+}
+
 func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 	m := &Manager{modelCatalog: tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
 		{ID: "old", Efforts: []string{"high"}},

@@ -450,29 +450,6 @@ func TestCreateLaunchCommandContainsKeepAliveShell(t *testing.T) {
 	}
 }
 
-func TestCreateCommandTerminalExitsWhenCommandCompletes(t *testing.T) {
-	r, fr := newTestRuntime(0)
-	fr.outputs = [][]byte{nil, []byte("/tmp/ws\n"), nil, nil, nil, nil, nil}
-
-	_, err := r.Create(context.Background(), ports.RuntimeConfig{
-		SessionID:               "command-1",
-		WorkspacePath:           "/tmp/ws",
-		Argv:                    []string{"ao", "codex-login"},
-		ExitOnCommandCompletion: true,
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	args := fr.calls[0].args
-	launchCmd := args[len(args)-1]
-	if !strings.HasSuffix(launchCmd, "; exit $?") {
-		t.Fatalf("command terminal launch = %q, want command exit propagation", launchCmd)
-	}
-	if strings.Contains(launchCmd, `exec "${SHELL:-/bin/sh}" -i`) || strings.Contains(launchCmd, `exec cat >/dev/null`) {
-		t.Fatalf("command terminal launch unexpectedly keeps the pane alive: %q", launchCmd)
-	}
-}
-
 func TestCreateLaunchCommandExportsEnvVars(t *testing.T) {
 	oldGetenv := getenv
 	getenv = func(key string) string {

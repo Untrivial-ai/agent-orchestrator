@@ -140,6 +140,8 @@ type Config struct {
 	// Agent is the compatibility agent adapter id selected by AO_AGENT;
 	// startSession fails fast if no adapter with this id is registered.
 	Agent string
+	// ProxyHostBinary overrides the account helper beside the daemon executable.
+	ProxyHostBinary string
 	// AppRunID identifies one desktop-app launch and scopes transient command
 	// terminals to it. User shells survive across launches. The supervisor keeps
 	// this constant across daemon restarts; bare daemons mint a fresh id per boot.
@@ -199,6 +201,7 @@ func (c Config) Addr() string {
 //	                     (default: a fresh id minted per daemon boot)
 //	AO_ALLOWED_ORIGINS   CORS origins, comma-separated (default DefaultAllowedOrigins)
 //	AO_TELEMETRY_EVENTS  local event capture off|on (default off)
+//	AO_PROXY_HOST_BINARY account helper executable (default: beside the daemon)
 //	AO_TELEMETRY_METRICS local metric capture off|on (default off)
 //	AO_TELEMETRY_REMOTE  remote exporter off|posthog (default off)
 //	AO_TELEMETRY_POSTHOG_KEY   PostHog project key
@@ -256,6 +259,7 @@ func Load() (Config, error) {
 	if raw := os.Getenv("AO_AGENT"); raw != "" {
 		cfg.Agent = raw
 	}
+	cfg.ProxyHostBinary = os.Getenv("AO_PROXY_HOST_BINARY")
 
 	// A missing AO_APP_RUN_ID means nothing is supervising this daemon, so this
 	// boot IS the run: mint an id rather than leaving it empty, which would make

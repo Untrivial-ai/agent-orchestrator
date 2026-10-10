@@ -2,9 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { components } from "../../api/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	providerInventory: { accounts: [] } as components["schemas"]["ProviderAccountsResponse"],
 	delete: vi.fn(),
 	get: vi.fn(),
 	post: vi.fn(),
@@ -65,7 +67,7 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		DELETE: h.delete,
-		GET: h.get,
+		GET: (path: string, ...args: unknown[]) => path === "/api/v1/provider-accounts" ? Promise.resolve({ data: h.providerInventory }) : h.get(path, ...args),
 		POST: h.post,
 	},
 	apiErrorCode: (error: { code?: string }) => error?.code,
@@ -122,6 +124,11 @@ async function waitForTaskReady() {
 
 beforeEach(() => {
 	useUiStore.setState({ developerMode: true, remoteHosts: true });
+	// Codex and Claude Code run on an account AO manages; without one signed in, a task for them cannot start.
+	h.providerInventory = { accounts: [
+		{ id: "test-codex", provider: "codex", displayName: "Test Codex", email: "codex@example.test", signedIn: true, primary: true, sessions: [] },
+		{ id: "test-claude", provider: "claude", displayName: "Test Claude", email: "claude@example.test", signedIn: true, primary: true, sessions: [] },
+	] };
 	h.get.mockImplementation(async (path: string) => {
 		if (path.includes("/models")) {
 			return {
@@ -2045,9 +2052,10 @@ describe("TaskComposer", () => {
 			await userEvent.click(screen.getByRole("button", { name: "Details" }));
 			expect(screen.getByText(expiredDetail)).toBeInTheDocument();
 
+			// Claude Code's accounts are managed by AO, so logging in means the Accounts page.
 			await userEvent.click(screen.getByRole("button", { name: "Log in" }));
 			expect(useUiStore.getState().settingsModal).toEqual(expect.objectContaining({
-				scope: "global", section: "harness", focusAgentId: "claude-code", harnessView: "local", startLogin: true,
+				scope: "global", section: "accountManager",
 			}));
 
 			await userEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -2122,5 +2130,147 @@ describe("TaskComposer", () => {
 			act(() => { window.dispatchEvent(new Event("focus")); });
 			await waitFor(() => expect(screen.queryByTestId("model-catalog-notice")).not.toBeInTheDocument());
 		});
+	});
+});
+
+describe("new task provider account selection", () => {
+	type Account = components["schemas"]["ProviderAccountView"];
+	const account = (id: string, displayName: string, extra: Partial<Account> = {}): Account => ({ id, provider: "codex", displayName, email: `${id}@example.test`, signedIn: true, primary: false, sessions: [], ...extra });
+	const managedInventory = () => ({ accounts: [
+		account("codex-primary", "Cedar Codex", { primary: true }),
+		account("codex-secondary", "Maple Codex"),
+		account("codex-signed-out", "Aspen Codex", { signedIn: false }),
+		account("claude-primary", "Willow Claude", { provider: "claude", primary: true }),
+		account("codex-reserve", "Birch Codex", { reserved: true }),
+	] });
+	// The account is one icon button, named after the account it will use.
+	const accountName = /^(Account: |Choose an account|No signed-in )/;
+	const accountControl = () => screen.findByRole("button", { name: accountName });
+	const accountDot = () => screen.queryByTestId("task-account-dot");
+	const sentBody = () => h.post.mock.calls[0][1].body;
+	const slot = document.body.appendChild(document.createElement("div"));
+	function show(props: Partial<Parameters<typeof TaskComposer>[0]> = {}) {
+		const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const onCreated = vi.fn();
+		render(<Wrap queryClient={cache}><TaskComposer projectId="__standalone__" accountControlContainer={slot} onCreated={onCreated} {...props} /></Wrap>);
+		return { cache, onCreated, user: userEvent.setup() };
+	}
+	async function chooseAccount(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
+		await user.click(await accountControl());
+		await user.click(await screen.findByRole("menuitem", { name }));
+	}
+	async function submit(text: string, onCreated: ReturnType<typeof vi.fn>, id = "new-session") {
+		await waitForTaskReady();
+		fireEvent.change(task(), { target: { value: text } });
+		fireEvent.click(startTask());
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith(id));
+	}
+	beforeEach(() => {
+		h.providerInventory = managedInventory();
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex", { usageCount: 5 }), agentReadiness("claude-code", "Claude")] };
+		h.ensureTargetedReadiness.mockResolvedValue({ agents: [agentReadiness("codex", "Codex")] });
+		h.post.mockResolvedValue({ data: { session: { id: "new-session" } } });
+	});
+
+	it("names the default account, lists only the provider's signed-in ones not kept in reserve, and leaves the default to the daemon", async () => {
+		const { cache, onCreated, user } = show();
+		const control = await accountControl();
+		expect(control).toHaveAccessibleName("Account: Cedar Codex");
+		expect(control).toHaveTextContent("");
+		expect(control).toHaveAttribute("title", "Account: Cedar Codex");
+		expect(accountDot()).toBeNull();
+		await user.click(control);
+		// Aspen is signed out and Birch is in reserve, so neither is offered for a new task.
+		expect((await screen.findAllByRole("menuitem")).map(item => item.textContent)).toEqual(["Cedar CodexDefault", "Maple Codex", "Manage accounts"]);
+		// Choosing another account and then the default again sends no account, and a default changed elsewhere is followed.
+		await user.click(screen.getByRole("menuitem", { name: /Maple Codex/ }));
+		await chooseAccount(user, /Cedar Codex/);
+		const changed = managedInventory();
+		changed.accounts[0].primary = false;
+		changed.accounts[1].primary = true;
+		act(() => cache.setQueryData(["provider-accounts", "catalogue"], changed));
+		await waitFor(async () => expect(await accountControl()).toHaveAccessibleName("Account: Maple Codex"));
+		await submit("Use the default", onCreated);
+		expect(sentBody()).toEqual(expect.objectContaining({ harness: "codex", prompt: "Use the default" }));
+		expect(sentBody()).not.toHaveProperty("providerAccountId");
+	});
+	it("shows the chosen account's models instead of the default account's", async () => {
+		const { user } = show();
+		await accountControl();
+		const modelRequests = () => h.get.mock.calls.filter(([path]) => String(path).includes("/models")).map(([, options]) => (options as { params: { query: { projectId?: string } } }).params.query.projectId);
+		await waitFor(() => expect(modelRequests().length).toBeGreaterThan(0));
+		expect(modelRequests()).not.toContain("@account:codex-secondary");
+		await chooseAccount(user, /Maple Codex/);
+		await waitFor(() => expect(modelRequests()).toContain("@account:codex-secondary"));
+		expect(await accountControl()).toHaveAccessibleName("Account: Maple Codex");
+		expect(accountDot()).toHaveClass("bg-foreground");
+	});
+	it.each([
+		["a new session", "__standalone__", "/api/v1/sessions", { data: { session: { id: "created" } } }],
+		["project delegation", "project", "/api/v1/orchestrators/delegate", { data: { workerId: "created" } }],
+	])("sends an explicit choice with %s", async (_, projectId, path, created) => {
+		h.get.mockImplementation(async (route: string) => route.includes("/models")
+			? { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } }
+			: { data: { status: "ok", project: { config: { worker: { agent: "codex" } } } } });
+		h.post.mockResolvedValue(created);
+		const { onCreated, user } = show({ projectId });
+		await chooseAccount(user, /Maple Codex/);
+		await submit("Use Maple", onCreated, "created");
+		expect(h.post).toHaveBeenCalledWith(path, expect.objectContaining({ body: expect.objectContaining({ providerAccountId: "codex-secondary" }) }));
+	});
+	it("uses the other provider's default after changing the chosen agent", async () => {
+		const { onCreated, user } = show();
+		await chooseAccount(user, /Maple Codex/);
+		fireEvent.click(screen.getByLabelText("Agent"));
+		expect(await screen.findByRole("button", { name: "Account: Willow Claude" })).toBeInTheDocument();
+		expect(accountDot()).toBeNull();
+		h.ensureTargetedReadiness.mockResolvedValue({ agents: [agentReadiness("claude-code", "Claude")] });
+		await submit("Use Claude", onCreated);
+		expect(sentBody()).toEqual(expect.objectContaining({ harness: "claude-code" }));
+		expect(sentBody()).not.toHaveProperty("providerAccountId");
+	});
+	it("blocks Start and offers sign-in until an account of the provider is signed in", async () => {
+		h.providerInventory.accounts = h.providerInventory.accounts.filter(entry => entry.provider !== "codex");
+		const { cache } = show();
+		expect(await screen.findByText("No signed-in Codex account.")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "No signed-in Codex account." })).toBeInTheDocument();
+		expect(accountDot()).toHaveClass("bg-status-needs-you");
+		expect(startTask()).toBeDisabled();
+		fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+		expect(useUiStore.getState().settingsModal).toEqual(expect.objectContaining({ section: "accountManager" }));
+		act(() => cache.setQueryData(["provider-accounts", "catalogue"], managedInventory()));
+		await waitForTaskReady();
+		expect(screen.queryByText("No signed-in Codex account.")).toBeNull();
+		expect(await accountControl()).toHaveAccessibleName("Account: Cedar Codex");
+		expect(h.post).not.toHaveBeenCalled();
+	});
+	it("blocks a stale explicit selection after that account is removed", async () => {
+		const { cache, user } = show();
+		await chooseAccount(user, /Maple Codex/);
+		await waitForTaskReady();
+		const changed = managedInventory();
+		changed.accounts.splice(1, 1);
+		act(() => cache.setQueryData(["provider-accounts", "catalogue"], changed));
+		await waitFor(() => expect(startTask()).toBeDisabled());
+		await chooseAccount(user, /Cedar Codex/);
+		await waitForTaskReady();
+	});
+	it("still renders when the account list answers without accounts", async () => {
+		h.providerInventory = { status: "ok" } as never;
+		const { cache } = show();
+		await waitFor(() => expect(cache.getQueryData(["provider-accounts", "catalogue"])).toBeDefined());
+		expect(await screen.findByRole("textbox", { name: "Task" })).toBeVisible();
+	});
+
+	it("shows the account button only for a managed agent on this machine, where the host asks", async () => {
+		const first = render(<Wrap><TaskComposer projectId="__standalone__" accountControlContainer={slot} onCreated={vi.fn()} /></Wrap>);
+		const control = await accountControl();
+		expect(slot).toContainElement(control);
+		expect(screen.getByRole("group", { name: "Runs with" })).not.toContainElement(control);
+		first.unmount();
+		// Accounts belong to this machine's daemon: a task on a remote host runs on that side's own sign-in.
+		show({ hostId: "box-a" });
+		await screen.findByRole("textbox", { name: "Task" });
+		expect(screen.queryByRole("button", { name: accountName })).toBeNull();
 	});
 });

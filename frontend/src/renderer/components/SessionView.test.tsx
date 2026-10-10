@@ -181,7 +181,10 @@ vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
-		GET: reviewGetMock,
+		// The session menu asks which account the session runs on; here it runs on none.
+		GET: (path: string, options?: unknown) => path.startsWith("/api/v1/provider-accounts")
+			? Promise.resolve({ data: { accounts: [], managed: false, accountId: "" } })
+			: reviewGetMock(path, options),
 		POST: vi.fn((path: string, ...args: unknown[]) =>
 			path.endsWith("/resume-agent")
 				? resumeAgentPostMock(path, ...args)

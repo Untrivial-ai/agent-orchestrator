@@ -24,7 +24,7 @@ import (
 // APIDeps bundles every service the API layer's controllers depend on.
 type APIDeps struct {
 	Agents             controllers.AgentCatalog
-	CodexAccounts      controllers.CodexAccountService
+	ProviderAccounts   ports.ProviderAccountAdmin
 	Projects           projectsvc.Manager
 	Sessions           controllers.SessionService
 	Automations        controllers.AutomationService
@@ -118,7 +118,7 @@ type API struct {
 	cfg           config.Config
 	deps          APIDeps
 	agents        *controllers.AgentsController
-	codexAccounts *controllers.CodexAccountsController
+	accounts      *controllers.ProviderAccountsController
 	projects      *controllers.ProjectsController
 	sessions      *controllers.SessionsController
 	automations   *controllers.AutomationsController
@@ -163,7 +163,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		agents: &controllers.AgentsController{
 			Catalog: deps.Agents,
 		},
-		codexAccounts: &controllers.CodexAccountsController{Svc: deps.CodexAccounts},
+		accounts: &controllers.ProviderAccountsController{Svc: deps.ProviderAccounts},
 		projects: &controllers.ProjectsController{
 			Mgr: deps.Projects,
 		},
@@ -236,7 +236,7 @@ func (a *API) Register(root chi.Router) {
 			})
 			r.Use(presenceMiddleware(a.deps.Presence))
 			a.agents.Register(r)
-			a.codexAccounts.Register(r)
+			a.accounts.Register(r)
 			a.projects.Register(r)
 			a.sessions.Register(r)
 			a.automations.Register(r)
@@ -266,7 +266,6 @@ func (a *API) Register(root chi.Router) {
 		})
 		// Long-lived streams intentionally bypass the REST timeout middleware.
 		a.notifications.RegisterStream(r)
-		a.codexAccounts.RegisterStreams(r)
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
 	})

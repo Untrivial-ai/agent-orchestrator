@@ -23,48 +23,6 @@ type openAPISchemaNode struct {
 	OneOf      []openAPISchemaNode          `yaml:"oneOf"`
 }
 
-func TestBuild_CodexSwitchContractIsRedactedAndOnlyMountedRoutesAreDocumented(t *testing.T) {
-	got, err := specgen.Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	var doc struct {
-		Paths      map[string]any `yaml:"paths"`
-		Components struct {
-			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
-		} `yaml:"components"`
-	}
-	if err := yaml.Unmarshal(got, &doc); err != nil {
-		t.Fatalf("parse generated OpenAPI: %v", err)
-	}
-
-	phase := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties["phase"]
-	want := []string{
-		"requested", "checkpointing_source", "activating_target",
-		"recovery_required", "completed", "failed",
-	}
-	if !slices.Equal(phase.Enum, want) {
-		t.Fatalf("CodexAccountSwitchResponse.phase enum = %v, want %v", phase.Enum, want)
-	}
-	for _, obsolete := range []string{"sessions"} {
-		if _, ok := doc.Components.Schemas["CodexAccountSwitchResponse"].Properties[obsolete]; ok {
-			t.Fatalf("obsolete %q remains in CodexAccountSwitchResponse", obsolete)
-		}
-		if _, ok := doc.Components.Schemas["StartCodexAccountSwitchRequest"].Properties[obsolete]; ok {
-			t.Fatalf("obsolete %q remains in StartCodexAccountSwitchRequest", obsolete)
-		}
-	}
-	if _, ok := doc.Components.Schemas["CodexAccountSwitchSessionResponse"]; ok {
-		t.Fatal("obsolete CodexAccountSwitchSessionResponse schema remains")
-	}
-	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}"]; !ok {
-		t.Fatal("durable switch GET path is missing from generated contract")
-	}
-	if _, ok := doc.Paths["/api/v1/agents/codex/account-switches/{switchId}/cancel"]; ok {
-		t.Fatal("stale switch cancel path remains in generated contract")
-	}
-}
-
 // TestBuild_MatchesEmbedded is the drift guard: the committed (embedded)
 // openapi.yaml must equal fresh Build() output. If this fails, run
 // `go generate ./...` and commit the result.

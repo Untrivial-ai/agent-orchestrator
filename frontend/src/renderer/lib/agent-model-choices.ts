@@ -60,6 +60,28 @@ export function splitClaudeModels<T extends { id: string; label: string }>(model
 	return { current, other };
 }
 
+type LiveModel = { id: string; displayName: string; description?: string; default: boolean; efforts?: string[]; defaultEffort?: string };
+/** The models of a chat on a managed account that takes any model by name: the account's list, with the model the chat is on kept even when the list lacks it. */
+export function accountChatModels(account: { id: string; label: string; efforts?: string[]; defaultEffort?: string }[], live: LiveModel[]): LiveModel[] {
+	const offered = account.filter((model) => isConcreteModelID(model.id)).map((model) => {
+		const now = live.find((entry) => entry.id === model.id);
+		return { id: model.id, displayName: model.label || model.id, default: Boolean(now?.default), efforts: model.efforts?.length ? model.efforts : now?.efforts, defaultEffort: now?.defaultEffort ?? model.defaultEffort };
+	});
+	const current = live.find((model) => model.default && !offered.some((entry) => entry.id === model.id));
+	if (offered.length === 0) return live;
+	return current ? [current, ...offered] : offered;
+}
+/** Whether a Claude Code row runs one of the account's models: the same id, or the release its name, id or description ("Opus 5.5 · Best for…") states. */
+export function claudeRowRunsAccountModel(row: { value: string; name: string; description?: string | null }, models: { id: string; label: string }[]): boolean {
+	const release = (model: { id: string; label: string }) => {
+		const parsed = claudeFamilyVersion(model);
+		return parsed && `${parsed.family}:${parsed.version.join(".")}`;
+	};
+	const id = row.value.replace(/\[.*\]$/, "").toLowerCase();
+	const runs = release({ id: row.value, label: row.name }) ?? release({ id: "", label: (row.description ?? "").split("·")[0] });
+	return id !== "default" && models.some((model) => model.id.toLowerCase() === id || (runs !== undefined && release(model) === runs));
+}
+
 /** A configured family alias ("sonnet") duplicates that family's newest model, so mark that model as the default instead. */
 export function foldClaudeAliasDefault<T extends { id: string; label: string; isDefault?: boolean }>(models: T[]): T[] {
 	const alias = models.find((model) => model.isDefault && CLAUDE_FAMILIES.includes(model.id));

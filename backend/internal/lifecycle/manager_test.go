@@ -461,6 +461,28 @@ func (g fixedSessionOperationGate) SessionMutationInProgress(domain.SessionID) b
 	return bool(g)
 }
 
+func (fixedSessionOperationGate) SessionTurnEnded(domain.SessionRecord) {}
+
+type turnEndGate struct{ ended []domain.SessionID }
+
+func (*turnEndGate) SessionMutationInProgress(domain.SessionID) bool { return false }
+func (g *turnEndGate) SessionTurnEnded(rec domain.SessionRecord)     { g.ended = append(g.ended, rec.ID) }
+
+func TestActivitySignal_TellsTheOperationGateOnlyWhenATurnEnds(t *testing.T) {
+	m, st, _ := newManager()
+	gate := &turnEndGate{}
+	m.SetSessionOperationGate(gate)
+	st.sessions["mer-1"] = working("mer-1")
+	for _, state := range []domain.ActivityState{domain.ActivityActive, domain.ActivityIdle, domain.ActivityIdle, domain.ActivityWaitingInput, domain.ActivityIdle} {
+		if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{Valid: true, State: state, Timestamp: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []domain.SessionID{"mer-1", "mer-1"}; !reflect.DeepEqual(gate.ended, want) {
+		t.Fatalf("turn ends = %v, want %v", gate.ended, want)
+	}
+}
+
 type fixedLifecycleInputLease bool
 
 func (l fixedLifecycleInputLease) AcquireSessionInput(domain.SessionID) (func(), bool) {

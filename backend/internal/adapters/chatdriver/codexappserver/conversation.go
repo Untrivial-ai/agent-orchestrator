@@ -51,6 +51,7 @@ type conversation struct {
 	threadID        string
 	historyParentID string
 	providerScopeID string
+	modelProvider   string // the account helper's provider name when routed through it
 	readOnly        bool
 	// launchMode is the permission mode the thread started or resumed with;
 	// a turn without its own approval setting runs under it.

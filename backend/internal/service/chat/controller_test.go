@@ -6554,62 +6554,6 @@ func TestRateLimitProjectionKeepsOnlyTheLatest(t *testing.T) {
 	}
 }
 
-func TestCodexRateLimitsUpdateActiveAccountCapacityWithoutConversationPersistence(t *testing.T) {
-	st := openStore(t)
-	conv := newFakeConversation()
-	updates := make(chan ports.CodexCapacityObservation, 1)
-	svc := chatsvc.New(chatsvc.Options{
-		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
-		Log:     slog.New(slog.DiscardHandler),
-		NewID:   func() string { return "bound-capacity" },
-		OnCodexCapacityChanged: func(sessionID domain.SessionID, generation string, observation ports.CodexCapacityObservation) {
-			if sessionID != testSession || generation != "managed-generation" {
-				t.Errorf("capacity attribution = %s/%s", sessionID, generation)
-			}
-			updates <- observation
-		},
-	})
-	ctrl, err := svc.Start(context.Background(), chatsvc.StartConfig{
-		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-		WorkspacePath: t.TempDir(), ControllerGeneration: "managed-generation",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
-	observation := ports.CodexCapacityObservation{Partial: true, Overall: &domain.CodexCapacityBucket{
-		LimitID: "codex", Reached: domain.CodexCapacityNotReached,
-		Primary: &domain.CodexCapacityWindow{UsedPercent: 81},
-	}}
-	conv.emit(ports.ChatEvent{Kind: ports.ChatEventRateLimits, ProviderEventID: "capacity-1", RateLimits: &ports.ChatRateLimits{
-		PrimaryUsedPercent: 81, PlanLabel: "pro", CodexCapacity: &observation,
-	}})
-	select {
-	case got := <-updates:
-		if got.Overall == nil || got.Overall.Primary == nil || got.Overall.Primary.UsedPercent != 81 {
-			t.Fatalf("capacity callback = %#v", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for bound profile capacity update")
-	}
-	snapshot, err := st.LoadConversationSnapshot(context.Background(), ctrl.ConversationID())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Conversation.RateLimits != nil {
-		t.Fatalf("bound Codex rate limits persisted: %#v", snapshot.Conversation.RateLimits)
-	}
-	events, err := st.ProviderEventsSince(context.Background(), ctrl.ConversationID(), 0, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var archived map[string]any
-	if len(events) != 1 || json.Unmarshal([]byte(events[0].PayloadJson), &archived) != nil || archived["rateLimits"] != nil || strings.Contains(events[0].PayloadJson, "usedPercent") {
-		t.Fatalf("bound Codex capacity leaked into provider archive: %#v", events)
-	}
-}
-
 // Nothing reported yet is distinct from a conversation using nothing: the snapshot
 // leaves both nil so a client can withhold the meter rather than draw an empty one.
 func TestSnapshotOmitsUsageUntilTheProviderReports(t *testing.T) {

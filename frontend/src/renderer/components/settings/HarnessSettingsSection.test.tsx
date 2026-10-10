@@ -10,6 +10,19 @@ import type { TerminalSessionState } from "../../hooks/useTerminalSession";
 import { agentReadiness } from "../../test/agent-readiness-fixtures";
 import { TooltipProvider } from "../ui/tooltip";
 import { HarnessSettingsSection } from "./HarnessSettingsSection";
+import { useUiStore } from "../../stores/ui-store";
+
+// Accounts are off by default here, so these tests keep exercising an agent's
+// own login. The managed-agent tests at the end switch them on.
+const managed = vi.hoisted(() => ({ on: false, accounts: [] as Array<{ id: string; provider: string; displayName: string; signedIn: boolean; primary: boolean }>, isPending: false, isError: false }));
+vi.mock("../../hooks/useProviderAccounts", async (original) => {
+	const actual = await original<typeof import("../../hooks/useProviderAccounts")>();
+	return {
+		...actual,
+		accountProvider: (agent: string) => (managed.on ? actual.accountProvider(agent) : ""),
+		useProviderAccounts: () => ({ data: { accounts: managed.accounts }, isPending: managed.isPending, isError: managed.isError }),
+	};
+});
 
 // Cloud sign-in state for the cloud login rows. Signed out by default, which
 // leaves every row on its local-only controls.
@@ -153,6 +166,7 @@ function renderSection(focusAgentId?: string, selectorAgentId?: string, initialV
 describe("HarnessSettingsSection", () => {
 	beforeEach(async () => {
 		await appI18n.changeLanguage("en");
+		Object.assign(managed, { on: false, accounts: [], isPending: false, isError: false });
 		terminalFocusRequested.value = false;
 		terminalStateCallback.value = undefined;
 		cloudMocks.cloudEnabled = false;
@@ -1408,5 +1422,56 @@ describe("HarnessSettingsSection", () => {
 		});
 		renderSection();
 		expect(await screen.findByText("Could not poll installation status.")).toBeInTheDocument();
+	});
+
+	describe("an agent whose accounts AO manages", () => {
+		const codexRow = async () => (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		beforeEach(() => {
+			managed.on = true;
+			vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+				if (path === "/api/v1/agents/readiness") return { data: catalogWithInstalled("codex") } as never;
+				if (path === "/api/v1/agents/installers") return { data: plans } as never;
+				if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [] } } as never;
+				if (path === "/api/v1/agents/auth-plans") return { data: { plans: [{ agentId: "codex", action: "login", launchMode: "terminal", available: true }] } } as never;
+				return { data: undefined } as never;
+			});
+			vi.mocked(apiClient.POST).mockImplementation(async (path) => {
+				if (path === "/api/v1/agents/{agent}/auth") throw new Error("a managed agent must not start its own login");
+				return { data: catalogWithInstalled("codex") } as never;
+			});
+			Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+		});
+		it("shows its accounts and the way to the Accounts page instead of its own login", async () => {
+			managed.accounts = [
+				{ id: "a", provider: "codex", displayName: "Cedar Codex", signedIn: true, primary: false },
+				{ id: "b", provider: "codex", displayName: "Maple Codex", signedIn: true, primary: true },
+				{ id: "c", provider: "codex", displayName: "Aspen Codex", signedIn: false, primary: false },
+			];
+			renderSection();
+			const row = await codexRow();
+			expect(await within(row).findByText("Maple Codex · 2 accounts")).toBeInTheDocument();
+			expect(within(row).queryByRole("button", { name: /^(Login|Refresh login)$/ })).toBeNull();
+			await userEvent.click(within(row).getByRole("button", { name: "Accounts" }));
+			expect(useUiStore.getState().settingsModal).toEqual(expect.objectContaining({ scope: "global", section: "accountManager" }));
+		});
+		it("offers sign-in when no account is signed in, focused from a login shortcut without starting the agent's own login", async () => {
+			const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+			render(<QueryClientProvider client={client}><TooltipProvider><HarnessSettingsSection focusAgentId="codex" startLogin /></TooltipProvider></QueryClientProvider>);
+			const row = await codexRow();
+			expect(await within(row).findByText("Managed sessions need you to sign in again.")).toBeInTheDocument();
+			const signIn = within(row).getByRole("button", { name: "Open sign-in" });
+			await waitFor(() => expect(document.activeElement).toBe(signIn));
+			expect(within(row).queryByTestId("inline-terminal-body")).toBeNull();
+		});
+		it("says when the accounts are loading or could not be read", async () => {
+			managed.isPending = true;
+			const first = renderSection();
+			expect(await within(await codexRow()).findByText("Loading accounts…")).toBeInTheDocument();
+			expect(within(await codexRow()).getByRole("button", { name: "Open sign-in" })).toBeDisabled();
+			first.unmount();
+			Object.assign(managed, { isPending: false, isError: true });
+			renderSection();
+			expect(await within(await codexRow()).findByText("Unable to check sign-in")).toBeInTheDocument();
+		});
 	});
 });

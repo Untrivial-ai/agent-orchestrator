@@ -193,7 +193,7 @@ func TestLANManagerIdentityEndpoint(t *testing.T) {
 // TestLANManagerBlocksLoopbackOnlyControlRoutes proves the LAN listener never
 // serves /shutdown, /internal/*, /api/v1/mobile*, /api/v1/dev*,
 // /api/v1/browser*, or the Codex credential routes under
-// /api/v1/agents/codex/accounts* and /api/v1/agents/codex/account-switches* —
+// /api/v1/provider-accounts* —
 // even when the request carries a spoofed Host: 127.0.0.1
 // and valid LAN auth, since gating on Host alone (localControlRequest) is what
 // let a LAN client reach these routes.
@@ -223,10 +223,7 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 		"/api/v1/desktop/sessions/ao-1/workspace",
 		"/api/v1/system/install/tmux",
 		"/api/v1/sessions/ao-1/preview/server",
-		"/api/v1/agents/codex/accounts",
-		"/api/v1/agents/codex/accounts/login-terminal",
-		"/api/v1/agents/codex/accounts/login-operations/op-1/verify",
-		"/api/v1/agents/codex/account-switches",
+		"/api/v1/provider-accounts",
 	}
 	for _, path := range blocked {
 		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", port, path), nil)
@@ -505,9 +502,7 @@ func TestLANListenerServesCodexModelRoutesFromRealRouter(t *testing.T) {
 	// The credential surface stays unreachable over LAN, even with a spoofed
 	// loopback Host and valid auth.
 	for _, path := range []string{
-		"/api/v1/agents/codex/accounts",
-		"/api/v1/agents/codex/accounts/events",
-		"/api/v1/agents/codex/account-switches",
+		"/api/v1/provider-accounts",
 	} {
 		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", port, path), nil)
 		req.Host = "127.0.0.1"

@@ -28,10 +28,11 @@ func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bo
 // A visible prompt can contain a draft, and Codex can render that prompt while
 // an active turn remains interruptible.
 func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObservation {
+	marker := codexLastPromptMarker(output)
 	observation := ports.TerminalSurfaceObservation{
-		Composer: codexComposerState(terminalui.LastPromptComposerState(codexComposerFrame(output), "›", codexComposerChromeLabels...)),
+		Composer: codexComposerState(terminalui.LastPromptComposerState(codexComposerFrame(output), marker, codexComposerChromeLabels...)),
 	}
-	lines := terminalLines(output)
+	lines := terminalLines(strings.ReplaceAll(output, "»", "›")) // the structure below reads either glyph as ›
 	if len(lines) < 2 {
 		return observation
 	}
@@ -45,7 +46,7 @@ func (p *Plugin) InspectTerminalSurface(output string) ports.TerminalSurfaceObse
 		return observation
 	}
 	prompt, _ := codexPromptFooter(lines, start)
-	if prompt < 0 && terminalui.LastPromptHasBoldMarker(output, "›") {
+	if prompt < 0 && terminalui.LastPromptHasBoldMarker(output, marker) {
 		// Codex hides its footer in constrained viewports but retains a bold,
 		// non-dim current-prompt marker. Plain or dim transcript prompts do not
 		// satisfy this fallback, so missing structural evidence still fails closed.
@@ -173,7 +174,9 @@ func codexComposerFrame(output string) string {
 	}
 	for footer := len(raw) - 1; footer >= start; footer-- {
 		plainFooter := strings.TrimSpace(terminalui.PlainTerminalText(raw[footer]))
-		if !strings.Contains(plainFooter, " · ") {
+		// A warning row below the footer has a middle dot too; it is not the boundary.
+		warningHelpRow := (strings.HasPrefix(plainFooter, "? for shortcuts") || strings.HasPrefix(plainFooter, "⚠")) && strings.HasSuffix(plainFooter, " · f2 to view")
+		if !strings.Contains(plainFooter, " · ") || warningHelpRow {
 			continue
 		}
 		// Codex can stack several " · " footer rows; the frame ends above all of them.
@@ -182,12 +185,23 @@ func codexComposerFrame(output string) string {
 		}
 		for prompt := footer - 1; prompt >= start; prompt-- {
 			plainPrompt := strings.TrimSpace(terminalui.PlainTerminalText(raw[prompt]))
-			if strings.HasPrefix(plainPrompt, "›") {
+			if strings.HasPrefix(plainPrompt, "›") || strings.HasPrefix(plainPrompt, "»") {
 				return strings.Join(raw[prompt:footer], "\n")
 			}
 		}
 	}
 	return output
+}
+
+// codexLastPromptMarker is the glyph of the current prompt row; Codex versions differ.
+func codexLastPromptMarker(output string) string {
+	lines := terminalui.PlainTerminalLines(output)
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "›") || strings.HasPrefix(line, "»") {
+			return string([]rune(line)[:1])
+		}
+	}
+	return "›"
 }
 
 func codexComposerState(state terminalui.ComposerState) ports.TerminalComposerState {

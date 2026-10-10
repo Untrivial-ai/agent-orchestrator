@@ -123,9 +123,13 @@ vi.mock("./ChatWorkspace", async () => {
 			onRememberPermissions,
 			onChooseSettings,
 			configOptionError,
+			models,
+			configOptions,
 			snapshot,
 			shellTarget,
 		}: {
+			models?: { id: string; default: boolean }[];
+			configOptions?: ChatConfigOption[];
 			agentInputDisabled?: boolean;
 			headerActions?: ReactNode;
 			sessionTabAction?: ReactNode;
@@ -153,6 +157,10 @@ vi.mock("./ChatWorkspace", async () => {
 					<div data-testid="remember-available">{String(Boolean(onRememberPermissions))}</div>
 					<div data-testid="turn-settings-available">{String(Boolean(onChooseSettings))}</div>
 					<div data-testid="config-option-error">{configOptionError}</div>
+					<div data-testid="chat-models">{(models ?? []).map((model) => `${model.id}${model.default ? "*" : ""}`).join(",")}</div>
+					<div data-testid="chat-model-rows">
+						{(configOptions ?? []).filter((option) => option.id === "model").flatMap((option) => option.choices.map((choice) => `${choice.value}=${choice.name}`)).join(",")}
+					</div>
 					{headerActions}
 					{sessionTabAction}
 					<button type="button" onClick={() => onLinkOpen?.(LINK)}>
@@ -1172,5 +1180,52 @@ describe("project remembering waits for provider permissions", () => {
 		// session identity to model that notification through the memo boundary.
 		rerender(<Wrapper client={client}><SessionChatSurface session={{ ...session }} /></Wrapper>);
 		expect(screen.getByTestId("remember-available")).toHaveTextContent("true");
+	});
+});
+
+describe("SessionChatSurface models on a managed account", () => {
+	type Model = { id: string; label: string; efforts?: string[] };
+	// Answers the two reads a managed chat makes: which account it is on, and that account's models.
+	function show(route: { managed: boolean; accountId: string }, models: Model[]) {
+		const scopes: (string | undefined)[] = [];
+		getMock.mockImplementation(async (path: string, init?: { params?: { query?: { projectId?: string } } }) => {
+			if (path === "/api/v1/provider-accounts/sessions/{sessionId}") return { data: route, error: undefined, response: { status: 200 } };
+			if (path !== "/api/v1/agents/{agent}/models") return { data: { switches: [] }, error: undefined, response: { status: 200 } };
+			scopes.push(init?.params?.query?.projectId);
+			return { data: { agentId: "", allowCustom: true, customModelEntry: "direct", fetchedAt: "2026-10-10T00:00:00Z", selectionMode: "catalog", models }, error: undefined, response: { status: 200 } };
+		});
+		render(<Wrapper client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SessionChatSurface session={session} /></Wrapper>);
+		return scopes;
+	}
+	const codexOwn = [{ id: "gpt-b", displayName: "B, as Codex names it", default: true, defaultEffort: "high" }, { id: "codex-only", displayName: "Codex only", default: false }];
+	afterEach(() => void vi.mocked(useConversationModels).mockImplementation(() => ({ models: [], isLoading: false })));
+
+	it("offers a Codex chat its account's models, and still marks the one the chat is on", async () => {
+		vi.mocked(useConversationModels).mockImplementation(() => ({ models: codexOwn, isLoading: false }));
+		const scopes = show({ managed: true, accountId: "acct-1" }, [{ id: "gpt-a", label: "GPT A", efforts: ["low", "high"] }, { id: "gpt-b", label: "GPT B" }]);
+		await waitFor(() => expect(screen.getByTestId("chat-models")).toHaveTextContent("gpt-a,gpt-b*"));
+		expect(scopes).toEqual(["@account:acct-1"]);
+	});
+	it("keeps Codex's own list for a chat that is not on a managed account", async () => {
+		vi.mocked(useConversationModels).mockImplementation(() => ({ models: codexOwn, isLoading: false }));
+		const scopes = show({ managed: false, accountId: "" }, [{ id: "gpt-a", label: "GPT A" }]);
+		await waitFor(() => expect(getMock).toHaveBeenCalledWith("/api/v1/provider-accounts/sessions/{sessionId}", expect.anything()));
+		expect(screen.getByTestId("chat-models")).toHaveTextContent("gpt-b*,codex-only");
+		expect(scopes).toEqual([]);
+	});
+	it("offers a Claude chat only the rows that run its account's models, and the row it is on", async () => {
+		conversationState.snapshot = { capabilities: ["config_options"], harness: "claude-code" };
+		configState.loaded = true;
+		configState.options = [{
+			id: "model", name: "Model", category: "model", type: "select", currentValue: "default",
+			// Claude Code says which release an alias row runs in its description.
+			choices: [["default", "Opus"], ["opus", "Opus 5.5 · Best for everyday, complex tasks"], ["sonnet", "Sonnet 5.5 · Efficient for routine tasks"], ["claude-opus-4-7"], ["claude-fable-5-dd-5.5-tpg"]].map(([value, description]) => ({ value, name: value, description })),
+		}];
+		const scopes = show({ managed: true, accountId: "acct-2" }, [{ id: "claude-opus-4-7", label: "Claude Opus 4.7" }, { id: "claude-opus-5-5", label: "Claude Opus 5.5" }, { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" }]);
+		// "opus" runs Opus 5.5, which the account has; it has no Sonnet.
+		await waitFor(() => expect(screen.getByTestId("chat-model-rows")).toHaveTextContent("default=default,opus=opus,claude-opus-4-7=claude-opus-4-7"));
+		expect(screen.getByTestId("chat-models")).toHaveTextContent("claude-opus-4-7,claude-opus-5-5,claude-haiku-5-5");
+		// Only the account's catalogue is read, never the default account's.
+		expect(scopes).toEqual(["@account:acct-2"]);
 	});
 });

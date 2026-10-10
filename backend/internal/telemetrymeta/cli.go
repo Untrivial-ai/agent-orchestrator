@@ -33,7 +33,6 @@ var routineInternalCLICommands = []string{
 	"ao hooks",
 	"ao pty-host",
 	"ao unreal-provider",
-	"ao codex-login",
 	"ao claude-login",
 }
 

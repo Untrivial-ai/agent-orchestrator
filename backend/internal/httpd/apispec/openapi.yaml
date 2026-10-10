@@ -376,453 +376,6 @@ paths:
       summary: Return display-safe native authentication plans for supported agents
       tags:
       - agents
-  /api/v1/agents/codex/account-switches:
-    post:
-      operationId: startCodexAccountSwitch
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/StartCodexAccountSwitchRequest'
-        required: true
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountSwitchResponse'
-          description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Start a global AO Codex account switch
-      tags:
-      - agents
-  /api/v1/agents/codex/account-switches/{switchId}:
-    get:
-      operationId: getCodexAccountSwitch
-      parameters:
-      - description: Durable Codex account switch identifier.
-        in: path
-        name: switchId
-        required: true
-        schema:
-          description: Durable Codex account switch identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountSwitchResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Read one durable Codex account switch
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts:
-    get:
-      operationId: getCodexAccounts
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Return cached AO Codex accounts and active-account state
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/{accountId}:
-    delete:
-      operationId: deleteCodexAccount
-      parameters:
-      - description: AO Codex account identifier.
-        in: path
-        name: accountId
-        required: true
-        schema:
-          description: AO Codex account identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Delete one inactive signed-out Codex account
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/{accountId}/login-terminal:
-    post:
-      operationId: openCodexAccountReauthenticationTerminal
-      parameters:
-      - description: AO Codex account identifier.
-        in: path
-        name: accountId
-        required: true
-        schema:
-          description: AO Codex account identifier.
-          type: string
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
-          description: Accepted
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Open native Codex sign-in for one retained account
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/{accountId}/logout:
-    post:
-      operationId: logoutCodexAccount
-      parameters:
-      - description: AO Codex account identifier.
-        in: path
-        name: accountId
-        required: true
-        schema:
-          description: AO Codex account identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Log out one retained Codex account
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/{accountId}/reset-credit/consume:
-    post:
-      operationId: consumeCodexAccountResetCredit
-      parameters:
-      - description: AO Codex account identifier.
-        in: path
-        name: accountId
-        required: true
-        schema:
-          description: AO Codex account identifier.
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ConsumeCodexAccountResetCreditRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Consume one provider-reported Codex usage-limit reset credit
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/ensure:
-    post:
-      operationId: ensureCodexAccounts
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/EnsureCodexAccountsRequest'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Bad Request
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Discover Codex accounts and ensure authentication, capacity, and optional
-        usage
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/events:
-    get:
-      operationId: streamCodexAccounts
-      responses:
-        "200":
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/CodexAccountsResponse'
-          description: OK
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Stream cached and live Codex account state
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/login-operations/{operationId}/cancel:
-    post:
-      operationId: cancelCodexAccountLogin
-      parameters:
-      - description: In-memory Codex account login operation identifier.
-        in: path
-        name: operationId
-        required: true
-        schema:
-          description: In-memory Codex account login operation identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountLoginResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Cancel one native Codex account login operation
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/login-operations/{operationId}/verify:
-    post:
-      operationId: verifyCodexAccountLogin
-      parameters:
-      - description: In-memory Codex account login operation identifier.
-        in: path
-        name: operationId
-        required: true
-        schema:
-          description: In-memory Codex account login operation identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CodexAccountLoginResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Verify one native Codex account login operation
-      tags:
-      - agents
-  /api/v1/agents/codex/accounts/login-terminal:
-    post:
-      operationId: openCodexAccountLoginTerminal
-      responses:
-        "202":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OpenCodexAccountLoginTerminalResponse'
-          description: Accepted
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Conflict
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Service Unavailable
-      summary: Open an inline native login terminal for a new AO Codex account
-      tags:
-      - agents
   /api/v1/agents/install-jobs:
     get:
       operationId: listAgentInstallJobs
@@ -3334,6 +2887,186 @@ paths:
       summary: Initialize a selected folder as a Git repository with an initial commit
       tags:
       - projects
+  /api/v1/provider-accounts:
+    get:
+      operationId: listProviderAccounts
+      parameters:
+      - in: query
+        name: includeUsage
+        schema:
+          type: boolean
+      - in: query
+        name: refresh
+        schema:
+          type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountsResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List managed provider accounts
+      tags:
+      - agents
+  /api/v1/provider-accounts/{accountId}/actions:
+    post:
+      operationId: providerAccountAction
+      parameters:
+      - in: path
+        name: accountId
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderAccountAction'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Change one managed account or move a session onto it
+      tags:
+      - agents
+  /api/v1/provider-accounts/login:
+    post:
+      operationId: startProviderAccountLogin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderLoginRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderLoginResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+      summary: Start a managed account sign-in
+      tags:
+      - agents
+  /api/v1/provider-accounts/login/{loginId}:
+    delete:
+      operationId: cancelProviderAccountLogin
+      parameters:
+      - in: path
+        name: loginId
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: Cancel a sign-in attempt
+      tags:
+      - agents
+    get:
+      operationId: getProviderAccountLogin
+      parameters:
+      - in: path
+        name: loginId
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderLoginResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+      summary: Read a sign-in attempt and record its account once it finishes
+      tags:
+      - agents
+  /api/v1/provider-accounts/sessions/{sessionId}:
+    get:
+      operationId: getSessionProviderAccount
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionProviderAccountResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Read a session's managed account
+      tags:
+      - sessions
   /api/v1/prs/{id}/merge:
     post:
       operationId: mergePR
@@ -10577,474 +10310,6 @@ components:
       required:
       - event
       type: object
-    CodexAccountCapabilitiesResponse:
-      properties:
-        globalSwitch:
-          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
-        nativeLogin:
-          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
-        resetCreditConsume:
-          $ref: '#/components/schemas/CodexCapabilityObservationResponse'
-      required:
-      - nativeLogin
-      - resetCreditConsume
-      - globalSwitch
-      type: object
-    CodexAccountCapacityResponse:
-      properties:
-        additionalBuckets:
-          items:
-            $ref: '#/components/schemas/CodexCapacityBucketResponse'
-          type: array
-        attemptedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        checkedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        freshness:
-          enum:
-          - fresh
-          - stale
-          - checking
-          type: string
-        observedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        overall:
-          $ref: '#/components/schemas/CodexCapacityBucketResponse'
-        plan:
-          type:
-          - "null"
-          - string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        remainingPercent:
-          maximum: 100
-          minimum: 0
-          type:
-          - "null"
-          - number
-        resetCredits:
-          $ref: '#/components/schemas/CodexResetCreditsSummaryResponse'
-        resetsAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        state:
-          enum:
-          - available
-          - near_limit
-          - exhausted
-          - unknown
-          - unsupported
-          type: string
-        usedPercent:
-          maximum: 100
-          minimum: 0
-          type:
-          - "null"
-          - number
-      required:
-      - state
-      - freshness
-      - reasonCode
-      - reason
-      - additionalBuckets
-      type: object
-    CodexAccountLoginResponse:
-      properties:
-        account:
-          $ref: '#/components/schemas/CodexAccountResponse'
-        accountId:
-          type: string
-        expiresAt:
-          format: date-time
-          type: string
-        operationId:
-          type: string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        status:
-          enum:
-          - pending
-          - verifying
-          - unauthorized
-          - retryable
-          - completed
-          - cancelled
-          - failed
-          - expired
-          type: string
-      required:
-      - operationId
-      - status
-      - reasonCode
-      - reason
-      - expiresAt
-      type: object
-    CodexAccountLoginTerminalResponse:
-      properties:
-        createdAt:
-          format: date-time
-          type: string
-        handleId:
-          type: string
-        title:
-          type: string
-      required:
-      - handleId
-      - title
-      - createdAt
-      type: object
-    CodexAccountResponse:
-      properties:
-        accountEmail:
-          type:
-          - "null"
-          - string
-        active:
-          type: boolean
-        authMethod:
-          enum:
-          - chatgpt
-          - api_key
-          - other
-          - unknown
-          type: string
-        authentication:
-          $ref: '#/components/schemas/CodexAuthenticationResponse'
-        capacity:
-          $ref: '#/components/schemas/CodexAccountCapacityResponse'
-        createdAt:
-          format: date-time
-          type: string
-        id:
-          type: string
-        label:
-          type: string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        status:
-          enum:
-          - valid
-          - signed_out
-          - broken
-          type: string
-        usageSummary:
-          $ref: '#/components/schemas/CodexAccountUsageSummaryResponse'
-      required:
-      - id
-      - label
-      - status
-      - reasonCode
-      - reason
-      - active
-      - authentication
-      - authMethod
-      - capacity
-      - createdAt
-      type: object
-    CodexAccountSwitchResponse:
-      properties:
-        completedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        createdAt:
-          format: date-time
-          type: string
-        credentialsCommittedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        failureCode:
-          type: string
-        id:
-          type: string
-        phase:
-          enum:
-          - requested
-          - checkpointing_source
-          - activating_target
-          - recovery_required
-          - completed
-          - failed
-          type: string
-        sourceAccountId:
-          type: string
-        sourceKind:
-          enum:
-          - managed
-          - device
-          - none
-          type: string
-        targetAccountId:
-          type: string
-        updatedAt:
-          format: date-time
-          type: string
-      required:
-      - id
-      - sourceKind
-      - targetAccountId
-      - phase
-      - createdAt
-      - updatedAt
-      type: object
-    CodexAccountUsageSummaryResponse:
-      properties:
-        currentStreakDays:
-          type:
-          - "null"
-          - integer
-        latestDayStartDate:
-          type:
-          - "null"
-          - string
-        latestDayTokens:
-          type:
-          - "null"
-          - integer
-        lifetimeTokens:
-          type:
-          - "null"
-          - integer
-        longestRunningTurnSeconds:
-          type:
-          - "null"
-          - integer
-        longestStreakDays:
-          type:
-          - "null"
-          - integer
-        observedAt:
-          format: date-time
-          type: string
-        peakDailyTokens:
-          type:
-          - "null"
-          - integer
-      required:
-      - observedAt
-      type: object
-    CodexAccountsResponse:
-      properties:
-        accountRevision:
-          format: int64
-          type: integer
-        accounts:
-          items:
-            $ref: '#/components/schemas/CodexAccountResponse'
-          type: array
-        activeAccountId:
-          type: string
-        activeLogin:
-          $ref: '#/components/schemas/CodexActiveLoginResponse'
-        capabilities:
-          $ref: '#/components/schemas/CodexAccountCapabilitiesResponse'
-        currentSwitch:
-          $ref: '#/components/schemas/CodexAccountSwitchResponse'
-        deviceReconciliation:
-          $ref: '#/components/schemas/CodexDeviceReconciliationResponse'
-      required:
-      - accountRevision
-      - accounts
-      - capabilities
-      - deviceReconciliation
-      type: object
-    CodexActiveLoginResponse:
-      properties:
-        accountId:
-          type: string
-        expiresAt:
-          format: date-time
-          type: string
-        operationId:
-          type: string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        shellTerminal:
-          $ref: '#/components/schemas/CodexAccountLoginTerminalResponse'
-        status:
-          enum:
-          - pending
-          - verifying
-          - unauthorized
-          - retryable
-          - completed
-          - cancelled
-          - failed
-          - expired
-          type: string
-      required:
-      - operationId
-      - status
-      - reasonCode
-      - reason
-      - expiresAt
-      - shellTerminal
-      type: object
-    CodexAuthenticationResponse:
-      properties:
-        attemptedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        checkedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        freshness:
-          enum:
-          - fresh
-          - stale
-          - checking
-          type: string
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        state:
-          enum:
-          - authorized
-          - unauthorized
-          - unknown
-          - not_applicable
-          type: string
-      required:
-      - state
-      - freshness
-      - checkedAt
-      - attemptedAt
-      - reasonCode
-      - reason
-      type: object
-    CodexCapabilityObservationResponse:
-      properties:
-        reason:
-          type: string
-        reasonCode:
-          type: string
-        state:
-          enum:
-          - supported
-          - unsupported
-          - unknown
-          type: string
-      required:
-      - state
-      - reasonCode
-      - reason
-      type: object
-    CodexCapacityBucketResponse:
-      properties:
-        displayName:
-          type:
-          - "null"
-          - string
-        primary:
-          $ref: '#/components/schemas/CodexCapacityWindowResponse'
-        reached:
-          enum:
-          - not_reached
-          - reached
-          - unknown
-          type: string
-        secondary:
-          $ref: '#/components/schemas/CodexCapacityWindowResponse'
-      required:
-      - reached
-      type: object
-    CodexCapacityWindowResponse:
-      properties:
-        resetsAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        usedPercent:
-          format: double
-          maximum: 100
-          minimum: 0
-          type: number
-        windowDurationMinutes:
-          type:
-          - "null"
-          - integer
-      required:
-      - usedPercent
-      type: object
-    CodexDeviceReconciliationResponse:
-      properties:
-        activeAccountVerified:
-          type: boolean
-        attemptedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        nextRetryAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-        reasonCode:
-          type: string
-        retryable:
-          type: boolean
-        status:
-          enum:
-          - not_checked
-          - checking
-          - verified
-          - temporarily_unavailable
-          - blocked
-          type: string
-        verifiedAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-      required:
-      - status
-      - activeAccountVerified
-      - reasonCode
-      - retryable
-      type: object
-    CodexResetCreditsSummaryResponse:
-      properties:
-        availableCount:
-          format: int64
-          minimum: 0
-          type: integer
-        nearestExpiresAt:
-          format: date-time
-          type:
-          - "null"
-          - string
-      required:
-      - availableCount
-      type: object
     CompactConversationResponse:
       properties:
         tokensAfter:
@@ -11083,15 +10348,6 @@ components:
       - totalTokens
       - incomplete
       - estimatedCost
-      type: object
-    ConsumeCodexAccountResetCreditRequest:
-      properties:
-        idempotencyKey:
-          maxLength: 200
-          minLength: 1
-          type: string
-      required:
-      - idempotencyKey
       type: object
     ContainerReapConfig:
       properties:
@@ -12373,6 +11629,8 @@ components:
           type: string
         projectId:
           type: string
+        providerAccountId:
+          type: string
         taskPreparation:
           type: string
       required:
@@ -12576,19 +11834,6 @@ components:
           type: string
       required:
       - purpose
-      type: object
-    EnsureCodexAccountsRequest:
-      properties:
-        accountIds:
-          items:
-            type: string
-          type: array
-        forceAuthentication:
-          type: boolean
-        forceDeviceReconciliation:
-          type: boolean
-        includeUsage:
-          type: boolean
       type: object
     EstimatedCostResponse:
       properties:
@@ -13680,16 +12925,6 @@ components:
       - kind
       - sessionId
       type: object
-    OpenCodexAccountLoginTerminalResponse:
-      properties:
-        operation:
-          $ref: '#/components/schemas/CodexAccountLoginResponse'
-        shellTerminal:
-          $ref: '#/components/schemas/CodexAccountLoginTerminalResponse'
-      required:
-      - operation
-      - shellTerminal
-      type: object
     OpenShellTerminalRequest:
       properties:
         projectId:
@@ -13981,6 +13216,476 @@ components:
       - sourceTurnId
       - providerTurnId
       - activityId
+      type: object
+    ProviderAccountAction:
+      properties:
+        action:
+          enum:
+          - primary
+          - sign-out
+          - remove
+          - rename
+          - resume
+          - refresh-sign-in
+          - reset
+          - assign-session
+          - settings
+          type: string
+        displayName:
+          description: For rename.
+          type: string
+        onLimit:
+          description: The account to move sessions to when a limit is reached; empty
+            for none.
+          type:
+          - "null"
+          - string
+        replacementPrimaryId:
+          description: For sign-out and remove of the default account.
+          type: string
+        reserved:
+          description: Keep the account out of new sessions.
+          type:
+          - "null"
+          - boolean
+        sessionId:
+          description: 'For assign-session: the session to move onto this account.'
+          type: string
+        warnAt:
+          description: Percent left at which to warn; zero for never.
+          type:
+          - "null"
+          - integer
+      required:
+      - action
+      type: object
+    ProviderAccountActivity:
+      properties:
+        days:
+          description: The last fourteen days, oldest first.
+          items:
+            $ref: '#/components/schemas/ProviderAccountDay'
+          type: array
+        models:
+          description: The last seven days by model, largest first.
+          items:
+            $ref: '#/components/schemas/ProviderAccountModelUse'
+          type: array
+        sessions:
+          additionalProperties:
+            format: int64
+            type: integer
+          description: Today's tokens by session.
+          type: object
+        since:
+          description: The first day counted.
+          type: string
+        today:
+          format: int64
+          type: integer
+        total:
+          description: Since the helper began counting.
+          format: int64
+          type: integer
+        week:
+          description: The last seven days, today included.
+          format: int64
+          type: integer
+      required:
+      - today
+      - week
+      - total
+      type: object
+    ProviderAccountCredits:
+      properties:
+        balance:
+          type: string
+        unlimited:
+          type: boolean
+      type: object
+    ProviderAccountDay:
+      properties:
+        date:
+          type: string
+        tokens:
+          format: int64
+          type: integer
+      required:
+      - date
+      - tokens
+      type: object
+    ProviderAccountExtraUsage:
+      properties:
+        limitCents:
+          description: The monthly cap in cents; zero when the provider reports none.
+          format: int64
+          type: integer
+        usedCents:
+          format: int64
+          type: integer
+      required:
+      - usedCents
+      - limitCents
+      type: object
+    ProviderAccountFailure:
+      properties:
+        at:
+          type: string
+        kind:
+          enum:
+          - limit
+          - sign-in
+          - server
+          - other
+          type: string
+        status:
+          type: integer
+      required:
+      - kind
+      - at
+      type: object
+    ProviderAccountHealth:
+      properties:
+        failures:
+          additionalProperties:
+            format: int64
+            type: integer
+          description: 'Failed requests in the last three hours by kind: limit, signIn,
+            server, other.'
+          type: object
+        firstWordMs:
+          description: Typical time to the first token over the last hour.
+          format: int64
+          type: integer
+        lastFailure:
+          $ref: '#/components/schemas/ProviderAccountFailure'
+      type: object
+    ProviderAccountModelUse:
+      properties:
+        model:
+          type: string
+        tokens:
+          format: int64
+          type: integer
+      required:
+      - model
+      - tokens
+      type: object
+    ProviderAccountMove:
+      properties:
+        at:
+          type: string
+        sessions:
+          type: integer
+        to:
+          type: string
+      required:
+      - to
+      - at
+      - sessions
+      type: object
+    ProviderAccountRequests:
+      properties:
+        failed:
+          format: int64
+          type: integer
+        succeeded:
+          format: int64
+          type: integer
+      required:
+      - succeeded
+      - failed
+      type: object
+    ProviderAccountReset:
+      properties:
+        expiresAt:
+          type: string
+        label:
+          type: string
+        left:
+          format: int64
+          type: integer
+        total:
+          format: int64
+          type: integer
+      required:
+      - left
+      - total
+      type: object
+    ProviderAccountTokens:
+      properties:
+        currentStreakDays:
+          type:
+          - "null"
+          - integer
+        latestDay:
+          description: The most recent day the provider has counted, as YYYY-MM-DD.
+          type: string
+        latestDayTokens:
+          type:
+          - "null"
+          - integer
+        lifetime:
+          type:
+          - "null"
+          - integer
+        longestStreakDays:
+          type:
+          - "null"
+          - integer
+        longestTurnSeconds:
+          type:
+          - "null"
+          - integer
+        peakDaily:
+          type:
+          - "null"
+          - integer
+      type: object
+    ProviderAccountUsage:
+      properties:
+        activity:
+          $ref: '#/components/schemas/ProviderAccountActivity'
+          description: What the account helper counted passing through this account.
+        addedAt:
+          type: string
+        credits:
+          $ref: '#/components/schemas/ProviderAccountCredits'
+        extraUsage:
+          $ref: '#/components/schemas/ProviderAccountExtraUsage'
+          description: Present only when pay-as-you-go spending is switched on.
+        health:
+          $ref: '#/components/schemas/ProviderAccountHealth'
+        models:
+          description: The models this account can use.
+          items:
+            type: string
+          type: array
+        organization:
+          type: string
+        pausedReason:
+          type: string
+        pausedUntil:
+          description: Set while the account helper holds the account back after a
+            provider refusal.
+          type: string
+        plan:
+          type: string
+        planTier:
+          description: The size of the plan where the provider sells several, such
+            as 20x.
+          type: string
+        refreshedAt:
+          description: When the saved sign-in was last renewed.
+          type: string
+        renewsAt:
+          type: string
+        requests:
+          description: Requests in the last twenty ten-minute slices, oldest first.
+          items:
+            $ref: '#/components/schemas/ProviderAccountRequests'
+          type: array
+        resetBlockedUntil:
+          type: string
+        resetCredits:
+          description: Unused usage-limit resets, when the provider reports them.
+          type:
+          - "null"
+          - integer
+        resetUsable:
+          description: True when the provider would accept a reset right now.
+          type: boolean
+        resets:
+          description: Each unused reset, soonest to expire first, when the provider
+            itemizes them.
+          items:
+            $ref: '#/components/schemas/ProviderAccountReset'
+          type: array
+        signInEnding:
+          description: The saved sign-in still works but has stopped renewing, so
+            it will stop working.
+          type: boolean
+        signInEndsAt:
+          description: When a sign-in that has stopped renewing stops working, if
+            known.
+          type: string
+        status:
+          enum:
+          - available
+          - unavailable
+          type: string
+        tokens:
+          $ref: '#/components/schemas/ProviderAccountTokens'
+        windows:
+          description: The two general limits first, then every scoped limit.
+          items:
+            $ref: '#/components/schemas/ProviderAccountUsageWindow'
+          type: array
+      required:
+      - status
+      type: object
+    ProviderAccountUsageWindow:
+      properties:
+        durationSeconds:
+          description: Length of the limit window in seconds, when the provider reports
+            it.
+          format: int64
+          type: integer
+        name:
+          description: The provider's name for a model-scoped limit.
+          type: string
+        remainingFraction:
+          format: double
+          type: number
+        resetTime:
+          type: string
+        scope:
+          description: What the limit covers. Absent for the account's general limits.
+          enum:
+          - code_review
+          - model
+          - oauth_apps
+          - cowork
+          type: string
+      required:
+      - remainingFraction
+      type: object
+    ProviderAccountView:
+      properties:
+        displayName:
+          type: string
+        email:
+          type: string
+        global:
+          description: This computer's own login or API key.
+          type: boolean
+        id:
+          type: string
+        kind:
+          enum:
+          - oauth
+          - imported
+          - api_key
+          type: string
+        moved:
+          $ref: '#/components/schemas/ProviderAccountMove'
+          description: The last time a reached limit moved this account's sessions
+            away.
+        onLimit:
+          description: The account this one's sessions move to when a limit is reached.
+          type: string
+        primary:
+          type: boolean
+        provider:
+          enum:
+          - codex
+          - claude
+          type: string
+        reserved:
+          description: Kept out of new sessions.
+          type: boolean
+        sessions:
+          items:
+            type: string
+          type: array
+        signedIn:
+          description: False when signed out or when the provider no longer accepts
+            the saved sign-in.
+          type: boolean
+        usage:
+          $ref: '#/components/schemas/ProviderAccountUsage'
+        warnAt:
+          description: Percent left at which the user is warned. Absent for never.
+          type: integer
+      required:
+      - id
+      - provider
+      - displayName
+      - email
+      - signedIn
+      - primary
+      - sessions
+      type: object
+    ProviderAccountsResponse:
+      properties:
+        accounts:
+          items:
+            $ref: '#/components/schemas/ProviderAccountView'
+          type: array
+        resetOutcome:
+          enum:
+          - reset
+          - nothing_to_reset
+          - none_available
+          - wait
+          - failed
+          - unknown
+          type: string
+      required:
+      - accounts
+      type: object
+    ProviderLoginRequest:
+      properties:
+        accountId:
+          type: string
+        apiKey:
+          type: string
+        baseUrl:
+          type: string
+        credentialJson:
+          type: string
+        label:
+          type: string
+        mode:
+          enum:
+          - browser
+          - device
+          - import
+          - api_key
+          type: string
+        provider:
+          enum:
+          - codex
+          - claude
+          type: string
+      required:
+      - provider
+      type: object
+    ProviderLoginResponse:
+      properties:
+        accountId:
+          type: string
+        code:
+          type: string
+        id:
+          type: string
+        mode:
+          enum:
+          - browser
+          - device
+          - import
+          - api_key
+          type: string
+        provider:
+          enum:
+          - codex
+          - claude
+          type: string
+        status:
+          enum:
+          - waiting
+          - complete
+          - failed
+          - cancelled
+          type: string
+        url:
+          type: string
+      required:
+      - id
+      - provider
+      - mode
+      - status
+      - accountId
       type: object
     PublishRenderRequest:
       properties:
@@ -15137,6 +14842,16 @@ components:
       required:
       - sessionId
       type: object
+    SessionProviderAccountResponse:
+      properties:
+        accountId:
+          type: string
+        managed:
+          type: boolean
+      required:
+      - managed
+      - accountId
+      type: object
     SessionProvisionStep:
       properties:
         endedAt:
@@ -15673,6 +15388,8 @@ components:
         prompt:
           maxLength: 16384
           type: string
+        providerAccountId:
+          type: string
         trackerProvider:
           enum:
           - github
@@ -15742,24 +15459,6 @@ components:
           - install
           - reinstall
           type: string
-      type: object
-    StartCodexAccountSwitchRequest:
-      properties:
-        expectedAccountRevision:
-          deprecated: true
-          minimum: 0
-          type:
-          - "null"
-          - integer
-        idempotencyKey:
-          minLength: 1
-          type: string
-        targetAccountId:
-          minLength: 1
-          type: string
-      required:
-      - targetAccountId
-      - idempotencyKey
       type: object
     StartPreviewServerRequest:
       properties:

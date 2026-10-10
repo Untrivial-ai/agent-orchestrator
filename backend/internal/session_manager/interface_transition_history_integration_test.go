@@ -60,7 +60,7 @@ func TestInterfaceTransitionNativeHistoryOwnership(t *testing.T) {
 					}
 					original := "bb786e64-3b86-44cb-8d34-eafae933d8e4"
 					freshID := claudeagent.SessionUUID
-					var agent ports.Agent = claudeagent.New()
+					var agent ports.Agent = historyClaudeAuthFixture{Plugin: claudeagent.New()}
 					if harness != domain.HarnessClaudeCode {
 						original = "opaque-native-original"
 						freshID = func(id string) string { return "opaque-native-" + id }
@@ -344,4 +344,13 @@ func (c *nativeOwnershipHistory) ReadHistory(context.Context) ([]ports.ChatEvent
 		}
 	}
 	return events, nil
+}
+
+// historyClaudeAuthFixture keeps native Claude history behavior while replacing
+// credential I/O. This test must not discover the developer's keychain account
+// or make provider requests when checking transcript ownership.
+type historyClaudeAuthFixture struct{ *claudeagent.Plugin }
+
+func (historyClaudeAuthFixture) ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
 }

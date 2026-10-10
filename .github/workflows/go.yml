@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "proxy-host/**"
       - "cloud/**"
       - "pricing/**"
       - "frontend/src/api/schema.ts"
@@ -204,6 +205,28 @@ jobs:
 
       - name: Test Goose readiness and inventory
         run: go test -race -count=1 -timeout=10m -run '^Test(FindInstalledBinary|WarmReadinessAndFindInstalled|PresslyGoose|Refresh|Probe|ReadinessCoordinator)' ./internal/service/agent
+
+  proxy-host:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy-host
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: proxy-host/go.mod
+          cache-dependency-path: proxy-host/go.sum
+      - name: Check helper formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Build helper
+        run: go build ./...
+      - name: Vet helper
+        run: go vet ./...
+      - name: Test helper
+        run: go test -race -p 1 -count=1 -timeout=10m ./...
 
   cloud-build-test:
     runs-on: ubuntu-latest

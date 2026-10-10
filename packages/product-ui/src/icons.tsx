@@ -32,6 +32,15 @@ function Icon({
 	);
 }
 
+export function ArrowUpIcon(props: IconProps) {
+	return (
+		<Icon name="arrow-up" {...props}>
+			<path d="m5 12 7-7 7 7" />
+			<path d="M12 19V5" />
+		</Icon>
+	);
+}
+
 export function ArrowUpRightIcon(props: IconProps) {
 	return (
 		<Icon name="arrow-up-right" {...props}>

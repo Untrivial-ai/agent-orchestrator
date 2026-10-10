@@ -171,6 +171,19 @@ func (m *Manager) BeginInputDrain(terminalID string) (lastInputAt time.Time, rel
 	}
 }
 
+// TerminalOnScreen reports whether a client is showing the terminal. A client
+// that attached without a grid keeps it parked off screen.
+func (m *Manager) TerminalOnScreen(terminalID string) bool {
+	m.sharedMu.Lock()
+	defer m.sharedMu.Unlock()
+	s := m.shared[terminalID]
+	if s == nil {
+		return false
+	}
+	cols, rows := largestGrid(s.members)
+	return cols > 0 && rows > 0
+}
+
 func (m *Manager) writeInput(terminalID string, a *attachment, raw []byte, release func()) {
 	m.inputMu.Lock()
 	defer m.inputMu.Unlock()

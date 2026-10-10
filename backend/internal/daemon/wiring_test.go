@@ -978,6 +978,10 @@ func (f *fakeSessionLifecycle) ReconcileBackground(_ context.Context) error {
 }
 
 func (*fakeSessionLifecycle) HibernateIdleChats(context.Context) error { return nil }
+func (*fakeSessionLifecycle) MigrateLegacySessions(context.Context) (int, error) {
+	return 0, nil
+}
+func (*fakeSessionLifecycle) SessionTurnEnded(domain.SessionRecord) {}
 
 func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	f.restoreAllCalled = true
@@ -996,17 +1000,6 @@ func (f *fakeSessionLifecycle) AcquireSessionInput(domain.SessionID) (func(), bo
 func (f *fakeSessionLifecycle) SessionMutationInProgress(domain.SessionID) bool         { return false }
 func (f *fakeSessionLifecycle) SetReviewerTerminator(sessionmanager.ReviewerTerminator) {}
 func (f *fakeSessionLifecycle) SetHarnessUseGate(sessionmanager.HarnessUseGate)         {}
-func (f *fakeSessionLifecycle) CodexAccountSwitchInProgress() bool                      { return false }
-func (f *fakeSessionLifecycle) StartCodexAccountSwitch(context.Context, ports.CodexAccountSwitchConfig) (domain.CodexAccountSwitch, error) {
-	return domain.CodexAccountSwitch{}, nil
-}
-func (f *fakeSessionLifecycle) RecoverCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error) {
-	return domain.CodexAccountSwitch{}, nil
-}
-func (f *fakeSessionLifecycle) GetActiveCodexAccountSwitch(context.Context) (domain.CodexAccountSwitch, bool, error) {
-	return domain.CodexAccountSwitch{}, false, nil
-}
-func (f *fakeSessionLifecycle) SetCodexAccountSwitchObserver(func()) {}
 func (f *fakeSessionLifecycle) PersistChatModel(_ context.Context, _ domain.SessionID, _ string) error {
 	return nil
 }

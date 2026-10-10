@@ -79,8 +79,8 @@ describe("useDaemonStatus", () => {
 		await waitFor(() => expect(result.current).toEqual({ state: "ready", port: 3037 }));
 		expect(setApiBaseUrlMock).toHaveBeenCalledWith("http://127.0.0.1:3037");
 		expect(connectMock).toHaveBeenCalledTimes(1);
-		// Refetching is the (debounced) event transport's job — no direct invalidate.
-		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+		// Refetching is the (debounced) event transport's job; only the accounts, which have no events, are invalidated.
+		expect(queryClient.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: ["provider-accounts"] });
 	});
 
 	it("quarantines the base URL for statuses without a port", async () => {
@@ -130,13 +130,9 @@ describe("useDaemonStatus", () => {
 			exact: true,
 		});
 		expect(queryClient.removeQueries).toHaveBeenCalledWith({
-			queryKey: ["codex-accounts"],
-			exact: true,
-		});
-		expect(queryClient.removeQueries).toHaveBeenCalledWith({
 			queryKey: ["system-requirements"],
 		});
-		expect(queryClient.removeQueries).toHaveBeenCalledTimes(9);
+		expect(queryClient.removeQueries).toHaveBeenCalledTimes(6);
 	});
 
 	it("ensures display readiness when the window regains focus", async () => {

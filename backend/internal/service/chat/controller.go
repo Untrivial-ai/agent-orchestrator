@@ -200,14 +200,12 @@ type Controller struct {
 	generation   string
 	harness      domain.AgentHarness
 
-	conv                   ports.ChatConversation
-	store                  Store
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	conv     ports.ChatConversation
+	store    Store
+	activity ActivityRecorder
+	log      *slog.Logger
+	newID    IDFactory
+	now      Clock
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -359,28 +357,24 @@ func newController(
 	log *slog.Logger,
 	newID IDFactory,
 	now Clock,
-	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
 ) *Controller {
 	c := &Controller{
-		sessionID:              sessionID,
-		reviewID:               reviewOwnerID(owner),
-		conversation:           conversation,
-		generation:             generation,
-		harness:                harness,
-		conv:                   conv,
-		store:                  store,
-		activity:               activity,
-		log:                    log,
-		newID:                  newID,
-		now:                    now,
-		onAccountChanged:       onAccountChanged,
-		onCodexCapacityChanged: onCodexCapacityChanged,
-		state:                  ports.ChatControllerReady,
-		settings:               conversation.Settings,
-		mcpServers:             map[string]domain.ConversationMCPServer{},
-		mcpServerSeenRevision:  map[string]uint64{},
-		stopped:                make(chan struct{}),
+		sessionID:             sessionID,
+		reviewID:              reviewOwnerID(owner),
+		conversation:          conversation,
+		generation:            generation,
+		harness:               harness,
+		conv:                  conv,
+		store:                 store,
+		activity:              activity,
+		log:                   log,
+		newID:                 newID,
+		now:                   now,
+		state:                 ports.ChatControllerReady,
+		settings:              conversation.Settings,
+		mcpServers:            map[string]domain.ConversationMCPServer{},
+		mcpServerSeenRevision: map[string]uint64{},
+		stopped:               make(chan struct{}),
 	}
 	if conversation.ThreadState != nil {
 		c.threadState = *conversation.ThreadState
@@ -3145,9 +3139,6 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 		if err := c.applyAccount(ctx, *event.Account, now); err != nil {
 			return err
 		}
-		if c.onAccountChanged != nil {
-			c.onAccountChanged(c.sessionID, c.generation, c.harness)
-		}
 		return nil
 
 	case ports.ChatEventThreadState:
@@ -3257,9 +3248,6 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			return nil
 		}
 		if c.harness == domain.HarnessCodex {
-			if c.onCodexCapacityChanged != nil && event.RateLimits.CodexCapacity != nil {
-				c.onCodexCapacityChanged(c.sessionID, c.generation, *event.RateLimits.CodexCapacity)
-			}
 			return nil
 		}
 		return c.store.RecordRateLimits(ctx, c.conversation.ID, domain.ConversationRateLimits{
@@ -3318,9 +3306,6 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		}
 	case ports.ChatEventTurnCompleted:
 		reauthRequired := errors.Is(event.Err, ports.ErrChatAuthRequired)
-		if reauthRequired && c.onAccountChanged != nil {
-			c.onAccountChanged(c.sessionID, c.generation, c.harness)
-		}
 		if !primaryTurn {
 			return
 		}
@@ -3380,9 +3365,6 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 	case ports.ChatEventError:
 		if errors.Is(event.Err, ports.ErrChatAuthRequired) {
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)
-			if c.onAccountChanged != nil {
-				c.onAccountChanged(c.sessionID, c.generation, c.harness)
-			}
 		}
 	}
 }

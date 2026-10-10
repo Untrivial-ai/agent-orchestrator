@@ -69,11 +69,11 @@ beforeEach(() => {
 		if (path === "/api/v1/agents/auth-plans") return { data: { plans: [{ agentId: "codex", action: "login", available: true, launchMode: "terminal" }] } } as never;
 		if (path === "/api/v1/agents/{agent}/models") return { data: { agentId: "codex", models: [], selectionMode: "text", allowCustom: true, source: "manual", fetchedAt: "2026-09-19T00:00:00Z", stale: false } } as never;
 		if (path === "/api/v1/settings") return { data: { defaultSessionMode: "tui", chatHarnesses: [], cloudEnabled: false, localEnabled: true, trackerIntakeEnabled: true } } as never;
+		if (path === "/api/v1/provider-accounts") return { data: { accounts: [] } } as never;
 		throw new Error(`Unexpected GET ${path}`);
 	});
 	vi.spyOn(apiClient, "POST").mockImplementation(async (path) => {
 		if (path === "/api/v1/agents/readiness/ensure") return { data: catalog } as never;
-		if (path === "/api/v1/agents/codex/accounts/ensure") return { data: { accountRevision: 0, accounts: [], capabilities: {}, deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false } } } as never;
 		throw new Error(`Unexpected POST ${path}`);
 	});
 	vi.spyOn(apiClient, "PUT").mockResolvedValue({ data: { project } } as never);
@@ -142,7 +142,7 @@ describe("Settings recovery modal integration", () => {
 		});
 
 		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
-		const login = await within(row).findByRole("button", { name: "Login" });
+		const login = await within(row).findByRole("button", { name: "Open sign-in" });
 		await waitFor(() => expect(document.activeElement).toBe(login));
 	});
 

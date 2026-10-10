@@ -20,6 +20,8 @@ import { useObservedAgentSwitchLifecycle } from "../../hooks/useObservedAgentSwi
 import { useAgentSwitchPresentationVisibility, useAgentSwitchRouteVisibility } from "../../hooks/useAgentSwitchVisibility";
 import { useQuery } from "@tanstack/react-query";
 import { agentModelsQueryOptions } from "../../hooks/useAgentModelsQuery";
+import { accountModelScope, sessionAccountQueryOptions } from "../../hooks/useProviderAccounts";
+import { accountChatModels, claudeRowRunsAccountModel } from "../../lib/agent-model-choices";
 import { useSwitchAgentState } from "../../hooks/useSwitchAgent";
 import {
 	useConversation,
@@ -364,17 +366,33 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	);
 	// Claude's live list is family aliases; the new-task picker's catalog carries the versions.
 	const isClaude = snapshot?.harness === "claude-code";
-	const claudeCatalog = useQuery({ ...agentModelsQueryOptions("claude-code", "", hostId), enabled: isClaude }).data;
+	const isCodex = snapshot?.harness === "codex";
+	const sessionAccount = useQuery({ ...sessionAccountQueryOptions(session.id), enabled: (isClaude || isCodex) && !hostId });
+	const accountScope = sessionAccount.data?.managed && sessionAccount.data.accountId ? accountModelScope(sessionAccount.data.accountId) : "";
+	// A session on a managed account offers that account's models. Until its account is known no list is read.
+	const catalog = useQuery({
+		...agentModelsQueryOptions(snapshot?.harness ?? "", accountScope, hostId),
+		enabled: accountScope !== "" || (isClaude && !sessionAccount.isLoading),
+	}).data;
+	const accountModels = accountScope ? catalog?.models : undefined;
 	const models = useMemo(() => {
-		if (!isClaude || !claudeCatalog?.models.length) return controllerModels;
-		return claudeCatalog.models
+		if (isCodex && accountModels?.length) return accountChatModels(accountModels, controllerModels);
+		if (!isClaude || !catalog?.models.length) return controllerModels;
+		return catalog.models
 			.filter((model) => model.id.toLowerCase() !== "default")
 			.map((model) => ({
 				id: model.id,
 				displayName: model.label || model.id,
 				default: Boolean(model.isDefault),
 			}));
-	}, [isClaude, claudeCatalog, controllerModels]);
+	}, [isClaude, isCodex, accountModels, catalog, controllerModels]);
+	// Claude Code only switches to a row it reported: on a managed account the rows that run none of its models go.
+	const chatConfigOptions = useMemo(() => {
+		if (!isClaude || !accountModels?.length) return configOptions.options;
+		return configOptions.options?.map((option) => (option.category === "model" || option.id === "model"
+			? { ...option, choices: option.choices.filter((choice) => choice.value === option.currentValue || claudeRowRunsAccountModel(choice, accountModels)) }
+			: option));
+	}, [isClaude, accountModels, configOptions.options]);
 	const { skills } = useConversationSkills(
 		session.id,
 		Boolean(controllerCatalogsEnabled && catalogsEnabled && snapshot),
@@ -617,7 +635,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				rememberPermissionsPending={projectPermissions.pending}
 				rememberPermissionsError={projectPermissions.error}
 				rememberedPermissionMode={projectPermissions.savedMode}
-				configOptions={configOptions.options}
+				configOptions={chatConfigOptions}
 				onChooseConfigOption={configOptions.setOption}
 				configOptionPending={configOptions.pending || commands.choosingSettings}
 				configOptionError={controllerCatalogsEnabled ? configOptions.error : undefined}

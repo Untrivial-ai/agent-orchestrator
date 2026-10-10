@@ -53,17 +53,15 @@ type SessionReader interface {
 
 // Service owns the live Chat controllers.
 type Service struct {
-	store                  Store
-	reader                 SnapshotReader
-	pageReader             SnapshotPageReader
-	sessions               SessionReader
-	drivers                ports.ChatDriverRegistry
-	activity               ActivityRecorder
-	log                    *slog.Logger
-	newID                  IDFactory
-	now                    Clock
-	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
-	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	store      Store
+	reader     SnapshotReader
+	pageReader SnapshotPageReader
+	sessions   SessionReader
+	drivers    ports.ChatDriverRegistry
+	activity   ActivityRecorder
+	log        *slog.Logger
+	newID      IDFactory
+	now        Clock
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
 	onModelChanged   func(domain.SessionID, string)
@@ -140,13 +138,6 @@ type Options struct {
 	Log      *slog.Logger
 	NewID    IDFactory
 	Now      Clock
-	// OnAccountChanged invalidates daemon-owned account readiness for the
-	// harness that emitted an account/updated notification.
-	OnAccountChanged func(domain.SessionID, string, domain.AgentHarness)
-	// OnCodexCapacityChanged attributes a structured provider update to the one
-	// globally active AO Codex account. The callback owns profile-independent
-	// account state; conversation rows are not the authority for Codex capacity.
-	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// OnModelChanged syncs ChatUI's model override to session metadata before
 	// the next prompt routes. Nil leaves session metadata unchanged.
 	OnModelChanged func(domain.SessionID, string)
@@ -176,31 +167,29 @@ func New(opts Options) *Service {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &Service{
-		store:                  opts.Store,
-		reader:                 opts.Reader,
-		pageReader:             opts.PageReader,
-		sessions:               opts.Sessions,
-		drivers:                opts.Drivers,
-		activity:               opts.Activity,
-		log:                    log,
-		newID:                  opts.NewID,
-		now:                    now,
-		onAccountChanged:       opts.OnAccountChanged,
-		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
-		onModelChanged:         opts.OnModelChanged,
-		stopProviderHost:       opts.StopProviderHost,
-		renders:                opts.Renders,
-		dataDir:                opts.DataDir,
-		reconcileOutput:        opts.ReconcileOutputType,
-		hibernationEnabled:     opts.HibernationEnabled,
-		controllers:            make(map[domain.SessionID]*Controller),
-		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
-		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
-		gates:                  make(map[domain.ConversationOwner]controllerGate),
-		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
-		waking:                 make(map[domain.SessionID]int),
-		wakeRuns:               make(map[domain.SessionID]*wakeRun),
-		backgroundWakes:        make(map[domain.SessionID]bool),
+		store:              opts.Store,
+		reader:             opts.Reader,
+		pageReader:         opts.PageReader,
+		sessions:           opts.Sessions,
+		drivers:            opts.Drivers,
+		activity:           opts.Activity,
+		log:                log,
+		newID:              opts.NewID,
+		now:                now,
+		onModelChanged:     opts.OnModelChanged,
+		stopProviderHost:   opts.StopProviderHost,
+		renders:            opts.Renders,
+		dataDir:            opts.DataDir,
+		reconcileOutput:    opts.ReconcileOutputType,
+		hibernationEnabled: opts.HibernationEnabled,
+		controllers:        make(map[domain.SessionID]*Controller),
+		ownerControllers:   make(map[domain.ConversationOwner]*Controller),
+		startConfigs:       make(map[domain.ConversationOwner]StartConfig),
+		gates:              make(map[domain.ConversationOwner]controllerGate),
+		probed:             make(map[domain.AgentHarness]ports.ChatCapabilities),
+		waking:             make(map[domain.SessionID]int),
+		wakeRuns:           make(map[domain.SessionID]*wakeRun),
+		backgroundWakes:    make(map[domain.SessionID]bool),
 	}
 }
 
@@ -865,7 +854,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)

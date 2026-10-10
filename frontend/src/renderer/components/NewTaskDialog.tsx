@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueries } from "@tanstack/react-query";
 import { StickyNote } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useUiStore } from "../stores/ui-store";
 import { useTranslation } from "react-i18next";
 import { useRemoteWorkspaces, useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
@@ -65,6 +65,7 @@ type NewTaskDialogProps = {
 
 export function NewTaskDialog({ open, projectId, hostId, onProjectChange, onCreated, onOpenChange }: NewTaskDialogProps) {
 	const { t } = useTranslation();
+	const [accountSlot, setAccountSlot] = useState<HTMLElement | null>(null);
 	// Settings opens as a page in the center pane; step aside so it is not hidden behind this modal.
 	const settingsOpen = useUiStore((state) => state.settingsModal?.scope === "global");
 	const localWorkspaces = useWorkspaceQuery({ subscribed: open }).data ?? [];
@@ -132,7 +133,7 @@ export function NewTaskDialog({ open, projectId, hostId, onProjectChange, onCrea
 				<Dialog.Overlay className="dialog-overlay data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
 				<Dialog.Content className="fixed left-1/2 top-1/2 z-overlay w-dialog-xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-popover p-0 text-popover-foreground shadow-xl data-[state=open]:animate-modal-in data-[state=closed]:animate-modal-out motion-reduce:animate-none">
 					{/* The selected project is the dialog title; the composer remains the main surface. */}
-					<Dialog.Title className="settings-dialog-title flex flex-wrap items-center gap-x-1.5 px-3 pt-3">
+					<Dialog.Title className="settings-dialog-title flex flex-wrap items-center gap-x-1.5 px-3 pr-11 pt-3">
 						<SettingsOptionMenu
 							aria-label={t("newTask.project")}
 							value={selectedProjectId}
@@ -175,6 +176,7 @@ export function NewTaskDialog({ open, projectId, hostId, onProjectChange, onCrea
 						/>
 						{hostId ? <span className="text-settings-muted">· {labelForHost(hostId) ?? hostId}</span> : null}
 					</Dialog.Title>
+					<div ref={setAccountSlot} className="absolute right-2.5 top-2.5" />
 					<Dialog.Description className="sr-only">
 						{t(selectedProjectId === STANDALONE_WORKSPACE_ID ? "newTask.standaloneDescription" : "newTask.description")}
 					</Dialog.Description>
@@ -183,6 +185,7 @@ export function NewTaskDialog({ open, projectId, hostId, onProjectChange, onCrea
 						hostId={hostId}
 						createLabel={t("newTask.create")}
 						autoFocusTitle
+						accountControlContainer={accountSlot}
 						onCreated={(sessionId) => {
 							onCreated(sessionId);
 							onOpenChange(false);

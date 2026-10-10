@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/modelcatalog"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
@@ -294,6 +295,8 @@ type TerminalInputGate interface {
 	// barrier to avoid trusting an idle hook which predates already-buffered PTY
 	// input.
 	BeginInputDrain(terminalID string) (lastInputAt time.Time, release func())
+	// TerminalOnScreen reports whether a client is showing the terminal.
+	TerminalOnScreen(terminalID string) bool
 }
 
 // ReviewerTerminator tears down a worker's reviewer pane when the worker leaves
@@ -399,6 +402,7 @@ type Manager struct {
 	agents    ports.AgentResolver
 	workspace ports.Workspace
 	store     Store
+	accounts  ports.ProviderAccountRouting
 	// agentSwitchReporting supplies the exact authorization snapshot immediately
 	// before each failure-aware store transaction. Nil is fail-closed.
 	agentSwitchReporting ports.AgentSwitchReportingPolicy
@@ -464,7 +468,6 @@ type Manager struct {
 	// workspace hook commands resolve back to this daemon. Tests inject a stub.
 	executable                     func() (string, error)
 	newLaunchID                    func() string
-	codexOperationGate             ports.CodexOperationGate
 	startupBackgroundReconcileDone chan struct{}
 	startupBackgroundReconcileOnce sync.Once
 	// A cold Chat resume must not launch a new persistent host while startup's
@@ -540,6 +543,9 @@ type Manager struct {
 
 	terminalInputGateMu sync.Mutex
 	terminalInputGate   TerminalInputGate
+	// Moves onto Account Manager: free slots, sessions in flight, sessions stopped and not yet started.
+	legacySlots                *semaphore.Weighted
+	legacyMoving, legacyExited sync.Map
 
 	reviewersMu sync.Mutex
 	reviewers   ReviewerTerminator
@@ -799,9 +805,8 @@ type Deps struct {
 	Executable func() (string, error)
 	// NewLaunchID overrides supervised-process generation for deterministic tests.
 	NewLaunchID func() string
-	// CodexOperationGate is shared with account clients and reviewer launches.
-	// Nil preserves focused-test compatibility by disabling device-global gating.
-	CodexOperationGate ports.CodexOperationGate
+	// Accounts is Account Manager; nil leaves every session on its native sign-in.
+	Accounts ports.ProviderAccountRouting
 	// ReconcileWorkers bounds concurrent live-session recovery during daemon
 	// startup. Values below one preserve the serial default for embedders/tests;
 	// production explicitly opts into a small worker pool.
@@ -844,7 +849,7 @@ func New(d Deps) *Manager {
 		lookPath:                       d.LookPath,
 		executable:                     d.Executable,
 		newLaunchID:                    d.NewLaunchID,
-		codexOperationGate:             defaultCodexOperationGate(d.CodexOperationGate),
+		accounts:                       d.Accounts,
 		backgroundContext:              d.BackgroundContext,
 		startupBackgroundReconcileDone: make(chan struct{}),
 		agentOperations:                make(map[domain.SessionID]agentOperationKind),
@@ -874,6 +879,7 @@ func New(d Deps) *Manager {
 		},
 		logger:         d.Logger,
 		workspaceGates: make(map[domain.ProjectID]*sync.Mutex),
+		legacySlots:    semaphore.NewWeighted(4),
 	}
 	if m.clock == nil {
 		// UTC so spawn-stamped CreatedAt/UpdatedAt match every other session
@@ -980,6 +986,12 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 
+	accountID, managedAccount := "", false
+	if m.accounts != nil {
+		if accountID, managedAccount, err = m.accounts.ResolveAccount(ctx, cfg.Harness, cfg.AccountID); err != nil {
+			return domain.SessionRecord{}, 0, 0, err
+		}
+	}
 	// Resolve the effective agent config (project base + role override + spawn
 	// override) and validate the model before any durable state is created. A
 	// model the harness cannot honor should not leave a seed row behind.
@@ -1095,6 +1107,12 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 	}
 	id := rec.ID
+	if managedAccount {
+		if err := m.accounts.AssignAccount(ctx, id, cfg.Harness, accountID); err != nil {
+			m.rollbackSpawnSeedRowAfterFailure(ctx, id)
+			return domain.SessionRecord{}, 0, 0, err
+		}
+	}
 	// The system prompt embeds the artifact directory path, so the directory
 	// must exist and be known before buildSpawnTexts runs. For a prep-derived
 	// session the value is threaded through the later promoteTaskPreparation
@@ -1326,7 +1344,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, adapterConfig.Permissions)
-	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok && !managedAccount {
 		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
 		if authErr != nil {
 			m.logger.Debug("spawn: launch authentication probe inconclusive; continuing",
@@ -1394,12 +1412,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
 	}
 	defer m.lcm.CancelLaunch(id, launchID)
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, cfg.Harness)
-	if err != nil {
-		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
-		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, err)
-	}
-	defer releaseCodexAdmission()
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     id,
 		WorkspacePath: ws.Path,
@@ -1532,7 +1544,11 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 		}
 		return resolved, nil
 	}
-	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
+	scope := string(cfg.ProjectID)
+	if cfg.AccountID != "" {
+		scope = ports.ModelCatalogAccountScope(cfg.AccountID)
+	}
+	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), scope, true)
 	if err != nil {
 		if modelChangedWithoutExplicitEffort {
 			resolved.Effort = ""
@@ -1549,6 +1565,9 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 				break
 			}
 		}
+	}
+	if modelID == "" && catalog.Source == ports.ModelCatalogSourceManagedAccount {
+		return resolved, nil // an account's catalogue names no default model
 	}
 	if catalog.Stale && validateClaudeModel {
 		return ports.AgentConfig{}, fmt.Errorf("%w for model %q: catalog is stale", ports.ErrModelCapabilitiesUnavailable, modelID)
@@ -2298,6 +2317,7 @@ func (m *Manager) markSpawnFailedTerminatedWithoutWorkspace(ctx context.Context,
 // fails, fall back to parking it terminated so a phantom row never looks live.
 func (m *Manager) rollbackSpawnSeedRow(ctx context.Context, id domain.SessionID) {
 	if deleted, err := m.store.DeleteSession(ctx, id); err == nil && deleted {
+		_ = m.forgetAccount(ctx, id)
 		m.cleanupSystemPromptDir(id)
 		m.cleanupAttachments(ctx, id)
 		return
@@ -2322,6 +2342,9 @@ func (m *Manager) rollbackSpawn(ctx context.Context, id domain.SessionID) (delet
 		return false, false, fmt.Errorf("rollback %s: %w", id, err)
 	}
 	if deleted {
+		if err := m.forgetAccount(ctx, id); err != nil {
+			return true, false, err
+		}
 		m.cleanupSystemPromptDir(id)
 		m.cleanupAttachments(ctx, id)
 		return true, false, nil
@@ -3273,7 +3296,11 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, agentConfig.Permissions)
-	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+	_, managedAccount, err := m.sessionAccount(ctx, rec.ID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok && !managedAccount {
 		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
 		if authErr != nil {
 			m.logger.Debug("restore: launch authentication probe inconclusive; continuing",
@@ -3346,12 +3373,6 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 		return RestoreResult{}, fmt.Errorf("%s %s: prepare launch: %w", operation, rec.ID, err)
 	}
 	defer m.lcm.CancelLaunch(rec.ID, launchID)
-	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, rec.Harness)
-	if err != nil {
-		m.cleanupSystemPromptDir(rec.ID)
-		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
-	}
-	defer releaseCodexAdmission()
 	runtimeCfg := ports.RuntimeConfig{
 		SessionID:     rec.ID,
 		WorkspacePath: ws.Path,
@@ -5800,6 +5821,9 @@ func (m *Manager) prepareWorkerLaunchEnv(
 	if err != nil {
 		return rec, nil, err
 	}
+	if err := m.applyAccountEnv(ctx, rec.ID, env); err != nil {
+		return rec, nil, err
+	}
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, rec.ControllerOwner(), verifier)
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
@@ -5818,6 +5842,9 @@ func (m *Manager) prepareChatControllerEnv(
 ) (domain.SessionRecord, map[string]string, error) {
 	env, verifier, err := m.launchRuntimeEnv(rec.ID, rec.ProjectID, rec.IssueID, projectEnv)
 	if err != nil {
+		return rec, nil, err
+	}
+	if err := m.applyAccountEnv(ctx, rec.ID, env); err != nil {
 		return rec, nil, err
 	}
 	rec, err = m.persistBrowserCapabilityVerifier(ctx, rec, expected, verifier)
@@ -6466,6 +6493,7 @@ func (m *Manager) wrapAgentProcessWithLaunchID(agent ports.Agent, id domain.Sess
 	if strings.TrimSpace(launchID) == "" {
 		return nil, errors.New("empty launch id")
 	}
+	argv = agentlaunch.CodexProxyArgv(argv, env)
 	// Every provider generation is fenced, including providers that report
 	// process exit through native hooks and therefore do not need the wrapper.
 	// Without this env value an old source hook can overwrite the target's

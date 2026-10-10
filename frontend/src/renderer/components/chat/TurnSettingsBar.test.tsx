@@ -332,6 +332,34 @@ it("keeps the Claude model menu open when expanding Other models, without an age
 	expect(screen.getByRole("menuitem", { name: /Other models/ })).toBeInTheDocument();
 });
 
+it("names a larger-context Claude row apart from the model it runs", async () => {
+	const user = userEvent.setup();
+	render(
+		<TurnSettingsBar
+			harness="claude-code"
+			models={[
+				{ id: "claude-opus-5-5", displayName: "Claude Opus 5.5", default: false },
+				{ id: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5", default: false },
+			]}
+			settings={{}}
+			onChangeConfigOption={vi.fn()}
+			configOptions={[{
+				id: "model", name: "Model", category: "model", type: "select", currentValue: "opus",
+				choices: [
+					{ value: "opus", name: "Opus" },
+					{ value: "opus[1m]", name: "Opus (1M context)" },
+					{ value: "sonnet", name: "Sonnet" },
+				],
+			}]}
+		/>,
+	);
+	await user.click(screen.getByRole("button", { name: "Model" }));
+	// Both Opus rows run Opus 5.5; given the same name they read as a duplicate.
+	expect(screen.getByRole("menuitemradio", { name: "Opus 5.5" })).toBeInTheDocument();
+	expect(screen.getByRole("menuitemradio", { name: "Opus 5.5 (1M context)" })).toBeInTheDocument();
+	expect(screen.getByRole("menuitemradio", { name: "Sonnet 5.5" })).toBeInTheDocument();
+});
+
 describe("ACP session config options", () => {
 	it("hides a mode with only an implicit default choice", () => {
 		const mode: ChatConfigOption = {

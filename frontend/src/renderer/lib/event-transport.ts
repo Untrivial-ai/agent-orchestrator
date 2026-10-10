@@ -14,8 +14,6 @@ import { agentSwitchesQueryRoot } from "../hooks/useAgentSwitches";
 import { sessionReviewsQueryKey } from "./session-reviews";
 import { sessionUsageQueryRoot } from "../hooks/useSessionUsageSummaries";
 import { agentSwitchVisibility } from "./agent-switch-visibility";
-import { codexAccountsQueryKey, writeCodexAccounts } from "../hooks/codex-accounts-state";
-import type { components } from "../../api/schema";
 import { editorHandoffQueryKey, editorHandoffQueryRoot } from "../hooks/useEditorHandoff";
 import { baseUrlForHost, connectedHosts, subscribeConnectedHosts } from "./host-clients";
 import { probeRemoteSse } from "./remote-sse-probe";
@@ -51,7 +49,6 @@ const CDC_EVENT_TYPES = [
  * Wires live server state into the TanStack Query cache. Three sources feed it:
  *   - daemon lifecycle over Electron IPC (coming up/down changes session availability)
  *   - each connected daemon's CDC stream over SSE (project/session/PR changes)
- *   - the Codex account stream over SSE (account, capacity, and switch state)
  * Lifecycle and CDC events invalidate the owning host's cache; durable per-session
  * updates also refresh editor-handoff readiness. Invalidations are batched
  * because a single user action can emit a burst of CDC events.
@@ -73,8 +70,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let retryTimer: ReturnType<typeof setTimeout> | undefined;
 			let source: EventSource | undefined;
 			let sourceBaseUrl: string | undefined;
-			let accountSource: EventSource | undefined;
-			let accountSourceBaseUrl: string | undefined;
 			let disposed = false;
 			const remoteSources = new Map<string, {
 				base: string;
@@ -194,15 +189,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					remoteSources.delete(hostId);
 				}
 				for (const hostId of active) connectRemote(hostId);
-			};
-			const applyAccountEvent = (event: Event) => {
-				if (disposed || !("data" in event)) return;
-				try {
-					const decoded = JSON.parse(String((event as MessageEvent).data)) as components["schemas"]["CodexAccountsResponse"];
-					writeCodexAccounts(queryClient, decoded, "replace");
-				} catch {
-					// A malformed transient event cannot replace the cached safe snapshot.
-				}
 			};
 			// The scheduled flush body. Extracted so a leading-edge event can run
 			// it immediately without waiting out a full window.
@@ -391,32 +377,14 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				if (!hasTrustedApiBaseUrl()) {
 					healthAttempt += 1;
 					source?.close();
-					accountSource?.close();
 					source = undefined;
-					accountSource = undefined;
 					sourceBaseUrl = undefined;
-					accountSourceBaseUrl = undefined;
 					setEventsConnectionState("disconnected");
 					agentSwitchVisibility.setTransportHealthy("active", false);
 					agentSwitchVisibility.setTransportHealthy("history", false);
 					return;
 				}
 				const baseUrl = getApiBaseUrl();
-				if (!accountSource || accountSourceBaseUrl !== baseUrl || accountSource.readyState === EVENTSOURCE_CLOSED) {
-					accountSource?.close();
-					accountSourceBaseUrl = baseUrl;
-					try {
-						accountSource = new EventSource(`${baseUrl.replace(/\/+$/, "")}/api/v1/agents/codex/accounts/events`);
-						accountSource.onopen = () => {
-							if (disposed) return;
-							void queryClient.invalidateQueries({ queryKey: codexAccountsQueryKey });
-						};
-						accountSource.onerror = () => { if (accountSource?.readyState === EVENTSOURCE_CLOSED) scheduleRetry(); };
-						accountSource.addEventListener("codex_account", applyAccountEvent);
-					} catch {
-						accountSource = undefined;
-					}
-				}
 				// Keep a still-usable source on the same base URL; replace one the
 				// browser abandoned (CLOSED) or one bound to a stale port.
 				if (source && sourceBaseUrl === baseUrl && source.readyState !== EVENTSOURCE_CLOSED) return;
@@ -500,7 +468,6 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 				removeBaseUrlListener();
 				removeConnectedHostsListener();
 				source?.close();
-				accountSource?.close();
 				for (const connection of remoteSources.values()) {
 					connection.close?.();
 					if (connection.pollTimer !== undefined) clearInterval(connection.pollTimer);

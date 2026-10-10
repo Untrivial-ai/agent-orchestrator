@@ -1,3 +1,4 @@
+import { SessionProviderAccountMenuItem } from "./SessionProviderAccountMenuItem";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe2, Loader2, PanelRight, Plus } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
@@ -1475,9 +1476,10 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	const sessionTabActions = useMemo(() => interfaceUi.unsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceUi.inlineStatus}>
 			{interfaceUi.menuItem}
+			{session && !session.cloud && !hostId ? <SessionProviderAccountMenuItem sessionId={session.id} /> : null}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceUi.inlineStatus, interfaceUi.menuItem, interfaceUi.unsupported]);
+	), [handoffMenuItem, hostId, interfaceUi.inlineStatus, interfaceUi.menuItem, interfaceUi.unsupported, session]);
 	const sessionHeaderActions = (
 		<div
 			className="session-topbar-session-chrome flex shrink-0 items-center"
