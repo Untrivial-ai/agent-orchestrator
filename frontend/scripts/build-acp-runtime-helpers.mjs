@@ -151,6 +151,247 @@ export function patchClaudeHibernationCheck(adapterPath) {
 	return true;
 }
 
+/**
+ * Settle a prompt that Claude Code folded into a task-notification cycle.
+ *
+ * When a prompt arrives while Claude Code runs a cycle it started itself (for
+ * example after a background command finished), the CLI adds the prompt to
+ * that cycle. The cycle's single result keeps its task-notification origin, so
+ * claude-agent-acp 0.70 treats it as autonomous and never answers the prompt:
+ * the session stays "Working" until the user sends something else. The result
+ * names the prompts it answered in user_message_uuid(s); route it through the
+ * user lane when it names a pending, not held-open turn. Port of upstream
+ * agentclientprotocol/claude-agent-acp#1233 for issue #1145.
+ */
+export function patchClaudeFoldedPromptSettlement(adapterPath) {
+	const source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: a result naming a pending prompt answers it.")) return false;
+	const original = "const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);";
+	const at = source.indexOf(original);
+	if (at < 0 || source.indexOf(original, at + 1) >= 0 || !source.includes("const findUnsettledTurn = (uuid) =>")) {
+		throw new Error("claude-agent-acp autonomous result classification no longer matches AO's folded-prompt patch");
+	}
+	const replacement = [
+		"// AO: a result naming a pending prompt answers it.",
+		"                        const answeredPromptUuids = Array.isArray(message.user_message_uuids)",
+		"                            ? message.user_message_uuids",
+		'                            : typeof message.user_message_uuid === "string" ? [message.user_message_uuid] : [];',
+		"                        const answersPendingPrompt = answeredPromptUuids.some((uuid) => {",
+		"                            const turn = findUnsettledTurn(uuid);",
+		"                            return turn !== undefined && !isHeldOpen(turn);",
+		"                        });",
+		"                        const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind) && !answersPendingPrompt;",
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
+ * Drop trailing-idle debt that can no longer be paid.
+ *
+ * claude-agent-acp 0.70 counts one owed `idle` per result and absorbs that many
+ * idles before treating one as a turn-over signal. Claude Code 2.1.270+ emits a
+ * single idle for a turn plus the task-notification cycle that follows it, so
+ * one unit is never paid. The leftover then swallows the idle a steered turn
+ * settles on, leaving that turn "Working" forever. A transition into `running`
+ * proves every earlier idle was already emitted, so reset the debt there. Port
+ * of the sweep upstream shipped in claude-agent-acp 0.79.
+ */
+export function patchClaudeStaleIdleDebt(adapterPath) {
+	const source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: drop idle debt that can no longer be paid.")) return false;
+	const original = [
+		'case "session_state_changed": {',
+		"                                session.lastSessionState = message.state;",
+		'                                if (message.state === "idle") {',
+	].join("\n");
+	const at = source.indexOf(original);
+	if (at < 0 || source.indexOf(original, at + 1) >= 0 || !source.includes("session.owedTrailingIdles--;")) {
+		throw new Error("claude-agent-acp session state handling no longer matches AO's idle-debt patch");
+	}
+	const replacement = [
+		'case "session_state_changed": {',
+		"                                // AO: drop idle debt that can no longer be paid.",
+		"                                const previousState = session.lastSessionState;",
+		"                                session.lastSessionState = message.state;",
+		'                                if (message.state === "running" && previousState !== "running") {',
+		"                                    session.owedTrailingIdles = 0;",
+		"                                }",
+		'                                if (message.state === "idle") {',
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
+ * Settle a turn on the result that acknowledges its steer.
+ *
+ * A result naming a steered message in user_message_uuid(s) is the steered
+ * sequence's answer, not another autonomous cycle: retire the steer echo and
+ * leave the steer lane so the ordinary result settlement answers the prompt.
+ * Without this, the steered result is parked in Turn.steeredSettle and the
+ * turn must wait for an idle that a held subagent turn's debt can absorb
+ * first (the stargate-20 "Working forever" stall). Unstamped results keep
+ * recording steeredSettle for the idle lane. Port of the exact-result
+ * acknowledgement path upstream in claude-agent-acp#1166.
+ */
+export function patchClaudeSteerSettlement(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: settle a result that acknowledges the steer.")) return false;
+	const patches = [
+		[
+			"(turnInFlight.steeredEchoes ??= new Set()).add(steeredUuid);",
+			"(turnInFlight.steeredEchoes ??= new Set()).add(steeredUuid);\n        (turnInFlight.steeredUuids ??= new Set()).add(steeredUuid);",
+		],
+		[
+			'                    case "result": {',
+			[
+				'                    case "result": {',
+				"                        // AO: settle a result that acknowledges the steer.",
+				"                        const steeredTurn = session.activeTurn;",
+				"                        const consumedSteers = Array.isArray(message.user_message_uuids)",
+				"                            ? message.user_message_uuids",
+				'                            : typeof message.user_message_uuid === "string" ? [message.user_message_uuid] : [];',
+				"                        let answersSteer = false;",
+				"                        if (!session.cancelled && isSteering(steeredTurn)) {",
+				"                            for (const uuid of consumedSteers) {",
+				"                                steeredTurn.steeredEchoes.delete(uuid);",
+				"                                if (steeredTurn.steeredUuids?.has(uuid)) answersSteer = true;",
+				"                            }",
+				"                            answersSteer &&= steeredTurn.steeredEchoes.size === 0;",
+				"                            if (answersSteer) {",
+				"                                steeredTurn.steeredEchoes = undefined;",
+				"                                steeredTurn.steeredUuids = undefined;",
+				"                                steeredTurn.steeredSettle = undefined;",
+				"                            }",
+				"                        }",
+			].join("\n"),
+		],
+	];
+	for (const [original, replacement] of patches) {
+		const at = source.indexOf(original);
+		if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+			throw new Error("claude-agent-acp no longer matches AO's steer settlement patch");
+		}
+		source = source.slice(0, at) + replacement + source.slice(at + original.length);
+	}
+	const classification = "const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind)";
+	const at = source.indexOf(classification);
+	if (at < 0 || source.indexOf(classification, at + 1) >= 0) {
+		throw new Error("claude-agent-acp result classification no longer matches AO's steer settlement patch");
+	}
+	source = source.slice(0, at) + source.slice(at).replace(classification, `${classification} && !answersSteer`);
+	writeFileSync(adapterPath, source);
+	return true;
+}
+
+/**
+ * Keep idle debt from absorbing the idle a completed steer settles on.
+ *
+ * The SDK coalesces the interrupted and steered cycles' trailing idles into
+ * one frame (a pending asyncRewake Stop hook suppresses every intermediate
+ * idle), so idle debt accrued by the superseded cycles has no separate idle
+ * to pay it. The debt-absorption branch deliberately runs before the steer
+ * lane; letting it consume that single frame starves the steer lane and the
+ * prompt hangs "Working" until cancel. Skip absorption only when the steer
+ * sequence is complete (echo replayed and result recorded); incomplete steer
+ * sequences keep absorbing because their terminal idle is still ahead.
+ */
+export function patchClaudeSteerIdleGuard(adapterPath) {
+	const source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: an idle-debt must not absorb the one idle")) return false;
+	const original = [
+		"else if (session.owedTrailingIdles > 0) {",
+		"                                        // Absorb a settled turn's trailing idle. Also covers a",
+	].join("\n");
+	const at = source.indexOf(original);
+	if (at < 0 || source.indexOf(original, at + 1) >= 0) {
+		throw new Error("claude-agent-acp idle handling no longer matches AO's steer idle guard patch");
+	}
+	const replacement = [
+		"else if (session.owedTrailingIdles > 0 &&",
+		"                                        // AO: an idle-debt must not absorb the one idle a",
+		"                                        // completed steer sequence settles on. The SDK",
+		"                                        // coalesces the interrupted and steered cycles'",
+		"                                        // trailing idles into this single frame (a pending",
+		"                                        // asyncRewake Stop hook suppresses every",
+		"                                        // intermediate idle), so a debt accrued by the",
+		"                                        // superseded cycles has no separate idle to pay it —",
+		'                                        // absorbing here starves the steer lane and the',
+		'                                        // prompt hangs "Working" until cancel. Incomplete',
+		"                                        // steer sequences (echo pending or no result yet)",
+		"                                        // keep absorbing: their terminal idle is still",
+		"                                        // ahead.",
+		"                                        !(isSteering(session.activeTurn) &&",
+		"                                          session.activeTurn?.steeredEchoes?.size === 0 &&",
+		"                                          session.activeTurn?.steeredSettle !== undefined)) {",
+		"                                        // Absorb a settled turn's trailing idle. Also covers a",
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, at) + replacement + source.slice(at + original.length));
+	return true;
+}
+
+/**
+ * Stop counting idles a steered sequence's single idle already covers.
+ *
+ * Stock 0.70 counts one owed idle per result, including the held turn's
+ * trailer (owed while its subagent runs) and an autonomous result the steer
+ * aborted. The SDK coalesces the whole wake+steer+steered sequence into ONE
+ * idle, so those trailers are never paid separately; the leftover then eats
+ * the idle the steer lane settles on, and after settling it eats the next
+ * turn's idle — masking a #825 failure when the next echo precedes the next
+ * running transition. Move the held result's trailer onto the steer lane's
+ * idle at steer time, and let an autonomous result aborted by a pending
+ * steer share the sequence's idle instead of adding its own.
+ */
+export function patchClaudeSteerDebt(adapterPath) {
+	let source = readFileSync(adapterPath, "utf8");
+	if (source.includes("// AO: the held result's trailer is now paid by the steer lane's idle.")) return false;
+	const steerAnchor = [
+		"        if (turnInFlight.deferredSettle !== undefined) {",
+		"            turnInFlight.steeredSettle = turnInFlight.deferredSettle;",
+		"            turnInFlight.deferredSettle = undefined;",
+		"        }",
+	].join("\n");
+	const steerAt = source.indexOf(steerAnchor);
+	if (steerAt < 0 || source.indexOf(steerAnchor, steerAt + 1) >= 0) {
+		throw new Error("claude-agent-acp steer registration no longer matches AO's steer debt patch");
+	}
+	const steerReplacement = [
+		"        if (turnInFlight.deferredSettle !== undefined) {",
+		"            turnInFlight.steeredSettle = turnInFlight.deferredSettle;",
+		"            turnInFlight.deferredSettle = undefined;",
+		"            // AO: the held result's trailer is now paid by the steer lane's idle.",
+		'            if (session.lastSessionState !== "idle" && session.owedTrailingIdles > 0) {',
+		"                session.owedTrailingIdles--;",
+		"            }",
+		"        }",
+	].join("\n");
+	source = source.slice(0, steerAt) + steerReplacement + source.slice(steerAt + steerAnchor.length);
+	const resultAnchor = "                            const owesTrailingIdle = isAutonomousResult || !isSteering(session.activeTurn);";
+	const resultAt = source.indexOf(resultAnchor);
+	if (resultAt < 0 || source.indexOf(resultAnchor, resultAt + 1) >= 0) {
+		throw new Error("claude-agent-acp result trailer accounting no longer matches AO's steer debt patch");
+	}
+	// When patchClaudeSteerSettlement ran first, a steer-answering result has
+	// already retired the steer lane (isSteering false) and settled the turn;
+	// it must not then be counted as owing a fresh trailer — its trailer is
+	// the sequence's single idle, already covered by the decrement above.
+	const portApplied = source.includes("// AO: settle a result that acknowledges the steer.");
+	const owesExpression = portApplied
+		? "                            const owesTrailingIdle = !abortedBySteer && !answersSteer && (isAutonomousResult || !isSteering(session.activeTurn));"
+		: "                            const owesTrailingIdle = !abortedBySteer && (isAutonomousResult || !isSteering(session.activeTurn));";
+	const resultReplacement = [
+		"                            // AO: an autonomous cycle aborted by a pending steer shares the",
+		"                            // steered sequence's single idle instead of owing its own.",
+		"                            const abortedBySteer = isAutonomousResult && isSteering(session.activeTurn) &&",
+		"                                session.activeTurn.steeredEchoes.size > 0;",
+		owesExpression,
+	].join("\n");
+	writeFileSync(adapterPath, source.slice(0, resultAt) + resultReplacement + source.slice(resultAt + resultAnchor.length));
+	return true;
+}
+
 export function pruneNodeDistribution(nodeRoot) {
 	// The Unix archives expose npm/corepack as bin/ symlinks into lib/. Remove
 	// the entry points before their targets so packagers never see dangling

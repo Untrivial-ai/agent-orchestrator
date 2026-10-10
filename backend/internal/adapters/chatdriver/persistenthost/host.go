@@ -636,6 +636,9 @@ func Run(ctx context.Context, cfg Config) error {
 	h.cond = sync.NewCond(&h.mu)
 	providerDone := make(chan error, 1)
 	go func() { providerDone <- h.forwardProvider(stdout) }()
+	if h.acp != nil {
+		go h.watchPromptStall()
+	}
 	acceptDone := make(chan error, 1)
 	go func() { acceptDone <- h.accept() }()
 
@@ -854,6 +857,67 @@ func (h *host) detach(conn net.Conn) {
 	_ = conn.Close()
 }
 
+// deliverProviderFrameLocked routes one adapter frame to the attached
+// controller, or buffers it for replay while detached. Callers must hold
+// h.mu. retainedByACP marks frames the ACP relay owns for its own replay, so
+// they must not also enter the generic detached buffer.
+func (h *host) deliverProviderFrameLocked(frame []byte, retainedByACP bool) {
+	if requestID, ok := serverRequestID(frame); ok && !retainedByACP {
+		if _, exists := h.pendingRequests[requestID]; !exists {
+			h.pendingRequests[requestID] = &pendingRequest{frame: append([]byte(nil), frame...)}
+			h.pendingOrder = append(h.pendingOrder, requestID)
+		}
+	}
+	for h.client == nil && h.detachedBytes+len(frame) > maxDetachedBytes {
+		h.cond.Wait()
+	}
+	if h.client != nil {
+		if _, writeErr := h.client.Write(frame); writeErr != nil {
+			_ = h.client.Close()
+			h.client = nil
+			h.bufferPendingRequestsLocked()
+			if _, pending := serverRequestID(frame); !pending && !retainedByACP {
+				h.bufferFrameLocked(frame)
+			}
+		}
+	} else if !retainedByACP {
+		if requestID, pending := serverRequestID(frame); !pending || !h.pendingRequests[requestID].buffered {
+			h.bufferFrameLocked(frame)
+			if pending {
+				h.pendingRequests[requestID].buffered = true
+			}
+		}
+	}
+}
+
+// watchPromptStall terminates an in-flight prompt whose adapter went silent.
+// Turn settlement lives inside the ACP adapter, and the host discards the
+// adapter's stderr, so a lost completion (upstream claude-agent-acp#1145
+// class) leaves the session's Working indicator hanging with nothing to
+// observe. The watchdog gives such turns a terminal error. It never races
+// forwardProvider: both run under h.mu.
+func (h *host) watchPromptStall() {
+	ticker := time.NewTicker(promptStallCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			h.mu.Lock()
+			if h.acp == nil {
+				h.mu.Unlock()
+				continue
+			}
+			frame := h.acp.stalledPromptResponse(h.ctx, h.clientGeneration, time.Now())
+			if frame != nil {
+				h.deliverProviderFrameLocked(frame, true)
+			}
+			h.mu.Unlock()
+		}
+	}
+}
+
 func (h *host) forwardProvider(stdout io.Reader) error {
 	reader := bufio.NewReader(stdout)
 	for {
@@ -878,32 +942,7 @@ func (h *host) forwardProvider(stdout io.Reader) error {
 				}
 				continue
 			}
-			if requestID, ok := serverRequestID(frame); ok && !retainedByACP {
-				if _, exists := h.pendingRequests[requestID]; !exists {
-					h.pendingRequests[requestID] = &pendingRequest{frame: append([]byte(nil), frame...)}
-					h.pendingOrder = append(h.pendingOrder, requestID)
-				}
-			}
-			for h.client == nil && h.detachedBytes+len(frame) > maxDetachedBytes {
-				h.cond.Wait()
-			}
-			if h.client != nil {
-				if _, writeErr := h.client.Write(frame); writeErr != nil {
-					_ = h.client.Close()
-					h.client = nil
-					h.bufferPendingRequestsLocked()
-					if _, pending := serverRequestID(frame); !pending && !retainedByACP {
-						h.bufferFrameLocked(frame)
-					}
-				}
-			} else if !retainedByACP {
-				if requestID, pending := serverRequestID(frame); !pending || !h.pendingRequests[requestID].buffered {
-					h.bufferFrameLocked(frame)
-					if pending {
-						h.pendingRequests[requestID].buffered = true
-					}
-				}
-			}
+			h.deliverProviderFrameLocked(frame, retainedByACP)
 			h.mu.Unlock()
 		}
 		if err != nil {

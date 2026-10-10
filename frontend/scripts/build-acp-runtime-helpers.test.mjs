@@ -17,8 +17,13 @@ import {
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
+	patchClaudeFoldedPromptSettlement,
 	patchClaudeHibernationCheck,
 	patchClaudeRetryDetails,
+	patchClaudeStaleIdleDebt,
+	patchClaudeSteerDebt,
+	patchClaudeSteerIdleGuard,
+	patchClaudeSteerSettlement,
 	pruneNodeDistribution,
 	runtimeSourceFiles,
 } from "./build-acp-runtime-helpers.mjs";
@@ -221,6 +226,369 @@ describe("patchClaudeContextUsage", () => {
 		});
 		expect(zeroUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
 		expect(zero.contextWindowAuthoritative).toBe(false);
+	});
+});
+
+describe("patchClaudeFoldedPromptSettlement", () => {
+	it("routes a task-notification result that names a pending prompt to the user lane", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `
+        const findUnsettledTurn = (uuid) => (session.turnQueue ?? []).find((t) => t.promptUuid === uuid && !t.settled);
+                    case "result": {
+                        const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);
+                        try {
+`);
+
+		expect(patchClaudeFoldedPromptSettlement(adapterPath)).toBe(true);
+		expect(patchClaudeFoldedPromptSettlement(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+
+		const start = patched.indexOf("// AO: a result naming a pending prompt answers it.");
+		const end = patched.indexOf("try {", start);
+		const classify = new Function("message", "session", `
+			const AUTONOMOUS_RESULT_ORIGINS = new Set(["task-notification", "peer"]);
+			const isHeldOpen = (turn) => turn.deferredSettle !== undefined && !turn.settled;
+			const findUnsettledTurn = (uuid) => (session.turnQueue ?? []).find((t) => t.promptUuid === uuid && !t.settled);
+			${patched.slice(start, end)}
+			return isAutonomousResult;
+		`);
+		const notification = { kind: "task-notification" };
+		const session = {
+			turnQueue: [
+				{ promptUuid: "pending", settled: false },
+				{ promptUuid: "settled", settled: true },
+				{ promptUuid: "held", settled: false, deferredSettle: { stopReason: "end_turn" } },
+			],
+		};
+
+		expect(classify({ origin: notification, user_message_uuids: ["pending"] }, session)).toBe(false);
+		expect(classify({ origin: notification, user_message_uuid: "pending" }, session)).toBe(false);
+		expect(classify({ origin: notification, user_message_uuids: ["settled", "held", "unknown"] }, session)).toBe(true);
+		expect(classify({ origin: notification }, session)).toBe(true);
+		expect(classify({ origin: { kind: "human" } }, session)).toBe(false);
+		expect(classify({}, session)).toBe(false);
+	});
+
+	it("fails packaging when the adapter's classification changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "const isAutonomousResult = isAutonomous(message);\n");
+
+		expect(() => patchClaudeFoldedPromptSettlement(adapterPath)).toThrow(/folded-prompt patch/);
+	});
+});
+
+describe("patchClaudeStaleIdleDebt", () => {
+	it("drops unpaid idle debt when Claude starts running again", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `
+                            case "session_state_changed": {
+                                session.lastSessionState = message.state;
+                                if (message.state === "idle") {
+                                    if (session.owedTrailingIdles > 0) {
+                                        session.owedTrailingIdles--;
+                                    }
+                                }
+                                break;
+                            }
+`);
+
+		expect(patchClaudeStaleIdleDebt(adapterPath)).toBe(true);
+		expect(patchClaudeStaleIdleDebt(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+
+		const start = patched.indexOf("// AO: drop idle debt that can no longer be paid.");
+		const end = patched.indexOf("break;", start);
+		const onState = new Function("message", "session", `${patched.slice(start, end)}`);
+		const session = { lastSessionState: "idle", owedTrailingIdles: 2 };
+
+		onState({ state: "idle" }, session);
+		expect(session.owedTrailingIdles).toBe(1);
+		onState({ state: "running" }, session);
+		expect(session.owedTrailingIdles).toBe(0);
+		session.owedTrailingIdles = 1;
+		onState({ state: "running" }, session);
+		expect(session.owedTrailingIdles).toBe(1);
+		onState({ state: "idle" }, session);
+		expect(session.owedTrailingIdles).toBe(0);
+		expect(session.lastSessionState).toBe("idle");
+	});
+
+	it("fails packaging when the adapter's state handling changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, 'case "session_state_changed": {\n');
+
+		expect(() => patchClaudeStaleIdleDebt(adapterPath)).toThrow(/idle-debt patch/);
+	});
+});
+
+describe("patchClaudeSteerSettlement", () => {
+	function patchedResultClassifier(foldPatched = false) {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `
+        (turnInFlight.steeredEchoes ??= new Set()).add(steeredUuid);
+                    case "result": {
+                        const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind)${foldPatched ? " && !answersPendingPrompt" : ""};
+                        try {
+`);
+		expect(patchClaudeSteerSettlement(adapterPath)).toBe(true);
+		expect(patchClaudeSteerSettlement(adapterPath)).toBe(false);
+		const source = readFileSync(adapterPath, "utf8");
+
+		const registerStart = source.indexOf("(turnInFlight.steeredEchoes");
+		const registerEnd = source.indexOf('case "result":', registerStart);
+		const register = new Function("turnInFlight", "steeredUuid", source.slice(registerStart, registerEnd));
+		const registered = {};
+		register(registered, "steer");
+		expect(registered.steeredEchoes).toEqual(new Set(["steer"]));
+		expect(registered.steeredUuids).toEqual(new Set(["steer"]));
+
+		const start = source.indexOf("// AO: settle a result that acknowledges the steer.");
+		const end = source.indexOf("try {", start);
+		return new Function("message", "session", "answersPendingPrompt", `
+            const AUTONOMOUS_RESULT_ORIGINS = new Set(["task-notification", "peer"]);
+            const isSteering = (turn) => turn != null && turn.steeredEchoes !== undefined && !turn.settled;
+            ${source.slice(start, end)}
+            return isAutonomousResult;
+        `);
+	}
+
+	it.each([false, true])("a result naming its steer leaves the steer lane (fold-patched=%s)", (foldPatched) => {
+		const classify = patchedResultClassifier(foldPatched);
+		for (const stamp of [{ user_message_uuid: "steer" }, { user_message_uuids: ["steer"] }]) {
+			const turn = {
+				steeredEchoes: new Set(["steer"]),
+				steeredUuids: new Set(["steer"]),
+				steeredSettle: { stopReason: "end_turn" },
+			};
+			expect(classify({ origin: { kind: "task-notification" }, ...stamp }, { activeTurn: turn }, false)).toBe(false);
+			expect(turn.steeredEchoes).toBeUndefined();
+			expect(turn.steeredUuids).toBeUndefined();
+			expect(turn.steeredSettle).toBeUndefined();
+		}
+	});
+
+	it("recognizes its steer after the replay echo already drained", () => {
+		const classify = patchedResultClassifier();
+		const turn = { steeredEchoes: new Set(), steeredUuids: new Set(["steer"]) };
+		expect(classify({ origin: { kind: "human" }, user_message_uuids: ["steer"] }, { activeTurn: turn }, false)).toBe(false);
+		expect(turn.steeredEchoes).toBeUndefined();
+	});
+
+	it("keeps the lane while another steer is still outstanding", () => {
+		const classify = patchedResultClassifier();
+		const turn = {
+			steeredEchoes: new Set(["first", "second"]),
+			steeredUuids: new Set(["first", "second"]),
+		};
+		expect(classify({ origin: { kind: "task-notification" }, user_message_uuids: ["first"] }, { activeTurn: turn }, false)).toBe(true);
+		expect([...turn.steeredEchoes]).toEqual(["second"]);
+		expect(classify({ origin: { kind: "human" }, user_message_uuids: ["second"] }, { activeTurn: turn }, false)).toBe(false);
+		expect(turn.steeredEchoes).toBeUndefined();
+	});
+
+	it.each([
+		{},
+		{ user_message_uuid: "original" },
+		{ user_message_uuids: ["original"] },
+	])("preserves the steer lane for a result that names no steer %j", (stamp) => {
+		const classify = patchedResultClassifier();
+		const turn = {
+			steeredEchoes: new Set(),
+			steeredUuids: new Set(["steer"]),
+			steeredSettle: { stopReason: "end_turn" },
+		};
+		classify({ origin: { kind: "human" }, ...stamp }, { activeTurn: turn }, false);
+		expect(turn.steeredEchoes).toEqual(new Set());
+		expect(turn.steeredSettle).toEqual({ stopReason: "end_turn" });
+	});
+
+	it("keeps the steer lane on a cancelled turn", () => {
+		const classify = patchedResultClassifier();
+		const turn = { steeredEchoes: new Set(["steer"]), steeredUuids: new Set(["steer"]) };
+		classify({ user_message_uuid: "steer" }, { activeTurn: turn, cancelled: true }, false);
+		expect(turn.steeredEchoes).toEqual(new Set(["steer"]));
+	});
+
+	it("leaves ordinary and already-settled turns alone", () => {
+		const classify = patchedResultClassifier();
+		for (const turn of [
+			undefined,
+			{ settled: true, steeredEchoes: new Set(), steeredUuids: new Set(["steer"]) },
+			{},
+		]) {
+			expect(classify({ origin: { kind: "task-notification" }, user_message_uuid: "steer" }, { activeTurn: turn }, false)).toBe(true);
+		}
+	});
+
+	it("fails packaging without modifying a changed adapter", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "upstream changed");
+
+		expect(() => patchClaudeSteerSettlement(adapterPath)).toThrow(/steer settlement patch/);
+		expect(readFileSync(adapterPath, "utf8")).toBe("upstream changed");
+	});
+});
+
+describe("patchClaudeSteerIdleGuard", () => {
+	const guardSource = `
+                                    if (session.owedTrailingIdles > 999999) {
+                                        session.owedTrailingIdles--;
+                                    }
+                                    else if (session.owedTrailingIdles > 0) {
+                                        // Absorb a settled turn's trailing idle. Also covers a
+                                        // cancel that landed between a turn's counted result and
+                                        // this lagged idle.
+                                        session.owedTrailingIdles--;
+                                    }
+                                    else if (isSteering(session.activeTurn)) {
+                                        const steered = session.activeTurn;
+                                        if (steered.steeredEchoes?.size === 0 && steered.steeredSettle !== undefined) {
+                                            steered.deferredSettle = steered.steeredSettle;
+                                            steered.steeredEchoes = undefined;
+                                            steered.steeredSettle = undefined;
+                                            settleDeferredIfDrained();
+                                        }
+                                    }
+`;
+
+	function patchedIdleRun() {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, guardSource);
+		expect(patchClaudeSteerIdleGuard(adapterPath)).toBe(true);
+		expect(patchClaudeSteerIdleGuard(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("// AO: an idle-debt must not absorb the one idle");
+		const start = patched.indexOf("if (session.owedTrailingIdles > 999999)");
+		return new Function("session", "settleDeferredIfDrained", `
+            const isSteering = (turn) => turn != null && turn.steeredEchoes !== undefined && !turn.settled;
+            ${patched.slice(start)}
+        `);
+	}
+
+	it("lets a completed steer settle on the coalesced idle instead of absorbing it", () => {
+		const run = patchedIdleRun();
+		const session = {
+			owedTrailingIdles: 2,
+			activeTurn: {
+				steeredEchoes: new Set(),
+				steeredSettle: { stopReason: "end_turn" },
+			},
+		};
+		let settled = 0;
+		run(session, () => { settled += 1; });
+		expect(session.owedTrailingIdles).toBe(2);
+		expect(settled).toBe(1);
+		expect(session.activeTurn.steeredEchoes).toBeUndefined();
+		expect(session.activeTurn.steeredSettle).toBeUndefined();
+		expect(session.activeTurn.deferredSettle).toEqual({ stopReason: "end_turn" });
+	});
+
+	it("keeps absorbing for an incomplete steer sequence", () => {
+		const run = patchedIdleRun();
+		for (const activeTurn of [
+			{ steeredEchoes: new Set(["echo"]), steeredSettle: undefined },
+			{ steeredEchoes: new Set(), steeredSettle: undefined },
+			undefined,
+		]) {
+			const session = { owedTrailingIdles: 2, activeTurn };
+			run(session, () => { throw new Error("must not settle"); });
+			expect(session.owedTrailingIdles).toBe(1);
+		}
+	});
+
+	it("fails packaging when the adapter's idle handling changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "else if (session.owedTrailingIdles > 0) {\n");
+
+		expect(() => patchClaudeSteerIdleGuard(adapterPath)).toThrow(/steer idle guard patch/);
+	});
+});
+
+describe("patchClaudeSteerDebt", () => {
+	const steerSource = `
+        if (turnInFlight.deferredSettle !== undefined) {
+            turnInFlight.steeredSettle = turnInFlight.deferredSettle;
+            turnInFlight.deferredSettle = undefined;
+        }
+`;
+	const trailerSource = `
+                            const owesTrailingIdle = isAutonomousResult || !isSteering(session.activeTurn);
+`;
+
+	it("hands the held result's trailer to the steer lane's idle", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, steerSource + trailerSource);
+		expect(patchClaudeSteerDebt(adapterPath)).toBe(true);
+		expect(patchClaudeSteerDebt(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("// AO: the held result's trailer is now paid by the steer lane's idle.");
+		const start = patched.indexOf("if (turnInFlight.deferredSettle");
+		const end = patched.indexOf("const abortedBySteer");
+		const run = new Function("turnInFlight", "session", patched.slice(start, end));
+
+		const turn = { deferredSettle: { stopReason: "end_turn" } };
+		const running = { lastSessionState: "running", owedTrailingIdles: 1 };
+		run(turn, running);
+		expect(running.owedTrailingIdles).toBe(0);
+		expect(turn.steeredSettle).toEqual({ stopReason: "end_turn" });
+		expect(turn.deferredSettle).toBeUndefined();
+
+		const idle = { lastSessionState: "idle", owedTrailingIdles: 3 };
+		run({ deferredSettle: { stopReason: "end_turn" } }, idle);
+		expect(idle.owedTrailingIdles).toBe(3);
+	});
+
+	it("does not count an autonomous result the pending steer aborted", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, steerSource + trailerSource);
+		expect(patchClaudeSteerDebt(adapterPath)).toBe(true);
+		const patched = readFileSync(adapterPath, "utf8");
+		const start = patched.indexOf("// AO: an autonomous cycle aborted");
+		const run = new Function("isAutonomousResult", "session", `
+            const isSteering = (turn) => turn != null && turn.steeredEchoes !== undefined;
+            ${patched.slice(start, patched.indexOf(");", start) + 1)}
+            return owesTrailingIdle;
+        `);
+
+		expect(run(true, { activeTurn: { steeredEchoes: new Set(["s1"]) } })).toBe(false);
+		expect(run(true, { activeTurn: { steeredEchoes: new Set() } })).toBe(true);
+		expect(run(false, { activeTurn: { steeredEchoes: new Set(["s1"]) } })).toBe(false);
+		expect(run(true, { activeTurn: undefined })).toBe(true);
+	});
+
+	it("a steer-answering result owes no trailer when the settlement patch ran first", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `                        // AO: settle a result that acknowledges the steer.
+${steerSource + trailerSource}`);
+		patchClaudeSteerDebt(adapterPath);
+		const patched = readFileSync(adapterPath, "utf8");
+		const start = patched.indexOf("// AO: an autonomous cycle aborted");
+		const run = new Function("isAutonomousResult", "answersSteer", "session", `
+            const isSteering = (turn) => turn != null && turn.steeredEchoes !== undefined;
+            ${patched.slice(start, patched.indexOf(");", start) + 1)}
+            return owesTrailingIdle;
+        `);
+
+		const retired = { activeTurn: { steeredEchoes: undefined } };
+		expect(run(false, true, retired)).toBe(false);
+		expect(run(false, false, { activeTurn: { steeredEchoes: new Set() } })).toBe(false);
+		expect(run(false, false, retired)).toBe(true);
+	});
+
+	it("fails packaging when the steer registration changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, "if (turnInFlight.deferredSettle !== undefined) {\n");
+
+		expect(() => patchClaudeSteerDebt(adapterPath)).toThrow(/steer debt patch/);
+	});
+
+	it("fails packaging when the trailer accounting changes", () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `${steerSource}
+                            const owesTrailingIdle = compute();
+`);
+
+		expect(() => patchClaudeSteerDebt(adapterPath)).toThrow(/steer debt patch/);
 	});
 });
 
